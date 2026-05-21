@@ -1,0 +1,20 @@
+# Build output
+bin/
+obj/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.rsuser
+
+# Publish output
+publish/
+
+# Logs produced at runtime (kept next to exe during dev)
+*.log
+
+# User-specific config (copy is in %LOCALAPPDATA% after install)
+# Uncomment the next line if you don't want to track the sample config:
+# config.json
