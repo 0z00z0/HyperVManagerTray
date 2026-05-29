@@ -42,15 +42,15 @@ Write-Host ''
 # ── Step 1: Stop running instance ─────────────────────────────────────────────
 $running = Get-Process -Name 'HyperVNetworkSwitcher' -ErrorAction SilentlyContinue
 if ($running) {
-    Write-Host "[1/4] Stopping running instance (PID $($running.Id))..." -ForegroundColor Yellow
+    Write-Host "[1/5] Stopping running instance (PID $($running.Id))..." -ForegroundColor Yellow
     $running | Stop-Process -Force
     Start-Sleep -Milliseconds 800
 } else {
-    Write-Host '[1/4] No running instance found.' -ForegroundColor DarkGray
+    Write-Host '[1/5] No running instance found.' -ForegroundColor DarkGray
 }
 
 # ── Step 2: Publish ────────────────────────────────────────────────────────────
-Write-Host '[2/4] Publishing self-contained executable...' -ForegroundColor Cyan
+Write-Host '[2/5] Publishing self-contained executable...' -ForegroundColor Cyan
 Push-Location $projectDir
 try {
     dotnet publish -c Release -r win-x64 --self-contained true `
@@ -64,7 +64,7 @@ try {
 Write-Host '      Publish OK.' -ForegroundColor Green
 
 # ── Step 3: Deploy executable ──────────────────────────────────────────────────
-Write-Host '[3/4] Deploying to install directory...' -ForegroundColor Cyan
+Write-Host '[3/5] Deploying to install directory...' -ForegroundColor Cyan
 
 if (-not (Test-Path $installDir)) {
     New-Item -ItemType Directory -Path $installDir -Force | Out-Null
@@ -78,7 +78,7 @@ Copy-Item $srcExe $destExe -Force
 Write-Host "      $exeName -> $installDir" -ForegroundColor Green
 
 # ── Step 4: Deploy config.json (preserve existing) ────────────────────────────
-Write-Host '[4/4] Checking config.json...' -ForegroundColor Cyan
+Write-Host '[4/5] Checking config.json...' -ForegroundColor Cyan
 
 if (Test-Path $destConfig) {
     Write-Host '      config.json already exists -- keeping your existing config.' -ForegroundColor Yellow
@@ -90,6 +90,19 @@ if (Test-Path $destConfig) {
     } else {
         Write-Warning "config.json not found in project directory. Create one at: $destConfig"
     }
+}
+
+# ── Step 5: Remove obsolete HKCU\Run entry ─────────────────────────────────────
+# Older versions used a HKCU\...\Run value for auto-start, which never worked for
+# this elevated app. Auto-start is now a Scheduled Task (toggled from the tray menu).
+# Remove the dead Run-key value if present so it doesn't linger.
+Write-Host '[5/5] Removing obsolete startup entry (if any)...' -ForegroundColor Cyan
+$runKey = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+if (Get-ItemProperty -Path $runKey -Name 'HyperVNetworkSwitcher' -ErrorAction SilentlyContinue) {
+    Remove-ItemProperty -Path $runKey -Name 'HyperVNetworkSwitcher' -ErrorAction SilentlyContinue
+    Write-Host '      Removed legacy HKCU\Run value.' -ForegroundColor Green
+} else {
+    Write-Host '      None found.' -ForegroundColor DarkGray
 }
 
 # ── Summary ────────────────────────────────────────────────────────────────────
