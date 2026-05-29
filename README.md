@@ -78,7 +78,34 @@ Output: `bin\Release\net10.0-windows\win-x64\publish\HyperVNetworkSwitcher.exe`
 
 ### Auto-start with Windows
 
-Right-click the tray icon → **Run on startup** to toggle the registry entry under `HKCU\...\CurrentVersion\Run`.
+Right-click the tray icon → **Run on startup** to toggle auto-start at login.
+
+Because this app requires elevation (UAC), it **cannot** auto-start from a `HKCU\...\Run` entry — Windows launches Run-key items with a standard token and silently skips apps that demand administrator rights. Instead, the toggle creates a **Scheduled Task** with "Run with highest privileges" and a logon trigger. The task runs in your interactive session, so the tray icon still appears, with no UAC prompt at logon.
+
+The toggle is equivalent to:
+
+```powershell
+# Enable
+schtasks /Create /TN "HyperVNetworkSwitcher" /TR "\"%LOCALAPPDATA%\Programs\HyperVNetworkSwitcher\HyperVNetworkSwitcher.exe\"" /SC ONLOGON /RL HIGHEST /F
+# Disable
+schtasks /Delete /TN "HyperVNetworkSwitcher" /F
+```
+
+**Where it's stored** — the task named `HyperVNetworkSwitcher` lives in:
+
+| | |
+|---|---|
+| **Task Scheduler** | Task Scheduler Library → `HyperVNetworkSwitcher` |
+| **On disk** | `C:\Windows\System32\Tasks\HyperVNetworkSwitcher` (XML definition) |
+| **Registry** | `HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\HyperVNetworkSwitcher` |
+
+To inspect or verify it from PowerShell:
+
+```powershell
+schtasks /Query /TN "HyperVNetworkSwitcher" /V /FO LIST
+```
+
+> **Migration note:** older versions wrote a value named `HyperVNetworkSwitcher` under `HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`. That entry never worked for this elevated app and is now removed automatically the first time you toggle **Run on startup**.
 
 ---
 

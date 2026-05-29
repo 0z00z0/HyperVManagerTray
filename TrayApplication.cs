@@ -7,6 +7,8 @@ namespace HyperVNetworkSwitcher;
 public sealed class TrayApplication : ApplicationContext, IDisposable
 {
     private const string AppName    = "HyperVNetworkSwitcher";
+    private const string TaskName   = "HyperVNetworkSwitcher";
+    // Legacy HKCU Run-key location used by older versions — cleaned up on first toggle.
     private const string RunRegKey  = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
 
     private readonly ConfigManager  _config;
@@ -280,27 +282,82 @@ public sealed class TrayApplication : ApplicationContext, IDisposable
         _trayIcon.ShowBalloonTip(2000);
     }
 
+    // Auto-start is implemented as a Scheduled Task with "Run with highest privileges"
+    // (/RL HIGHEST) and a logon trigger.  A plain HKCU\Run entry cannot launch this app at
+    // logon because it requires elevation, and Windows starts Run-key items with a standard
+    // token — silently skipping apps that demand administrator rights.  The task runs in the
+    // user's interactive session, so the tray icon still appears, with no UAC prompt.
     private void OnToggleStartup(object? sender, EventArgs e)
     {
-        using var key = Registry.CurrentUser.OpenSubKey(RunRegKey, writable: true);
-        if (key is null) return;
+        try
+        {
+            if (IsStartupEnabled())
+            {
+                var (ok, output) = RunSchtasks("/Delete", "/TN", TaskName, "/F");
+                if (!ok) throw new InvalidOperationException(output);
+                _startupItem.Checked = false;
+            }
+            else
+            {
+                var exe = Environment.ProcessPath
+                          ?? throw new InvalidOperationException("Cannot determine executable path.");
+                var (ok, output) = RunSchtasks(
+                    "/Create", "/TN", TaskName,
+                    "/TR", $"\"{exe}\"",
+                    "/SC", "ONLOGON",
+                    "/RL", "HIGHEST",
+                    "/F");
+                if (!ok) throw new InvalidOperationException(output);
+                _startupItem.Checked = true;
+            }
 
-        if (IsStartupEnabled())
-        {
-            key.DeleteValue(AppName, throwOnMissingValue: false);
-            _startupItem.Checked = false;
+            RemoveLegacyRunKey();
         }
-        else
+        catch (Exception ex)
         {
-            key.SetValue(AppName, $"\"{Environment.ProcessPath}\"");
-            _startupItem.Checked = true;
+            _logger.LogWarning(ex, "Failed to toggle startup scheduled task");
+            MessageBox.Show($"Could not change the startup setting:\n\n{ex.Message}",
+                AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
+    /// <summary>True if the auto-start scheduled task exists (schtasks /Query exits 0).</summary>
     private static bool IsStartupEnabled()
     {
-        using var key = Registry.CurrentUser.OpenSubKey(RunRegKey);
-        return key?.GetValue(AppName) is not null;
+        var (ok, _) = RunSchtasks("/Query", "/TN", TaskName);
+        return ok;
+    }
+
+    /// <summary>Runs schtasks.exe with the given arguments and returns (success, trimmed output).</summary>
+    private static (bool ok, string output) RunSchtasks(params string[] args)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName               = "schtasks.exe",
+            UseShellExecute        = false,
+            CreateNoWindow         = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError  = true,
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);  // ArgumentList handles quoting
+
+        using var p = System.Diagnostics.Process.Start(psi);
+        if (p is null) return (false, "Failed to start schtasks.exe");
+
+        var stdout = p.StandardOutput.ReadToEnd();
+        var stderr = p.StandardError.ReadToEnd();
+        p.WaitForExit(10_000);
+
+        bool ok = p.HasExited && p.ExitCode == 0;
+        return (ok, ok ? stdout.Trim()
+                       : (stderr.Trim().Length > 0 ? stderr.Trim() : stdout.Trim()));
+    }
+
+    /// <summary>Removes the obsolete HKCU\Run value written by older versions, if present.</summary>
+    private static void RemoveLegacyRunKey()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(RunRegKey, writable: true);
+        key?.DeleteValue(AppName, throwOnMissingValue: false);
     }
 
     private void OnExit(object? sender, EventArgs e)
