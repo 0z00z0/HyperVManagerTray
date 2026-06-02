@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 using Microsoft.Extensions.Logging;
 
@@ -81,52 +80,19 @@ public sealed class HyperVManager : IDisposable
             // Base64-encode the script (UTF-16 LE) for -EncodedCommand.
             // This avoids every quoting/escaping issue on the process command line.
             var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(psScript));
-
-            var psi = new ProcessStartInfo
-            {
-                FileName               = "powershell.exe",
-                Arguments              = $"-NonInteractive -NoProfile -WindowStyle Hidden -EncodedCommand {encoded}",
-                UseShellExecute        = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError  = true,
-                CreateNoWindow         = true,
-            };
-
             _logger.LogDebug("PS> {Script}", psScript);
 
-            using var proc = new Process { StartInfo = psi };
-            proc.Start();
+            // 30 s timeout guards against hanging Hyper-V cmdlets (e.g. invalid adapter names
+            // causing WMI/DCOM lookups that never time out on their own).
+            var result = await ProcessRunner.RunAsync(
+                "powershell.exe",
+                $"-NonInteractive -NoProfile -WindowStyle Hidden -EncodedCommand {encoded}",
+                TimeSpan.FromSeconds(30));
 
-            // Read both streams concurrently to avoid buffering deadlocks.
-            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
-            var stderrTask  = proc.StandardError.ReadToEndAsync();
+            if (!result.Success && result.ExitCode == -1)
+                _logger.LogWarning("PowerShell command failed/timed out: {Script} ({Error})", psScript, result.Output);
 
-            // Guard against hanging Hyper-V cmdlets (e.g. invalid adapter names causing
-            // WMI/DCOM lookups that never time out on their own).
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            try
-            {
-                await proc.WaitForExitAsync(cts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                proc.Kill(entireProcessTree: true);
-                _logger.LogWarning("PowerShell command timed out after 30 s: {Script}", psScript);
-                return (false, "Timed out after 30 s");
-            }
-
-            var stdout = await stdoutTask;
-            var stderr  = await stderrTask;
-
-            bool ok  = proc.ExitCode == 0;
-            var  msg = ok ? stdout.Trim()
-                         : (stderr.Trim().Length > 0 ? stderr.Trim() : stdout.Trim());
-            return (ok, msg);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to spawn powershell.exe");
-            return (false, ex.Message);
+            return (result.Success, result.Output);
         }
         finally
         {

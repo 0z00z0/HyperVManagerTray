@@ -1,6 +1,5 @@
 using HyperVNetworkSwitcher.Models;
 using Microsoft.Extensions.Logging;
-using Microsoft.Win32;
 
 namespace HyperVNetworkSwitcher;
 
@@ -12,16 +11,14 @@ namespace HyperVNetworkSwitcher;
 /// </summary>
 public sealed class TrayApplication : ApplicationContext, IDisposable
 {
-    private const string AppName    = "HyperVNetworkSwitcher";
-    private const string TaskName   = "HyperVNetworkSwitcher";
-    // Legacy HKCU Run-key location used by older versions — cleaned up on first toggle.
-    private const string RunRegKey  = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+    private const string AppName = "HyperVNetworkSwitcher";
 
     private readonly ConfigManager  _config;
     private readonly NetworkMonitor _monitor;
     private readonly HyperVManager  _hyperV;
     private readonly ILogger<TrayApplication> _logger;
     private readonly SynchronizationContext   _uiContext;
+    private readonly StartupManager    _startup = new();
     private readonly NotifyIcon        _trayIcon;
     private readonly StatusPopupForm   _popup;
     private readonly ToolStripMenuItem _overrideMenu;
@@ -46,30 +43,17 @@ public sealed class TrayApplication : ApplicationContext, IDisposable
         _overrideMenu = new ToolStripMenuItem("Manual Override");
         _startupItem  = new ToolStripMenuItem("Run on startup", null, OnToggleStartup)
         {
-            Checked = IsStartupEnabled()
+            Checked = _startup.IsEnabled
         };
 
         RebuildOverrideMenu();
-
-        var contextMenu = new ContextMenuStrip();
-        contextMenu.Items.Add("Force Re-evaluate", null, async (_, _) => await _monitor.ForceEvaluateAsync());
-        contextMenu.Items.Add(_overrideMenu);
-        contextMenu.Items.Add("Add current network as bridged", null, OnAddCurrentAsBridged);
-        contextMenu.Items.Add(new ToolStripSeparator());
-        contextMenu.Items.Add("Open config.json", null, OnOpenConfig);
-        contextMenu.Items.Add("Open log file",    null, OnOpenLogFile);
-        contextMenu.Items.Add("Reload config",    null, OnReloadConfig);
-        contextMenu.Items.Add(new ToolStripSeparator());
-        contextMenu.Items.Add(_startupItem);
-        contextMenu.Items.Add(new ToolStripSeparator());
-        contextMenu.Items.Add("Exit", null, OnExit);
 
         _currentIcon = TrayIconBuilder.Build(bridged: false);
         _trayIcon = new NotifyIcon
         {
             Icon             = _currentIcon,
             Text             = AppName,
-            ContextMenuStrip = contextMenu,
+            ContextMenuStrip = BuildContextMenu(),
             Visible          = true
         };
 
@@ -145,6 +129,23 @@ public sealed class TrayApplication : ApplicationContext, IDisposable
     }
 
     // ── Menu helpers ──────────────────────────────────────────────────────────
+
+    private ContextMenuStrip BuildContextMenu()
+    {
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("Force Re-evaluate", null, async (_, _) => await _monitor.ForceEvaluateAsync());
+        menu.Items.Add(_overrideMenu);
+        menu.Items.Add("Add current network as bridged", null, OnAddCurrentAsBridged);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Open config.json", null, OnOpenConfig);
+        menu.Items.Add("Open log file",    null, OnOpenLogFile);
+        menu.Items.Add("Reload config",    null, OnReloadConfig);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(_startupItem);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Exit", null, OnExit);
+        return menu;
+    }
 
     private void RebuildOverrideMenu()
     {
@@ -288,36 +289,21 @@ public sealed class TrayApplication : ApplicationContext, IDisposable
         _trayIcon.ShowBalloonTip(2000);
     }
 
-    // Auto-start is implemented as a Scheduled Task with "Run with highest privileges"
-    // (/RL HIGHEST) and a logon trigger.  A plain HKCU\Run entry cannot launch this app at
-    // logon because it requires elevation, and Windows starts Run-key items with a standard
-    // token — silently skipping apps that demand administrator rights.  The task runs in the
-    // user's interactive session, so the tray icon still appears, with no UAC prompt.
     private void OnToggleStartup(object? sender, EventArgs e)
     {
         try
         {
-            if (IsStartupEnabled())
+            if (_startup.IsEnabled)
             {
-                var (ok, output) = RunSchtasks("/Delete", "/TN", TaskName, "/F");
-                if (!ok) throw new InvalidOperationException(output);
+                _startup.Disable();
                 _startupItem.Checked = false;
             }
             else
             {
-                var exe = Environment.ProcessPath
-                          ?? throw new InvalidOperationException("Cannot determine executable path.");
-                var (ok, output) = RunSchtasks(
-                    "/Create", "/TN", TaskName,
-                    "/TR", $"\"{exe}\"",
-                    "/SC", "ONLOGON",
-                    "/RL", "HIGHEST",
-                    "/F");
-                if (!ok) throw new InvalidOperationException(output);
+                _startup.Enable(Environment.ProcessPath
+                    ?? throw new InvalidOperationException("Cannot determine executable path."));
                 _startupItem.Checked = true;
             }
-
-            RemoveLegacyRunKey();
         }
         catch (Exception ex)
         {
@@ -325,45 +311,6 @@ public sealed class TrayApplication : ApplicationContext, IDisposable
             MessageBox.Show($"Could not change the startup setting:\n\n{ex.Message}",
                 AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
-    }
-
-    /// <summary>True if the auto-start scheduled task exists (schtasks /Query exits 0).</summary>
-    private static bool IsStartupEnabled()
-    {
-        var (ok, _) = RunSchtasks("/Query", "/TN", TaskName);
-        return ok;
-    }
-
-    /// <summary>Runs schtasks.exe with the given arguments and returns (success, trimmed output).</summary>
-    private static (bool ok, string output) RunSchtasks(params string[] args)
-    {
-        var psi = new System.Diagnostics.ProcessStartInfo
-        {
-            FileName               = "schtasks.exe",
-            UseShellExecute        = false,
-            CreateNoWindow         = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-        };
-        foreach (var a in args) psi.ArgumentList.Add(a);  // ArgumentList handles quoting
-
-        using var p = System.Diagnostics.Process.Start(psi);
-        if (p is null) return (false, "Failed to start schtasks.exe");
-
-        var stdout = p.StandardOutput.ReadToEnd();
-        var stderr = p.StandardError.ReadToEnd();
-        p.WaitForExit(10_000);
-
-        bool ok = p.HasExited && p.ExitCode == 0;
-        return (ok, ok ? stdout.Trim()
-                       : (stderr.Trim().Length > 0 ? stderr.Trim() : stdout.Trim()));
-    }
-
-    /// <summary>Removes the obsolete HKCU\Run value written by older versions, if present.</summary>
-    private static void RemoveLegacyRunKey()
-    {
-        using var key = Registry.CurrentUser.OpenSubKey(RunRegKey, writable: true);
-        key?.DeleteValue(AppName, throwOnMissingValue: false);
     }
 
     private void OnExit(object? sender, EventArgs e)

@@ -15,6 +15,10 @@ public sealed class NetworkMonitor : IDisposable
     private readonly HyperVManager _hyperV;
     private readonly ILogger<NetworkMonitor> _logger;
     private readonly System.Threading.Timer _debounceTimer;
+    // Single-flight guard: only one evaluate/apply runs at a time.  '_evaluatePending'
+    // coalesces changes that arrive while one is running into exactly one follow-up pass.
+    private readonly SemaphoreSlim _evalLock = new(1, 1);
+    private volatile bool _evaluatePending;
     private MatchResult? _lastApplied;
     // Tracks which physical adapter name was last passed to Set-VMSwitch so we can skip
     // redundant re-binds (which cause a brief VM network drop) when nothing has changed.
@@ -49,23 +53,43 @@ public sealed class NetworkMonitor : IDisposable
 
     private async void OnDebounceElapsed(object? _)
     {
+        // If an evaluation is already running, just flag that another is needed and bail —
+        // the in-flight pass will pick it up.  This stops overlapping timer callbacks from
+        // applying switch changes concurrently.  Crucially, a rebind briefly drops the host's
+        // bridged vNIC and fires its own NetworkChange events; coalescing them into one
+        // follow-up pass (run after the rebind settles) prevents the VM flip-flopping
+        // Bridged → Fallback → Bridged mid-operation.
+        if (!await _evalLock.WaitAsync(0))
+        {
+            _evaluatePending = true;
+            return;
+        }
+
         try
         {
-            var result = AdapterMatcher.Evaluate(_config.Current);
-            _logger.LogInformation("Evaluated: rule='{Rule}' switch='{Switch}'", result.RuleName, result.VirtualSwitch);
-
-            if (_lastApplied?.VirtualSwitch == result.VirtualSwitch &&
-                _lastApplied?.TargetVms.SequenceEqual(result.TargetVms) == true)
+            do
             {
-                _logger.LogDebug("No switch change needed");
-                return;
-            }
+                _evaluatePending = false;
 
-            await ApplyAsync(result);
+                var result = AdapterMatcher.Evaluate(_config.Current);
+                _logger.LogInformation("Evaluated: rule='{Rule}' switch='{Switch}'", result.RuleName, result.VirtualSwitch);
+
+                bool unchanged = _lastApplied?.VirtualSwitch == result.VirtualSwitch &&
+                                 _lastApplied?.TargetVms.SequenceEqual(result.TargetVms) == true;
+                if (unchanged)
+                    _logger.LogDebug("No switch change needed");
+                else
+                    await ApplyAsync(result);
+            }
+            while (_evaluatePending);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error during network evaluation");
+        }
+        finally
+        {
+            _evalLock.Release();
         }
     }
 
@@ -135,5 +159,6 @@ public sealed class NetworkMonitor : IDisposable
         NetworkChange.NetworkAddressChanged -= OnNetworkChanged;
         NetworkChange.NetworkAvailabilityChanged -= OnNetworkChanged;
         _debounceTimer.Dispose();
+        _evalLock.Dispose();
     }
 }
