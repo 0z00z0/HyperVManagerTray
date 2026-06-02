@@ -22,15 +22,24 @@ public sealed class HyperVManager : IDisposable
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    /// <summary>Connects a VM's NIC to the given virtual switch (Connect-VMNetworkAdapter).</summary>
+    /// <summary>
+    /// Connects a VM's NIC to the given virtual switch, but only if it isn't already there.
+    /// <c>Connect-VMNetworkAdapter</c> re-applies the binding and briefly bounces the VM's
+    /// network even when the switch is unchanged, so we check first to avoid a needless blip
+    /// (e.g. on every app launch, where the in-session guards start empty).
+    /// </summary>
     public async Task ApplySwitchAsync(string vmName, string nicName, string switchName)
     {
-        _logger.LogInformation("Connecting {Vm}/{Nic} → {Switch}", vmName, nicName, switchName);
+        var vm  = Esc(vmName);
+        var nic = Esc(nicName);
+        var sw  = Esc(switchName);
         var (ok, output) = await RunAsync(
-            $"Connect-VMNetworkAdapter -VMName '{Esc(vmName)}' -Name '{Esc(nicName)}' -SwitchName '{Esc(switchName)}'");
+            $"if ((Get-VMNetworkAdapter -VMName '{vm}' -Name '{nic}').SwitchName -eq '{sw}') {{ 'SKIP' }} " +
+            $"else {{ Connect-VMNetworkAdapter -VMName '{vm}' -Name '{nic}' -SwitchName '{sw}'; 'CONNECTED' }}");
 
-        if (ok) _logger.LogInformation("Switch applied: {Vm} → {Switch}", vmName, switchName);
-        else    _logger.LogError("ApplySwitchAsync error: {Error}", output);
+        if (!ok)                          _logger.LogError("ApplySwitchAsync error: {Error}", output);
+        else if (output.Contains("SKIP")) _logger.LogInformation("VM {Vm} already on '{Switch}' — no reconnect", vmName, switchName);
+        else                              _logger.LogInformation("Switch applied: {Vm} → {Switch}", vmName, switchName);
     }
 
     // The bind sequence toggles AllowManagementOS and re-homes the external adapter, which is
@@ -41,7 +50,7 @@ public sealed class HyperVManager : IDisposable
 
     /// <summary>
     /// Binds a Hyper-V virtual switch to a physical NIC (makes it External, with the host
-    /// sharing the adapter).
+    /// sharing the adapter) — but only when it isn't already in that exact state.
     ///
     /// Host sharing is detached (<c>-AllowManagementOS $false</c>) <em>before</em> the external
     /// adapter is changed, then re-enabled.  This forces Windows to remove the previous host
@@ -49,17 +58,28 @@ public sealed class HyperVManager : IDisposable
     /// adapter orphans the old <c>vEthernet (&lt;switch&gt;)</c> NIC, and those accumulate across
     /// rebinds — which locks the switch's settings and pollutes host routing with stale default
     /// routes.  The two-step keeps exactly one management vNIC alive.
+    ///
+    /// That toggle briefly drops the host's vNIC, so it is guarded by a check: if the switch is
+    /// already External, sharing with the management OS, and bound to the target adapter, nothing
+    /// is done.  This stops the host network flickering on every launch / redundant evaluation.
     /// </summary>
     public async Task UpdateSwitchBindingAsync(string switchName, string adapterName)
     {
-        _logger.LogInformation("Binding switch '{Switch}' → adapter '{Adapter}'", switchName, adapterName);
-        var (ok, output) = await RunAsync(
-            $"Set-VMSwitch -Name '{Esc(switchName)}' -AllowManagementOS $false; " +
-            $"Set-VMSwitch -Name '{Esc(switchName)}' -NetAdapterName '{Esc(adapterName)}' -AllowManagementOS $true",
-            BindTimeout);
+        var sw  = Esc(switchName);
+        var nic = Esc(adapterName);
+        var script =
+            $"$want = (Get-NetAdapter -Name '{nic}' -ErrorAction SilentlyContinue).InterfaceDescription; " +
+            $"$s = Get-VMSwitch -Name '{sw}' -ErrorAction SilentlyContinue; " +
+             "if ($s -and $s.SwitchType -eq 'External' -and $s.AllowManagementOS -and $want -and " +
+             "$s.NetAdapterInterfaceDescription -eq $want) { 'SKIP' } else { " +
+            $"Set-VMSwitch -Name '{sw}' -AllowManagementOS $false; " +
+            $"Set-VMSwitch -Name '{sw}' -NetAdapterName '{nic}' -AllowManagementOS $true; 'BOUND' }}";
 
-        if (ok) _logger.LogInformation("Switch '{Switch}' bound to '{Adapter}'", switchName, adapterName);
-        else    _logger.LogError("UpdateSwitchBindingAsync error: {Error}", output);
+        var (ok, output) = await RunAsync(script, BindTimeout);
+
+        if (!ok)                          _logger.LogError("UpdateSwitchBindingAsync error: {Error}", output);
+        else if (output.Contains("SKIP")) _logger.LogInformation("Switch '{Switch}' already bound to '{Adapter}' — no rebind", switchName, adapterName);
+        else                              _logger.LogInformation("Switch '{Switch}' bound to '{Adapter}'", switchName, adapterName);
     }
 
     /// <summary>Returns the IPv4 addresses reported by the VM's network adapter (may be empty).</summary>
