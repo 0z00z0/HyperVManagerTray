@@ -19,10 +19,17 @@ public sealed record MatchResult(string RuleName, string VirtualSwitch, IReadOnl
 /// <summary>Network details of the current primary host adapter, used by "Add current network" feature.</summary>
 public sealed record CurrentNetworkInfo(
     string AdapterDescription,
-    string Mac,          // colon-separated, e.g. "48:65:EE:18:86:EF"
+    string Mac,          // colon-separated, e.g. "AA:BB:CC:DD:EE:FF"
     string Ip,           // e.g. "10.0.0.45"
     string IpCidr);      // e.g. "10.0.0.0/23"
 
+/// <summary>
+/// Core rule-evaluation logic: inspects the host's live network adapters and decides which
+/// virtual switch the VMs should use.  Handles the Hyper-V bridging quirk where an external
+/// switch with AllowManagementOS=true moves the physical NIC's IP onto a virtual NIC, and
+/// filters out WFP/NDIS filter-layer adapters that share a MAC/IP with the real NIC.
+/// All members are pure/stateless.
+/// </summary>
 public static class AdapterMatcher
 {
     /// <summary>Returns details for the current primary active adapter, or null if none found.</summary>
@@ -50,6 +57,10 @@ public static class AdapterMatcher
             IpCidr: CalculateCidr(unicast));
     }
 
+    /// <summary>
+    /// Evaluates the config rules (in priority order) against the current host network and
+    /// returns the matching rule's switch/VMs, or the fallback if nothing matched.
+    /// </summary>
     public static MatchResult Evaluate(AppConfig config)
     {
         var (physical, virtual_) = SplitAdapters();
@@ -263,7 +274,7 @@ public static class AdapterMatcher
         return desc;
     }
 
-    // Formats "4865EE1886EF" → "48:65:EE:18:86:EF"
+    // Formats "AABBCCDDEEFF" → "AA:BB:CC:DD:EE:FF"
     private static string FormatMac(string raw)
     {
         var clean = raw.Replace(":", "").Replace("-", "").ToUpperInvariant();

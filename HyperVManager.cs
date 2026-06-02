@@ -23,6 +23,7 @@ public sealed class HyperVManager : IDisposable
 
     // ── Public API ────────────────────────────────────────────────────────────
 
+    /// <summary>Connects a VM's NIC to the given virtual switch (Connect-VMNetworkAdapter).</summary>
     public async Task ApplySwitchAsync(string vmName, string nicName, string switchName)
     {
         _logger.LogInformation("Connecting {Vm}/{Nic} → {Switch}", vmName, nicName, switchName);
@@ -44,6 +45,7 @@ public sealed class HyperVManager : IDisposable
         else    _logger.LogError("UpdateSwitchBindingAsync error: {Error}", output);
     }
 
+    /// <summary>Returns the IPv4 addresses reported by the VM's network adapter (may be empty).</summary>
     public async Task<string[]> GetVmIpAddressesAsync(string vmName)
     {
         var (ok, output) = await RunAsync(

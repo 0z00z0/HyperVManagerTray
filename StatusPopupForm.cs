@@ -8,8 +8,7 @@ namespace HyperVNetworkSwitcher;
 /// (HOST NETWORK / VIRTUAL MACHINE).  Positioned just above the system tray
 /// in the bottom-right corner of the working area.
 ///
-/// Shown on tray left-click (toggle) and on hover (600 ms delay).
-/// Auto-hides when it loses focus.
+/// Toggled by a left-click on the tray icon; auto-hides when it loses focus.
 /// </summary>
 internal sealed class StatusPopupForm : Form
 {

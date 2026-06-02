@@ -5,6 +5,11 @@ using Microsoft.Extensions.Logging;
 
 namespace HyperVNetworkSwitcher;
 
+/// <summary>
+/// Loads <c>config.json</c>, exposes the current <see cref="AppConfig"/>, and watches the file
+/// for changes (debounced) so edits take effect without a restart.  Rules are kept sorted by
+/// ascending priority after every load.
+/// </summary>
 public sealed class ConfigManager : IDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -19,8 +24,10 @@ public sealed class ConfigManager : IDisposable
     private readonly System.Threading.Timer _debounceTimer;
     private AppConfig _config = new();
 
+    /// <summary>Raised after the config is reloaded (file change or rule addition).</summary>
     public event EventHandler<AppConfig>? ConfigReloaded;
 
+    /// <summary>The most recently loaded configuration.</summary>
     public AppConfig Current => _config;
 
     public ConfigManager(string configPath, ILogger<ConfigManager> logger)
@@ -39,6 +46,7 @@ public sealed class ConfigManager : IDisposable
         Load();
     }
 
+    /// <summary>Reads and deserialises config.json, ordering rules by priority. Errors are logged, not thrown.</summary>
     public void Load()
     {
         try
@@ -103,6 +111,7 @@ public sealed class ConfigManager : IDisposable
         }
     }
 
+    /// <summary>Returns the expected config.json path: next to the executable.</summary>
     public static string GetConfigPath() =>
         Path.Combine(AppContext.BaseDirectory, "config.json");
 

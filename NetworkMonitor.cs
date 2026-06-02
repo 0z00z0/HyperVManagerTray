@@ -4,6 +4,11 @@ using Microsoft.Extensions.Logging;
 
 namespace HyperVNetworkSwitcher;
 
+/// <summary>
+/// Watches the host's network state (via <see cref="NetworkChange"/>), re-evaluates the
+/// config rules on each change (debounced), and drives <see cref="HyperVManager"/> to bind
+/// the virtual switch and reconnect the VMs.  Redundant switch changes are skipped.
+/// </summary>
 public sealed class NetworkMonitor : IDisposable
 {
     private readonly ConfigManager _config;
@@ -15,8 +20,10 @@ public sealed class NetworkMonitor : IDisposable
     // redundant re-binds (which cause a brief VM network drop) when nothing has changed.
     private string? _lastBoundAdapterInterface;
 
+    /// <summary>Raised after a switch change has been applied (used to update the tray UI).</summary>
     public event EventHandler<MatchResult>? SwitchApplied;
 
+    /// <summary>The most recently applied match result, or null if nothing applied yet.</summary>
     public MatchResult? LastApplied => _lastApplied;
 
     public NetworkMonitor(ConfigManager config, HyperVManager hyperV, ILogger<NetworkMonitor> logger)
@@ -31,6 +38,7 @@ public sealed class NetworkMonitor : IDisposable
         _config.ConfigReloaded += (_, _) => Schedule();
     }
 
+    /// <summary>Triggers an immediate first evaluation (called once at startup).</summary>
     public void Start() => Schedule();
 
     private void OnNetworkChanged(object? sender, EventArgs e) =>
@@ -61,12 +69,14 @@ public sealed class NetworkMonitor : IDisposable
         }
     }
 
+    /// <summary>Re-evaluates rules and applies the result immediately, bypassing the "no change" check.</summary>
     public async Task ForceEvaluateAsync()
     {
         var result = AdapterMatcher.Evaluate(_config.Current);
         await ApplyAsync(result);
     }
 
+    /// <summary>Forces a specific VM onto a specific switch, ignoring rules (used by the tray override menu).</summary>
     public async Task ManualOverrideAsync(string vmName, string switchName)
     {
         _logger.LogInformation("Manual override: {Vm} → {Switch}", vmName, switchName);

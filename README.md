@@ -2,6 +2,9 @@
 
 A Windows system-tray application that automatically connects your Hyper-V virtual machine to the correct virtual network switch based on which physical network the host is connected to.
 
+> ### 🤖 100% vibe coded
+> This project was written **entirely** by an AI agent ([Claude](https://www.anthropic.com/claude), via Claude Code) through conversational prompts — design, implementation, debugging, deployment scripts, and this README. No line of the source was hand-written by a human. It's shared as-is, as an experiment in what end-to-end "vibe coding" produces. Read the code with that in mind, and review before relying on it.
+
 ---
 
 ## What it does
@@ -10,7 +13,7 @@ When you move between networks — office LAN, home Wi-Fi, mobile hotspot — th
 
 | Host network | VM should use |
 |---|---|
-| Office LAN (`10.0.0.0/23`, adapter `48:65:EE:18:86:EF`) | **Bridged** switch (full LAN access) |
+| Office LAN (`10.0.0.0/23`, adapter `AA:BB:CC:DD:EE:FF`) | **Bridged** switch (full LAN access) |
 | Anything else | **Default Switch** (NAT, always works) |
 
 The app watches for network changes in the background. The moment the host connects to a recognised network, the VM's NIC is silently reconnected to the right Hyper-V virtual switch. If no rule matches, it falls back to the Default Switch automatically.
@@ -141,7 +144,7 @@ schtasks /Query /TN "HyperVNetworkSwitcher" /V /FO LIST
 {
   "virtualMachines": [
     {
-      "name":          "vDev-2026",        // Hyper-V VM name (exact)
+      "name":          "MyVM",             // Hyper-V VM name (exact)
       "nicName":       "Network Adapter",  // NIC name inside Hyper-V manager
       "defaultSwitch": "Default Switch"    // Fallback switch for this VM
     }
@@ -151,16 +154,16 @@ schtasks /Query /TN "HyperVNetworkSwitcher" /V /FO LIST
       "name":          "Office LAN",       // Shown in the tray status
       "priority":      1,                  // Lower = evaluated first
       "conditions": {
-        "adapterMac":  "48:65:EE:18:86:EF", // Host NIC MAC (optional)
+        "adapterMac":  "AA:BB:CC:DD:EE:FF", // Host NIC MAC (optional)
         "ipCidr":      "10.0.0.0/23"         // Host IP must fall in this range (optional)
       },
       "virtualSwitch": "Bridged",          // Hyper-V switch to connect to
-      "targetVms":     ["vDev-2026"]       // VMs to reconnect
+      "targetVms":     ["MyVM"]            // VMs to reconnect
     }
   ],
   "fallback": {
     "virtualSwitch": "Default Switch",     // Used when no rule matches
-    "targetVms":     ["vDev-2026"]
+    "targetVms":     ["MyVM"]
   }
 }
 ```
@@ -170,6 +173,30 @@ schtasks /Query /TN "HyperVNetworkSwitcher" /V /FO LIST
 **Option A — from the tray:** Connect to the network, then right-click the tray icon → **Add current network as bridged**. The app reads the current adapter MAC and subnet automatically.
 
 **Option B — manually:** Add an object to the `rules` array in `config.json`. Both `adapterMac` and `ipCidr` are optional; omitting both means the rule matches any active adapter.
+
+---
+
+## Built with
+
+- **Language / runtime:** C# on **.NET 10** (`net10.0-windows`), Windows Forms for the tray UI
+- **OS integration:** Win32 P/Invoke (`iphlpapi.dll` `GetBestInterface`, `user32.dll` `DestroyIcon`), and the Windows-bundled `powershell.exe` (Hyper-V cmdlets) and `schtasks.exe` (auto-start task)
+
+### External libraries
+
+The only third-party packages are two Microsoft NuGet libraries; everything else is the .NET base class library.
+
+| Package | Version | Author | Purpose | License |
+|---|---|---|---|---|
+| [Microsoft.Extensions.Logging](https://www.nuget.org/packages/Microsoft.Extensions.Logging) | 10.0.8 | Microsoft | Logging abstraction used throughout | MIT |
+| [Microsoft.Extensions.Logging.Console](https://www.nuget.org/packages/Microsoft.Extensions.Logging.Console) | 10.0.8 | Microsoft | Console sink (dev-time diagnostics) | MIT |
+
+No non-Microsoft / community dependencies are used.
+
+---
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
 
 ---
 

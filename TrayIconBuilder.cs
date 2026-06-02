@@ -5,13 +5,16 @@ using System.Runtime.InteropServices;
 
 namespace HyperVNetworkSwitcher;
 
+/// <summary>
+/// Draws the 16×16 tray icon at runtime (no image assets): a small network-switch glyph on a
+/// rounded background — blue when the VM is bridged to a physical LAN, grey for NAT/Default Switch.
+/// </summary>
 internal static class TrayIconBuilder
 {
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool DestroyIcon(nint handle);
 
-    // Blue  = bridged to physical LAN
-    // Grey  = NAT / Default Switch
+    /// <summary>Builds the tray icon. <paramref name="bridged"/> selects blue (true) vs grey (false).</summary>
     internal static Icon Build(bool bridged)
     {
         var accent = bridged

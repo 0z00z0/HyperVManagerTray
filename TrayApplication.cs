@@ -4,6 +4,12 @@ using Microsoft.Win32;
 
 namespace HyperVNetworkSwitcher;
 
+/// <summary>
+/// The system-tray UI and application context.  Owns the <see cref="NotifyIcon"/>, its
+/// context menu, and the status popup; wires user actions (force re-evaluate, manual
+/// override, add current network, open config/log, toggle startup, exit) to the underlying
+/// services; and updates the icon colour and popup whenever a switch change is applied.
+/// </summary>
 public sealed class TrayApplication : ApplicationContext, IDisposable
 {
     private const string AppName    = "HyperVNetworkSwitcher";

@@ -7,11 +7,27 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!-- Identity / packaging metadata -->
+    <AssemblyTitle>HyperV Network Switcher</AssemblyTitle>
+    <Product>HyperV Network Switcher</Product>
+    <Description>System-tray app that auto-connects a Hyper-V VM to the right virtual switch based on the host's active network.</Description>
+    <Version>1.1.0</Version>
+    <Authors>ezpl</Authors>
+    <RepositoryUrl>https://github.com/ezpl/HyperVNetworkSwitcher</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+
+    <!-- Emit an XML doc file from the /// comments.  Publish flags (self-contained,
+         single-file, win-x64 RID) are passed on the publish command line / Install.ps1,
+         so normal `dotnet build` and IDE design-time builds stay framework-dependent. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- CS1591: don't warn about any members still missing XML doc comments -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.8" />
   </ItemGroup>
 
   <ItemGroup>

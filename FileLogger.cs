@@ -2,8 +2,10 @@ using Microsoft.Extensions.Logging;
 
 namespace HyperVNetworkSwitcher;
 
+/// <summary><see cref="ILoggingBuilder"/> extension for registering the simple file logger.</summary>
 public static class FileLoggerExtensions
 {
+    /// <summary>Adds a logger that appends each entry as a line to <paramref name="path"/>.</summary>
     public static ILoggingBuilder AddSimpleFileLogger(this ILoggingBuilder builder, string path)
     {
         builder.AddProvider(new FileLoggerProvider(path));
@@ -11,6 +13,7 @@ public static class FileLoggerExtensions
     }
 }
 
+/// <summary>Provides <see cref="FileLogger"/> instances that share a single append-mode writer.</summary>
 internal sealed class FileLoggerProvider(string path) : ILoggerProvider
 {
     private readonly StreamWriter _writer = new(path, append: true) { AutoFlush = true };
@@ -21,6 +24,7 @@ internal sealed class FileLoggerProvider(string path) : ILoggerProvider
     public void Dispose() => _writer.Dispose();
 }
 
+/// <summary>Minimal <see cref="ILogger"/> that writes timestamped lines to a shared <see cref="StreamWriter"/>.</summary>
 internal sealed class FileLogger(string category, StreamWriter writer, Lock lockObj) : ILogger
 {
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;

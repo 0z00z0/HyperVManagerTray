@@ -18,3 +18,4 @@ publish/
 # User-specific config (copy is in %LOCALAPPDATA% after install)
 # Uncomment the next line if you don't want to track the sample config:
 # config.json
+CodeDocumentation*
