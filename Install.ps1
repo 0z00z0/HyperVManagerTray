@@ -1,41 +1,37 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Publishes and installs HyperVNetworkSwitcher to the current user's Programs folder.
+    Publishes and installs HyperVNetworkSwitcher (WinUI 3) to the current user's Programs folder.
 
 .DESCRIPTION
     1. Stops any running instance of the app.
-    2. Runs 'dotnet publish' to produce a self-contained single-file executable.
-    3. Copies the executable to %LOCALAPPDATA%\Programs\HyperVNetworkSwitcher\.
-    4. Copies config.json only if one does not already exist at the destination
-       (preserves any configuration you have already edited).
-    5. Optionally launches the app with elevation.
+    2. Runs 'dotnet publish' to produce a self-contained WinUI 3 build (a folder of files,
+       including the .pri resource index — NOT a single exe).
+    3. Mirrors the publish folder to %LOCALAPPDATA%\Programs\HyperVNetworkSwitcher\,
+       preserving any existing config.json.
+    4. Removes the obsolete HKCU\Run startup value left by older versions.
+    5. Optionally launches the app (UAC prompt — the app requires elevation for Hyper-V).
 
 .PARAMETER Launch
-    If specified, launches the app immediately after installation (UAC prompt will appear).
+    Launch the app immediately after installation.
 
 .EXAMPLE
     .\Install.ps1
     .\Install.ps1 -Launch
 #>
-param(
-    [switch]$Launch
-)
+param([switch]$Launch)
 
 $ErrorActionPreference = 'Stop'
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
 $projectDir = $PSScriptRoot
 $installDir = Join-Path $env:LOCALAPPDATA 'Programs\HyperVNetworkSwitcher'
-$publishDir = Join-Path $projectDir 'bin\Release\net10.0-windows\win-x64\publish'
+$publishDir = Join-Path $projectDir 'bin\Release\net10.0-windows10.0.26100.0\win-x64\publish'
 $exeName    = 'HyperVNetworkSwitcher.exe'
-$configName = 'config.json'
 $destExe    = Join-Path $installDir $exeName
-$destConfig = Join-Path $installDir $configName
 
 Write-Host ''
 Write-Host '================================================' -ForegroundColor Cyan
-Write-Host '  HyperV Network Switcher  --  Install'          -ForegroundColor Cyan
+Write-Host '  HyperV Network Switcher  --  Install (WinUI 3)' -ForegroundColor Cyan
 Write-Host '================================================' -ForegroundColor Cyan
 Write-Host ''
 
@@ -50,52 +46,42 @@ if ($running) {
 }
 
 # ── Step 2: Publish ────────────────────────────────────────────────────────────
-Write-Host '[2/5] Publishing self-contained executable...' -ForegroundColor Cyan
+Write-Host '[2/5] Publishing self-contained WinUI 3 build...' -ForegroundColor Cyan
 Push-Location $projectDir
 try {
-    dotnet publish -c Release -r win-x64 --self-contained true `
-        -p:PublishSingleFile=true -p:DebugType=none --nologo -v quiet
-    if ($LASTEXITCODE -ne 0) {
-        throw "dotnet publish failed with exit code $LASTEXITCODE"
-    }
+    dotnet publish HyperVNetworkSwitcher.csproj -c Release -r win-x64 --self-contained true --nologo -v quiet
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
 } finally {
     Pop-Location
 }
+if (-not (Test-Path (Join-Path $publishDir $exeName))) { throw "Published exe not found at: $publishDir" }
+if (-not (Test-Path (Join-Path $publishDir 'HyperVNetworkSwitcher.pri'))) {
+    throw "HyperVNetworkSwitcher.pri missing from publish output (WinUI would crash at startup)."
+}
 Write-Host '      Publish OK.' -ForegroundColor Green
 
-# ── Step 3: Deploy executable ──────────────────────────────────────────────────
+# ── Step 3: Deploy (mirror folder, preserve config.json) ──────────────────────
 Write-Host '[3/5] Deploying to install directory...' -ForegroundColor Cyan
+if (-not (Test-Path $installDir)) { New-Item -ItemType Directory -Path $installDir -Force | Out-Null }
 
-if (-not (Test-Path $installDir)) {
-    New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-}
+# /MIR mirrors the folder; /XF config.json keeps any user-edited config untouched.
+robocopy $publishDir $installDir /MIR /XF config.json /NFL /NDL /NJH /NJS /NP | Out-Null
+# robocopy uses 0-7 for success (1 = files copied). Only 8+ is a real failure.
+if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
+$global:LASTEXITCODE = 0
+Write-Host "      Mirrored $((Get-ChildItem $publishDir -File).Count)+ files -> $installDir" -ForegroundColor Green
 
-$srcExe = Join-Path $publishDir $exeName
-if (-not (Test-Path $srcExe)) {
-    throw "Published executable not found at: $srcExe"
-}
-Copy-Item $srcExe $destExe -Force
-Write-Host "      $exeName -> $installDir" -ForegroundColor Green
-
-# ── Step 4: Deploy config.json (preserve existing) ────────────────────────────
+# ── Step 4: Deploy config.json (only if absent) ───────────────────────────────
 Write-Host '[4/5] Checking config.json...' -ForegroundColor Cyan
-
+$destConfig = Join-Path $installDir 'config.json'
 if (Test-Path $destConfig) {
     Write-Host '      config.json already exists -- keeping your existing config.' -ForegroundColor Yellow
 } else {
-    $srcConfig = Join-Path $projectDir $configName
-    if (Test-Path $srcConfig) {
-        Copy-Item $srcConfig $destConfig -Force
-        Write-Host "      config.json -> $installDir" -ForegroundColor Green
-    } else {
-        Write-Warning "config.json not found in project directory. Create one at: $destConfig"
-    }
+    Copy-Item (Join-Path $publishDir 'config.json') $destConfig -Force
+    Write-Host '      config.json -> install dir' -ForegroundColor Green
 }
 
-# ── Step 5: Remove obsolete HKCU\Run entry ─────────────────────────────────────
-# Older versions used a HKCU\...\Run value for auto-start, which never worked for
-# this elevated app. Auto-start is now a Scheduled Task (toggled from the tray menu).
-# Remove the dead Run-key value if present so it doesn't linger.
+# ── Step 5: Remove obsolete HKCU\Run entry ────────────────────────────────────
 Write-Host '[5/5] Removing obsolete startup entry (if any)...' -ForegroundColor Cyan
 $runKey = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
 if (Get-ItemProperty -Path $runKey -Name 'HyperVNetworkSwitcher' -ErrorAction SilentlyContinue) {
@@ -105,33 +91,25 @@ if (Get-ItemProperty -Path $runKey -Name 'HyperVNetworkSwitcher' -ErrorAction Si
     Write-Host '      None found.' -ForegroundColor DarkGray
 }
 
-# ── Summary ────────────────────────────────────────────────────────────────────
 Write-Host ''
 Write-Host 'Installation complete.' -ForegroundColor Green
-Write-Host ''
 Write-Host "  Executable  : $destExe"
 Write-Host "  Config      : $destConfig"
 Write-Host "  Logs        : $env:APPDATA\HyperVNetworkSwitcher\switcher.log"
 Write-Host ''
-Write-Host 'Note: the app requires elevation (UAC) to control Hyper-V switches.' -ForegroundColor DarkGray
+Write-Host 'Note: the app requires elevation (UAC) to control Hyper-V.' -ForegroundColor DarkGray
 Write-Host ''
 
-# ── Launch ─────────────────────────────────────────────────────────────────────
 if (-not $Launch) {
     $answer = Read-Host 'Launch HyperVNetworkSwitcher now? [y/N]'
     $Launch = $answer -match '^[Yy]$'
 }
-
 if ($Launch) {
-    # The app manifest already requests requireAdministrator, so Windows will
-    # show a UAC prompt automatically -- no need to use -Verb RunAs here.
     try {
         Write-Host 'Launching (UAC prompt will appear)...' -ForegroundColor Cyan
         Start-Process $destExe
         Write-Host 'Launched.' -ForegroundColor Green
     } catch {
-        Write-Host ''
-        Write-Host 'Could not launch automatically. Start it manually:' -ForegroundColor Yellow
-        Write-Host "  $destExe" -ForegroundColor White
+        Write-Host "Could not launch automatically. Start it manually:`n  $destExe" -ForegroundColor Yellow
     }
 }

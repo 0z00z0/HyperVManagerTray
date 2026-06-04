@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Window
+    x:Class="HyperVNetworkSwitcher.UI.DashboardWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop Kind="BaseAlt" />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="Root" Padding="18,14,18,16">
+        <StackPanel Spacing="10">
+
+            <TextBlock Text="HyperV Network Switcher"
+                       FontSize="13" FontWeight="SemiBold"
+                       Foreground="{ThemeResource TextFillColorPrimaryBrush}"/>
+
+            <!-- HOST NETWORK -->
+            <StackPanel Spacing="4">
+                <TextBlock Text="HOST NETWORK" FontSize="10" FontWeight="SemiBold" CharacterSpacing="120"
+                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"/>
+                <Grid ColumnSpacing="10" RowSpacing="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="68"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Adapter" Style="{StaticResource LabelStyle}"/>
+                    <TextBlock Grid.Row="0" Grid.Column="1" x:Name="AdapterText" Text="—" Style="{StaticResource ValueStyle}"/>
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="IP"      Style="{StaticResource LabelStyle}"/>
+                    <TextBlock Grid.Row="1" Grid.Column="1" x:Name="IpText"      Text="—" Style="{StaticResource ValueStyle}"/>
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Gateway" Style="{StaticResource LabelStyle}"/>
+                    <TextBlock Grid.Row="2" Grid.Column="1" x:Name="GatewayText" Text="—" Style="{StaticResource ValueStyle}"/>
+                    <TextBlock Grid.Row="3" Grid.Column="0" Text="DNS"     Style="{StaticResource LabelStyle}"/>
+                    <TextBlock Grid.Row="3" Grid.Column="1" x:Name="DnsText"     Text="—" Style="{StaticResource ValueStyle}"/>
+                </Grid>
+            </StackPanel>
+
+            <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+
+            <!-- VIRTUAL MACHINE (switch status) -->
+            <StackPanel Spacing="4">
+                <TextBlock Text="VIRTUAL MACHINE" FontSize="10" FontWeight="SemiBold" CharacterSpacing="120"
+                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"/>
+                <Grid ColumnSpacing="10" RowSpacing="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="68"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="VM"     Style="{StaticResource LabelStyle}"/>
+                    <TextBlock Grid.Row="0" Grid.Column="1" x:Name="VmText"     Text="—" Style="{StaticResource ValueStyle}"/>
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Switch" Style="{StaticResource LabelStyle}"/>
+                    <TextBlock Grid.Row="1" Grid.Column="1" x:Name="SwitchText" Text="—" Style="{StaticResource ValueStyle}"/>
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Rule"   Style="{StaticResource LabelStyle}"/>
+                    <TextBlock Grid.Row="2" Grid.Column="1" x:Name="RuleText"   Text="—" Style="{StaticResource ValueStyle}"/>
+                </Grid>
+            </StackPanel>
+
+            <!-- Per-VM cards are added here in Stage B -->
+            <StackPanel x:Name="VmPanel" Spacing="8"/>
+        </StackPanel>
+    </Grid>
+</Window>

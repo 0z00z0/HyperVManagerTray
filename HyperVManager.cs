@@ -1,5 +1,7 @@
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using HyperVNetworkSwitcher.Models;
 
 namespace HyperVNetworkSwitcher;
 
@@ -95,6 +97,82 @@ public sealed class HyperVManager : IDisposable
                      .Select(l => l.Trim())
                      .Where(l => l.Length > 0)
                      .ToArray();
+    }
+
+    // ── VM power control ────────────────────────────────────────────────────────
+
+    public Task StartVmAsync(string vm)    => VmActionAsync(vm, $"Start-VM -Name '{Esc(vm)}'",          "started");
+    public Task ShutdownVmAsync(string vm) => VmActionAsync(vm, $"Stop-VM -Name '{Esc(vm)}' -Force",     "shut down");   // graceful
+    public Task SuspendVmAsync(string vm)  => VmActionAsync(vm, $"Suspend-VM -Name '{Esc(vm)}'",         "paused");
+    public Task SaveVmAsync(string vm)     => VmActionAsync(vm, $"Save-VM -Name '{Esc(vm)}'",            "saved");
+    public Task ResumeVmAsync(string vm)   => VmActionAsync(vm, $"Resume-VM -Name '{Esc(vm)}'",          "resumed");
+
+    /// <summary>Starts the VM, or resumes it if currently Paused (covers Off/Saved via Start-VM).</summary>
+    public Task StartOrResumeVmAsync(string vm) => VmActionAsync(vm,
+        $"$v = Get-VM -Name '{Esc(vm)}' -ErrorAction Stop; " +
+        $"if ($v.State -eq 'Paused') {{ Resume-VM -Name '{Esc(vm)}' }} else {{ Start-VM -Name '{Esc(vm)}' }}",
+        "started/resumed");
+
+    private async Task VmActionAsync(string vmName, string script, string verb)
+    {
+        var (ok, output) = await RunAsync(script);
+        if (ok) _logger.LogInformation("VM {Vm} {Verb}", vmName, verb);
+        else    _logger.LogError("VM {Vm} {Verb} failed: {Error}", vmName, verb, output);
+    }
+
+    // ── VM status / metrics ─────────────────────────────────────────────────────
+
+    /// <summary>Queries live state + metrics for the named VMs (one PowerShell call).</summary>
+    public async Task<IReadOnlyList<VmStatus>> GetVmStatusesAsync(IEnumerable<string> names)
+    {
+        var quoted = names.Select(n => $"'{Esc(n)}'").ToList();
+        if (quoted.Count == 0) return [];
+
+        var script =
+            "$ProgressPreference='SilentlyContinue'; " +
+            $"Get-VM -Name {string.Join(",", quoted)} -ErrorAction SilentlyContinue | ForEach-Object {{ " +
+            "[PSCustomObject]@{ Name = $_.Name; State = $_.State.ToString(); Cpu = [int]$_.CPUUsage; " +
+            "MemAssigned = [int64]$_.MemoryAssigned; MemDemand = [int64]$_.MemoryDemand; " +
+            "MemMax = [int64]$_.MemoryMaximum; Uptime = $_.Uptime.ToString() } } | ConvertTo-Json -Depth 3";
+
+        var (ok, output) = await RunAsync(script);
+        return DeserializeArrayOrObject<VmStatus>(ok ? output : "");
+    }
+
+    /// <summary>Sums each VM's attached VHD file sizes on the host (slower — call less often).</summary>
+    public async Task<IReadOnlyDictionary<string, long>> GetVmVhdSizesAsync(IEnumerable<string> names)
+    {
+        var quoted = names.Select(n => $"'{Esc(n)}'").ToList();
+        if (quoted.Count == 0) return new Dictionary<string, long>();
+
+        var script =
+            "$ProgressPreference='SilentlyContinue'; " +
+            $"Get-VM -Name {string.Join(",", quoted)} -ErrorAction SilentlyContinue | ForEach-Object {{ " +
+            "[PSCustomObject]@{ Name = $_.Name; Vhd = [int64](($_ | Get-VMHardDiskDrive | " +
+            "Get-VHD -ErrorAction SilentlyContinue | Measure-Object -Property FileSize -Sum).Sum) } } | ConvertTo-Json -Depth 3";
+
+        var (ok, output) = await RunAsync(script);
+        var list = DeserializeArrayOrObject<VhdEntry>(ok ? output : "");
+        return list.ToDictionary(e => e.Name, e => e.Vhd);
+    }
+
+    private sealed class VhdEntry { public string Name { get; set; } = ""; public long Vhd { get; set; } }
+
+    private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
+
+    /// <summary>Deserialises PS <c>ConvertTo-Json</c> output, which emits a bare object for a single item.</summary>
+    private static IReadOnlyList<T> DeserializeArrayOrObject<T>(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                return JsonSerializer.Deserialize<List<T>>(json, JsonOpts) ?? [];
+            var one = JsonSerializer.Deserialize<T>(json, JsonOpts);
+            return one is null ? [] : [one];
+        }
+        catch { return []; }
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────

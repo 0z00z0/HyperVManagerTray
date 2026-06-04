@@ -34,4 +34,10 @@ public sealed class NetworkRule
 
     /// <summary>Names of the VMs to reconnect to <see cref="VirtualSwitch"/>.</summary>
     public List<string> TargetVms { get; set; } = [];
+
+    /// <summary>
+    /// When true, the <see cref="TargetVms"/> are started (or resumed if paused) the moment this
+    /// rule becomes active.  They are never auto-stopped when the rule deactivates.
+    /// </summary>
+    public bool AutoStart { get; set; } = false;
 }

@@ -125,11 +125,40 @@ is cleaned up on toggle and by `Install.ps1`.
 ### 10. Pre-`Application.Run()` there is no WinForms `SynchronizationContext`
 `SynchronizationContext.Current` is null before the message loop starts, so posting UI updates
 via a captured context goes to the thread pool and races the first paint (empty popup on first
-click). **Fix:** the `TrayApplication` constructor pre-populates the popup **synchronously**.
+click). **Fix (historical, WinForms):** the old `TrayApplication` pre-populated the popup
+synchronously. Under WinUI this is gone — the dashboard refreshes itself before `AppWindow.Show()`.
 
 ---
 
-## Resource notes (reviewed 2026-06-02)
+## WinUI 3 migration (v2.0 — the app moved off WinForms)
+
+The UI was rewritten in **WinUI 3 / Windows App SDK** (unpackaged, `WindowsPackageType=None`) to
+match the sibling LenovoTray app: Mica dashboard, tray icon via **H.NotifyIcon.WinUI**, per-VM
+control cards. The network/Hyper-V core (`NetworkMonitor`, `AdapterMatcher`, `HyperVManager`,
+`ConfigManager`, `ProcessRunner`, `StartupManager`) ported **unchanged** — it was already UI-agnostic.
+
+Gotchas hit (and how they're handled):
+- **The `.pri` resource index.** An unpackaged WinUI publish must ship `<App>.pri` next to the exe,
+  or `Microsoft.UI.Xaml.dll` throws a stowed exception **0xC000027B** at startup. The `.csproj` has
+  a `CopyAppPriToPublish` target; `Install.ps1` verifies it landed.
+- **WinForms can't host a WinUI 3 window**, so this was a full UI migration, not a bolt-on. A hidden
+  `MainWindow` keeps the app alive while only the tray icon + popup are visible.
+- **Native tray menu caveat (H.NotifyIcon):** the right-click menu is rebuilt as a native Win32 menu
+  each time; XAML `Click`/`Opening` events do NOT fire — bind `Command` (`RelayCommand`) instead, and
+  resync dynamic items in `TrayMenu.RefreshState()` before it opens.
+- **UI thread marshaling** is now `DispatcherQueue.TryEnqueue` (was `SynchronizationContext.Post`).
+  `NetworkMonitor.SwitchApplied` still fires on a background thread.
+- **No `MessageBox`** in WinUI — small `MessageBoxW` P/Invokes in `NativeMethods` cover errors/confirms.
+- **Publish is a folder, not a single file.** `PublishSingleFile`/`EnableCompressionInSingleFile`
+  don't apply; `Install.ps1` mirrors the folder (robocopy, `/XF config.json`). `PublishTrimmed=false`
+  (WinUI + reflection-y JSON trim poorly) — so reflection-based `System.Text.Json` is kept;
+  `PublishReadyToRun=true` on Release for faster startup.
+- **Dashboard polling** (CPU/mem/VHD via `Get-VM`) runs on a `DispatcherTimer` **only between
+  `Activated` and hide/close** — preserving the zero-idle property when the dashboard is shut.
+
+---
+
+## Resource notes (reviewed 2026-06-02; WinForms-era figures)
 
 The app is already cheap: **~0 idle CPU** (fully event-driven — `NetworkChange` +
 `FileSystemWatcher`, no polling) and **~13–16 MB private memory**.

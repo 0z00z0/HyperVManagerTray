@@ -119,6 +119,10 @@ public sealed class NetworkMonitor : IDisposable
 
     private async Task ApplyAsync(MatchResult result)
     {
+        // Capture the previously-active rule so autostart fires only on a rule *transition*,
+        // not on every (debounced) re-evaluation of the same network.
+        var previousRule = _lastApplied?.RuleName;
+
         // When a specific rule matched, re-bind the Hyper-V virtual switch to the detected
         // physical adapter before connecting any VMs.  This is what makes an "Internal"
         // switch become an "External" (bridged) switch pointing at the right LAN NIC.
@@ -148,6 +152,21 @@ public sealed class NetworkMonitor : IDisposable
                 continue;
             }
             await _hyperV.ApplySwitchAsync(vmName, vm.NicName, result.VirtualSwitch);
+        }
+
+        // Per-network autostart: when this rule has just become active and opts in, start (or
+        // resume) its target VMs.  Never auto-stop on leaving — by design.
+        if (result.RuleName != previousRule && result.RuleName != "Fallback")
+        {
+            var rule = _config.Current.Rules.FirstOrDefault(r => r.Name == result.RuleName);
+            if (rule?.AutoStart == true)
+            {
+                foreach (var vmName in rule.TargetVms)
+                {
+                    _logger.LogInformation("Autostart: starting/resuming {Vm} for rule '{Rule}'", vmName, rule.Name);
+                    _ = _hyperV.StartOrResumeVmAsync(vmName);
+                }
+            }
         }
 
         _lastApplied = result;

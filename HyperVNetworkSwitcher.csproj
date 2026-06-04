@@ -2,41 +2,40 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>HyperVNetworkSwitcher</RootNamespace>
     <Nullable>enable</Nullable>
-    <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!-- WinUI 3 / Windows App SDK, unpackaged (no MSIX). -->
+    <UseWinUI>true</UseWinUI>
+    <WinUISDKReferences>false</WinUISDKReferences>
+    <WindowsPackageType>None</WindowsPackageType>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
 
     <!-- Identity / packaging metadata -->
     <AssemblyTitle>HyperV Network Switcher</AssemblyTitle>
     <Product>HyperV Network Switcher</Product>
-    <Description>System-tray app that auto-connects a Hyper-V VM to the right virtual switch based on the host's active network.</Description>
-    <Version>1.1.0</Version>
+    <Description>System-tray app that auto-connects a Hyper-V VM to the right virtual switch and controls VMs from a dashboard.</Description>
+    <Version>2.0.0</Version>
     <Authors>ezpl</Authors>
     <RepositoryUrl>https://github.com/ezpl/HyperVNetworkSwitcher</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
 
-    <!-- Emit an XML doc file from the /// comments.  Publish flags (self-contained,
-         single-file, win-x64 RID) are passed on the publish command line / Install.ps1,
-         so normal `dotnet build` and IDE design-time builds stay framework-dependent. -->
-    <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <!-- CS1591: don't warn about any members still missing XML doc comments -->
-    <NoWarn>$(NoWarn);CS1591</NoWarn>
-
-    <!-- InvariantGlobalization avoids initialising/loading ICU at runtime, trimming steady-state
-         private memory (~16 MB -> ~13 MB measured).  Safe here: no localized UI, and all
-         formatting/parsing is ordinal/invariant.  (It does not shrink the bundled self-contained
-         file without trimming, which WinForms doesn't support cleanly.)
-
-         NOTE: EnableCompressionInSingleFile was tried and reverted — it shrank the exe to ~49 MB
-         but decompresses assemblies into memory at startup, raising steady-state RAM by ~40 MB.
-         For an always-on tray app, lower RAM matters more than a smaller file on disk. -->
+    <!-- Drop the ~27 MB ICU payload (no localized UI; all formatting/parsing is ordinal/invariant). -->
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.8" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.1.3" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.1839" />
+    <PackageReference Include="H.NotifyIcon.WinUI" Version="2.4.1" />
+    <PackageReference Include="System.Drawing.Common" Version="10.0.8" />
   </ItemGroup>
 
   <ItemGroup>
@@ -44,5 +43,24 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
+
+  <!-- Publish properties: ReadyToRun on Release; trimming OFF (WinUI + reflection-y bits are
+       fragile to trim). JSON uses a source-generated context so config still works without it. -->
+  <PropertyGroup>
+    <PublishReadyToRun Condition="'$(Configuration)' != 'Debug'">true</PublishReadyToRun>
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+
+  <!--
+    `dotnet publish` for an unpackaged WinUI 3 app drops the app resource index
+    ($(AssemblyName).pri) holding the compiled XAML resources. Without it Microsoft.UI.Xaml.dll
+    crashes at startup (stowed exception 0xC000027B). Copy it into the publish output.
+  -->
+  <Target Name="CopyAppPriToPublish" AfterTargets="Publish"
+          Condition="Exists('$(OutDir)$(AssemblyName).pri')">
+    <Copy SourceFiles="$(OutDir)$(AssemblyName).pri"
+          DestinationFolder="$(PublishDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>
