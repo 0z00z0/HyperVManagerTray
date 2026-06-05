@@ -50,6 +50,10 @@ public sealed class HyperVManager : IDisposable
     // host adapter with no management vNIC (and therefore no IP) until the next successful bind.
     private static readonly TimeSpan BindTimeout = TimeSpan.FromSeconds(120);
 
+    // Save-VM writes all assigned RAM to disk — can take several minutes for large VMs.
+    // Stop-VM (graceful) sends a shutdown signal and waits for the guest OS to finish.
+    private static readonly TimeSpan SlowVmTimeout = TimeSpan.FromMinutes(5);
+
     /// <summary>
     /// Binds a Hyper-V virtual switch to a physical NIC (makes it External, with the host
     /// sharing the adapter) — but only when it isn't already in that exact state.
@@ -101,11 +105,13 @@ public sealed class HyperVManager : IDisposable
 
     // ── VM power control ────────────────────────────────────────────────────────
 
-    public Task StartVmAsync(string vm)    => VmActionAsync(vm, $"Start-VM -Name '{Esc(vm)}'",          "started");
-    public Task ShutdownVmAsync(string vm) => VmActionAsync(vm, $"Stop-VM -Name '{Esc(vm)}' -Force",     "shut down");   // graceful
-    public Task SuspendVmAsync(string vm)  => VmActionAsync(vm, $"Suspend-VM -Name '{Esc(vm)}'",         "paused");
-    public Task SaveVmAsync(string vm)     => VmActionAsync(vm, $"Save-VM -Name '{Esc(vm)}'",            "saved");
-    public Task ResumeVmAsync(string vm)   => VmActionAsync(vm, $"Resume-VM -Name '{Esc(vm)}'",          "resumed");
+    public Task StartVmAsync(string vm)    => VmActionAsync(vm, $"Start-VM -Name '{Esc(vm)}'",   "started");
+    /// <summary>Graceful shutdown via guest OS integration services (no -Force/-TurnOff).</summary>
+    public Task ShutdownVmAsync(string vm) => VmActionAsync(vm, $"Stop-VM -Name '{Esc(vm)}'",   "shut down", SlowVmTimeout);
+    public Task SuspendVmAsync(string vm)  => VmActionAsync(vm, $"Suspend-VM -Name '{Esc(vm)}'","paused");
+    /// <summary>Saves VM state (RAM) to disk — can take several minutes; uses extended timeout.</summary>
+    public Task SaveVmAsync(string vm)     => VmActionAsync(vm, $"Save-VM -Name '{Esc(vm)}'",   "saved",     SlowVmTimeout);
+    public Task ResumeVmAsync(string vm)   => VmActionAsync(vm, $"Resume-VM -Name '{Esc(vm)}'", "resumed");
 
     /// <summary>Starts the VM, or resumes it if currently Paused (covers Off/Saved via Start-VM).</summary>
     public Task StartOrResumeVmAsync(string vm) => VmActionAsync(vm,
@@ -113,9 +119,9 @@ public sealed class HyperVManager : IDisposable
         $"if ($v.State -eq 'Paused') {{ Resume-VM -Name '{Esc(vm)}' }} else {{ Start-VM -Name '{Esc(vm)}' }}",
         "started/resumed");
 
-    private async Task VmActionAsync(string vmName, string script, string verb)
+    private async Task VmActionAsync(string vmName, string script, string verb, TimeSpan? timeout = null)
     {
-        var (ok, output) = await RunAsync(script);
+        var (ok, output) = await RunAsync(script, timeout);
         if (ok) _logger.LogInformation("VM {Vm} {Verb}", vmName, verb);
         else    _logger.LogError("VM {Vm} {Verb} failed: {Error}", vmName, verb, output);
     }

@@ -48,6 +48,33 @@ but are **not valid `Set-VMSwitch -NetAdapterName` targets** — binding to one 
 **Fix:** `IsFilterLayerAdapter()` excludes anything whose name/description contains `-WFP `,
 `-NDIS `, or `LightWeight Filter`. `FriendlyAdapterName()` also strips those suffixes for display.
 
+### 2b. Windows Network Bridge (Multiplexor Driver) is another decoy  ⚠️ confirmed bug
+The Windows "Bridge Connections" feature (ncpa.cpl → select adapters → Bridge) creates a
+**Microsoft Network Adapter Multiplexor Driver** adapter (`ms_bridge` / `Network Bridge`).
+Unlike WFP adapters, it can appear on the LAN with a real DHCP-assigned IP and a metric-0
+default route — so `MatchingNic` found it, selected it as the physical adapter for the rule,
+and passed `"Network Bridge"` to `UpdateSwitchBindingAsync`. The result:
+- `Set-VMSwitch -NetAdapterName 'Network Bridge' -AllowManagementOS $true` ran
+- The MAC Bridge Windows service was set to **auto start** and the Multiplexor Driver bound
+  to the Hyper-V switch as its external NIC (confirmed in System event log at 16:28:22–27)
+- A second default-route adapter (`Network Bridge`) competed with `vEthernet (Bridged)` —
+  `Find-NetRoute` showed outbound traffic going through the wrong one, so the host appeared
+  to "use WiFi" even with the cable plugged in
+- The subsequent evaluation saw chaos, matched Fallback, and switched the VM to Default Switch
+
+**Root cause:** the Multiplexor Driver passes both `IsHyperVVirtual()` (description doesn't
+start with "Hyper-V Virtual") and the old `IsFilterLayerAdapter()` (no WFP/NDIS markers).
+
+**Fix (2026-06-05):** `IsFilterLayerAdapter()` now also excludes any adapter whose name or
+description contains `"Multiplexor"` (covers the Microsoft Network Adapter Multiplexor Driver
+and any LBFO team adapters, which have the same issue).
+
+**If you see a `Network Bridge` adapter in ncpa.cpl that you didn't intentionally create:**
+delete it (right-click → Delete). It will not affect Hyper-V's own `AllowManagementOS` bridge
+(`vEthernet (<switch>)`), which is a separate mechanism. To diagnose: run
+`Find-NetRoute -RemoteIPAddress 8.8.8.8` — the `InterfaceAlias` should be
+`vEthernet (<your switch>)`, not `Network Bridge`.
+
 ### 3. Orphaned `vEthernet (<switch>)` NICs accumulate on rebind  ⚠️ the big one
 Running `Set-VMSwitch -Name X -NetAdapterName <new> -AllowManagementOS $true` to **rebind a
 shared switch to a different adapter** leaves the previous host management vNIC behind. Over
