@@ -81,6 +81,9 @@ public partial class App : Application
 
             _monitor.SwitchApplied += OnSwitchApplied;
             _monitor.Start();
+
+            // Populate the tooltip immediately — before the first SwitchApplied fires.
+            _ = UpdateTooltipAsync();
         }
         catch (Exception ex)
         {
@@ -116,10 +119,57 @@ public partial class App : Application
                 _bridged = bridged;
                 SetTrayIcon(bridged);
             }
-            _trayIcon!.ToolTipText = $"Hyper-V Manager Tray: {result.VirtualSwitch}";
             _dashboard?.OnSwitchApplied(result);
         });
+
+        // Update tooltip with the new switch + fresh VM IPs (runs on thread-pool; posts to UI when done).
+        _ = UpdateTooltipAsync();
     }
+
+    /// <summary>
+    /// Builds a multi-line tooltip showing the active virtual switch and each VM's first IPv4
+    /// address, then posts it to the UI thread.  Never throws.
+    /// </summary>
+    private async Task UpdateTooltipAsync()
+    {
+        if (_hyperV is null || _config is null || _trayIcon is null) return;
+
+        try
+        {
+            var switchName = _monitor?.LastApplied?.VirtualSwitch ?? "No switch";
+            var vmNames    = _config.Current.VirtualMachines.Select(v => v.Name).ToList();
+            var ips        = await _hyperV.GetVmIpAddressesAsync(vmNames);
+
+            var lines = new System.Collections.Generic.List<string>
+            {
+                "Hyper-V Manager Tray",
+                TruncateLine($"Switch: {switchName}", 63),
+            };
+
+            foreach (var name in vmNames)
+            {
+                if (ips.TryGetValue(name, out var ip))
+                    lines.Add(TruncateLine($"{name}: {ip}", 63));
+            }
+
+            var tooltip = string.Join("\n", lines);
+            // Win32 balloon-tip tooltip hard limit is 127 chars total.
+            if (tooltip.Length > 127)
+                tooltip = tooltip[..126] + "…";
+
+            _ui.TryEnqueue(() => _trayIcon.ToolTipText = tooltip);
+        }
+        catch (Exception ex)
+        {
+            // Best-effort — never let a tooltip failure surface to the user.
+            try { _ui.TryEnqueue(() => _trayIcon.ToolTipText = "Hyper-V Manager Tray"); } catch { }
+            _ = ex; // suppress unused-variable warning
+        }
+    }
+
+    /// <summary>Truncates <paramref name="line"/> to <paramref name="maxLen"/> chars, appending "…" if trimmed.</summary>
+    private static string TruncateLine(string line, int maxLen) =>
+        line.Length <= maxLen ? line : line[..(maxLen - 1)] + "…";
 
     /// <summary>Swaps the tray icon (blue = bridged, grey = fallback), disposing the previous one.</summary>
     private void SetTrayIcon(bool bridged)

@@ -88,6 +88,55 @@ public sealed class HyperVManager : IDisposable
         else                              _logger.LogInformation("Switch '{Switch}' bound to '{Adapter}'", switchName, adapterName);
     }
 
+    /// <summary>
+    /// Queries the first IPv4 address for each of the named VMs in a single PowerShell call.
+    /// Returns a dictionary of VM name → first IPv4 address; VMs with no address are omitted.
+    /// Never throws — returns an empty dictionary on any error.
+    /// </summary>
+    public async Task<Dictionary<string, string>> GetVmIpAddressesAsync(IEnumerable<string> vmNames)
+    {
+        var names = vmNames.ToList();
+        if (names.Count == 0) return [];
+
+        _logger.LogDebug("Querying IP addresses for {Count} VM(s)...", names.Count);
+
+        // Build a PowerShell array literal: @('vm1','vm2')
+        var quoted = string.Join(",", names.Select(n => $"'{Esc(n)}'"));
+        var script =
+            $"Get-VM -Name @({quoted}) -ErrorAction SilentlyContinue | " +
+             "Get-VMNetworkAdapter | " +
+             "Where-Object { $_.IPAddresses.Count -gt 0 } | " +
+             "Select-Object @{N='Name';E={$_.VMName}}, " +
+             "@{N='IP';E={($_.IPAddresses | Where-Object { $_ -notmatch ':' } | Select-Object -First 1)}} | " +
+             "ConvertTo-Json -Compress";
+
+        var (ok, output) = await RunAsync(script);
+        if (!ok || string.IsNullOrWhiteSpace(output))
+        {
+            if (!ok) _logger.LogWarning("GetVmIpAddressesAsync failed: {Error}", output);
+            return [];
+        }
+
+        try
+        {
+            // ConvertTo-Json emits a bare object for a single VM — normalise to array.
+            var json = output.TrimStart();
+            if (!json.StartsWith('[')) json = $"[{json}]";
+
+            var entries = JsonSerializer.Deserialize<List<VmIpEntry>>(json, JsonOpts) ?? [];
+            return entries
+                .Where(e => !string.IsNullOrWhiteSpace(e.Name) && !string.IsNullOrWhiteSpace(e.IP))
+                .ToDictionary(e => e.Name, e => e.IP);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "GetVmIpAddressesAsync: failed to parse JSON output");
+            return [];
+        }
+    }
+
+    private sealed class VmIpEntry { public string Name { get; set; } = ""; public string IP { get; set; } = ""; }
+
     /// <summary>Returns the IPv4 addresses reported by the VM's network adapter (may be empty).</summary>
     public async Task<string[]> GetVmIpAddressesAsync(string vmName)
     {
