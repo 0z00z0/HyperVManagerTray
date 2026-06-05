@@ -8,7 +8,4 @@ public sealed class VmTarget
 
     /// <summary>Name of the VM's network adapter to reconnect (default "Network Adapter").</summary>
     public string NicName { get; set; } = "Network Adapter";
-
-    /// <summary>Switch this VM falls back to when no rule matches.</summary>
-    public string DefaultSwitch { get; set; } = "Default Switch";
 }

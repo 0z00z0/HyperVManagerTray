@@ -10,7 +10,7 @@
 #define AppName       "Hyper-V Manager Tray"
 #define AppExe        "HyperVManagerTray.exe"
 #define AppPublisher  "ezpl"
-#define AppUrl        "https://github.com/ezpl/HyperVNetworkSwitcher"
+#define AppUrl        "https://github.com/ezpl/HyperVManagerTray"
 ; Matches the task name used by the app's in-tray "Run on startup" toggle (StartupManager),
 ; so the installer option and the tray toggle control the exact same logon task.
 #define TaskName      "HyperVManagerTray"

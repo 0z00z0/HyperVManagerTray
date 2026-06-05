@@ -111,7 +111,6 @@ public sealed class HyperVManager : IDisposable
 
     // ── VM power control ────────────────────────────────────────────────────────
 
-    public Task StartVmAsync(string vm)    => VmActionAsync(vm, $"Start-VM -Name '{Esc(vm)}'",   "started");
     /// <summary>Graceful shutdown via guest OS integration services (no -Force/-TurnOff).</summary>
     public Task ShutdownVmAsync(string vm) => VmActionAsync(vm, $"Stop-VM -Name '{Esc(vm)}'",   "shut down", SlowVmTimeout);
     public Task SuspendVmAsync(string vm)  => VmActionAsync(vm, $"Suspend-VM -Name '{Esc(vm)}'","paused");

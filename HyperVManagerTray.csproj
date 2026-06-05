@@ -24,7 +24,7 @@
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <Version>2.0.1</Version>
     <Authors>ezpl</Authors>
-    <RepositoryUrl>https://github.com/ezpl/HyperVNetworkSwitcher</RepositoryUrl>
+    <RepositoryUrl>https://github.com/ezpl/HyperVManagerTray</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
 
     <!-- Drop the ~27 MB ICU payload (no localized UI; all formatting/parsing is ordinal/invariant). -->
