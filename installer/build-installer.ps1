@@ -71,6 +71,15 @@ Write-Host "==> Compiling installer with $iscc ..." -ForegroundColor Cyan
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)." }
 
 $setup = Join-Path $installerDir "Output\HyperVNetworkSwitcher-Setup.exe"
+
+# ── 5. Sign the installer exe ────────────────────────────────────────────────
+# Sign before computing the SHA so the printed hash matches the distributed file.
+if (Test-Path $setup) {
+    Write-Host "==> Signing installer..." -ForegroundColor Cyan
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "sign.ps1") -Path $setup
+    # Non-fatal: sign.ps1 prints a warning and exits 0 if the cert is absent.
+}
+
 Write-Host ""
 Write-Host "Done -> $setup" -ForegroundColor Green
 if (Test-Path $setup) {
