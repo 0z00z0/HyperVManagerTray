@@ -1,4 +1,4 @@
-; Inno Setup script for HyperV Network Switcher.
+; Inno Setup script for Hyper-V Manager Tray.
 ;
 ; Per-user install (no admin required). The app itself is requireAdministrator and
 ; elevates at runtime; the installer does not. The optional "Run at startup" task is
@@ -7,7 +7,7 @@
 ; Build via installer\build-installer.ps1, which publishes the app and passes
 ; /DPublishDir and /DAppVersion to ISCC.
 
-#define AppName       "HyperV Network Switcher"
+#define AppName       "Hyper-V Manager Tray"
 #define AppExe        "HyperVNetworkSwitcher.exe"
 #define AppPublisher  "ezpl"
 #define AppUrl        "https://github.com/ezpl/HyperVNetworkSwitcher"
@@ -59,7 +59,9 @@ Source: "{#PublishDir}\config.json"; DestDir: "{app}"; Flags: onlyifdoesntexist
 
 [Icons]
 ; Flat shortcut in Start Menu → Programs (no sub-folder) so the app is searchable by name.
-Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Comment: "Hyper-V VM network and power manager"
+; IconFilename points to the static app.ico shipped next to the exe so the shortcut shows the
+; correct icon immediately (not the default WinUI XAML-island placeholder).
+Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\app.ico"; Comment: "Hyper-V VM network and power manager"
 
 [Tasks]
 Name: "runstartup"; Description: "Run {#AppName} automatically at sign-in (starts elevated without a UAC prompt at boot)"; Flags: unchecked
@@ -68,6 +70,7 @@ Name: "runstartup"; Description: "Run {#AppName} automatically at sign-in (start
 [UninstallDelete]
 Type: files;      Name: "{app}\icon-bridged-v2.ico"
 Type: files;      Name: "{app}\icon-fallback-v2.ico"
+Type: files;      Name: "{app}\app.ico"
 ; v1 names — clean up if upgrading from an older install
 Type: files;      Name: "{app}\switch-blue.ico"
 Type: files;      Name: "{app}\switch-grey.ico"

@@ -188,7 +188,7 @@ internal sealed class TrayMenu
 
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
-    private const string AppName = "HyperV Network Switcher";
+    private const string AppName = "Hyper-V Manager Tray";
 
     private void Add(string text, Action action)
         => Flyout.Items.Add(new MenuFlyoutItem { Text = text, Command = new RelayCommand(action) });

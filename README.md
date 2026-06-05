@@ -1,4 +1,4 @@
-# HyperV Network Switcher
+# Hyper-V Manager Tray
 
 A Windows system-tray application that automatically connects your Hyper-V virtual machine to the correct virtual network switch based on which physical network the host is connected to.
 

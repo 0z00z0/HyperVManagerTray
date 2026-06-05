@@ -18,9 +18,10 @@
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
 
     <!-- Identity / packaging metadata -->
-    <AssemblyTitle>HyperV Network Switcher</AssemblyTitle>
-    <Product>HyperV Network Switcher</Product>
+    <AssemblyTitle>Hyper-V Manager Tray</AssemblyTitle>
+    <Product>Hyper-V Manager Tray</Product>
     <Description>System-tray app that auto-connects a Hyper-V VM to the right virtual switch and controls VMs from a dashboard.</Description>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <Version>2.0.0</Version>
     <Authors>ezpl</Authors>
     <RepositoryUrl>https://github.com/ezpl/HyperVNetworkSwitcher</RepositoryUrl>
@@ -40,6 +41,11 @@
 
   <ItemGroup>
     <Content Include="config.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- Static app icon: embedded in the exe (ApplicationIcon) AND copied to the publish folder
+         so the installer can reference it for the Start Menu shortcut's IconFilename. -->
+    <Content Include="Assets\app.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

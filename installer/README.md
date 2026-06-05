@@ -1,6 +1,6 @@
 # Installer (Inno Setup)
 
-A **per-user** Inno Setup installer for HyperV Network Switcher — the same kind the sibling
+A **per-user** Inno Setup installer for Hyper-V Manager Tray — the same kind the sibling
 LenovoTray app uses.
 
 ## Build it

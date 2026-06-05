@@ -56,7 +56,7 @@ public partial class App : Application
             {
                 NativeMethods.Error(
                     $"config.json not found at:\n{configPath}\n\nPlace config.json next to the executable and restart.",
-                    "HyperV Network Switcher");
+                    "Hyper-V Manager Tray");
                 Exit();
                 return;
             }
@@ -73,7 +73,7 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            NativeMethods.Error($"Failed to start HyperV Network Switcher:\n\n{ex}", "HyperV Network Switcher");
+            NativeMethods.Error($"Failed to start Hyper-V Manager Tray:\n\n{ex}", "Hyper-V Manager Tray");
             Exit();
         }
     }
@@ -105,7 +105,7 @@ public partial class App : Application
                 _bridged = bridged;
                 SetTrayIcon(bridged);
             }
-            _trayIcon!.ToolTipText = $"HyperV Network Switcher: {result.VirtualSwitch}";
+            _trayIcon!.ToolTipText = $"Hyper-V Manager Tray: {result.VirtualSwitch}";
             _dashboard?.OnSwitchApplied(result);
         });
     }

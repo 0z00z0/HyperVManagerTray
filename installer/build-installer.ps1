@@ -1,11 +1,12 @@
 <#
 .SYNOPSIS
-    Builds the per-user Inno Setup installer for HyperV Network Switcher.
+    Builds the per-user Inno Setup installer for Hyper-V Manager Tray.
 
 .DESCRIPTION
-    1. Publishes the app fully self-contained (win-x64, Windows App SDK bundled, no trimming —
+    1. Ensures Assets\app.ico exists (generates it if absent via Generate-AppIcon.ps1).
+    2. Publishes the app fully self-contained (win-x64, Windows App SDK bundled, no trimming —
        trimming breaks WinUI 3).
-    2. Compiles installer\HyperVNetworkSwitcher.iss with Inno Setup (ISCC.exe).
+    3. Compiles installer\HyperVNetworkSwitcher.iss with Inno Setup (ISCC.exe).
 
     Output: installer\Output\HyperVNetworkSwitcher-Setup.exe (per-user, no admin to install;
     the app elevates itself at runtime).
@@ -14,7 +15,7 @@
         winget install JRSoftware.InnoSetup
 
 .EXAMPLE
-    .\build-installer.ps1 -Version 2.0.0
+    .\build-installer.ps1 -Version 2.0.1
 #>
 [CmdletBinding()]
 param(
@@ -29,7 +30,15 @@ $proj         = Join-Path $root "HyperVNetworkSwitcher.csproj"
 $publishDir   = Join-Path $root "publish"
 $iss          = Join-Path $installerDir "HyperVNetworkSwitcher.iss"
 
-# ── 1. Publish the app (fully self-contained, no trim) ───────────────────────
+# ── 1. Ensure Assets\app.ico exists ─────────────────────────────────────────
+$appIco = Join-Path $root "Assets\app.ico"
+if (-not (Test-Path $appIco)) {
+    Write-Host "==> Generating Assets\app.ico ..." -ForegroundColor Cyan
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $installerDir "Generate-AppIcon.ps1") -ProjectRoot $root
+    if ($LASTEXITCODE -ne 0) { throw "Generate-AppIcon.ps1 failed ($LASTEXITCODE)." }
+}
+
+# ── 2. Publish the app (fully self-contained, no trim) ───────────────────────
 Write-Host "==> Publishing app (self-contained win-x64, Windows App SDK bundled)..." -ForegroundColor Cyan
 if (Test-Path $publishDir) { Remove-Item $publishDir -Recurse -Force }
 dotnet publish $proj `
@@ -42,7 +51,7 @@ if (-not (Test-Path (Join-Path $publishDir "HyperVNetworkSwitcher.pri"))) {
     throw "HyperVNetworkSwitcher.pri missing from publish output — WinUI would crash at startup (0xC000027B)."
 }
 
-# ── 2. Locate Inno Setup compiler ────────────────────────────────────────────
+# ── 3. Locate Inno Setup compiler ────────────────────────────────────────────
 $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
 if (-not $iscc) {
     foreach ($p in @(
@@ -56,7 +65,7 @@ if (-not $iscc) {
     throw "Inno Setup (ISCC.exe) not found. Install it once with:  winget install JRSoftware.InnoSetup"
 }
 
-# ── 3. Compile the installer ─────────────────────────────────────────────────
+# ── 4. Compile the installer ─────────────────────────────────────────────────
 Write-Host "==> Compiling installer with $iscc ..." -ForegroundColor Cyan
 & $iscc "/DAppVersion=$Version" "/DPublishDir=$publishDir" $iss
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)." }
