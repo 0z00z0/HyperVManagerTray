@@ -476,22 +476,9 @@ public sealed partial class DashboardWindow : Window
     /// <summary>
     /// Formats the VM uptime for display on the card header.
     /// Returns empty string when the VM is not running or the uptime string is unavailable.
-    /// Examples: "47m", "3h 14m", "2d 3h".
+    /// Examples: "47m", "3h 14m", "1d 3h".
     /// </summary>
-    private static string FormatUptime(VmStatus? s)
-    {
-        if (s is null || !s.IsRunning || string.IsNullOrWhiteSpace(s.Uptime))
-            return string.Empty;
-
-        if (!TimeSpan.TryParse(s.Uptime, out var ts) || ts < TimeSpan.Zero)
-            return string.Empty;
-
-        if (ts.TotalDays >= 1)
-            return $"{(int)ts.TotalDays}d {ts.Hours}h";
-        if (ts.TotalHours >= 1)
-            return $"{(int)ts.TotalHours}h {ts.Minutes}m";
-        return $"{(int)ts.TotalMinutes}m";
-    }
+    private static string FormatUptime(VmStatus? s) => UptimeFormatter.Format(s);
 
     /// <summary>
     /// Formats the VM state string, appending a save/resume percentage when available.

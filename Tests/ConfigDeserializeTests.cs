@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using HyperVManagerTray.Models;
 using Xunit;
@@ -19,7 +19,7 @@ public class ConfigDeserializeTests
     {
         const string json = """
         {
-          "virtualMachines": [ { "name": "MyVM", "nicName": "Network Adapter", "defaultSwitch": "Default Switch" } ],
+          "virtualMachines": [ { "name": "MyVM", "nicName": "Network Adapter" } ],
           "rules": [ {
             "name": "Office LAN", "priority": 1,
             "conditions": { "adapterMac": "AA:BB:CC:DD:EE:FF", "ipCidr": "10.0.0.0/23" },
