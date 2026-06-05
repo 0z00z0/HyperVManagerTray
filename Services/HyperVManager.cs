@@ -140,7 +140,8 @@ public sealed class HyperVManager : IDisposable
             "[PSCustomObject]@{ Name = $_.Name; State = $_.State.ToString(); Cpu = [int]$_.CPUUsage; " +
             "MemAssigned = [int64]$_.MemoryAssigned; MemMax = [int64]$_.MemoryMaximum; " +
             "Uptime = $_.Uptime.ToString(); " +
-            "Switch = ($_.NetworkAdapters | Select-Object -First 1).SwitchName } } | ConvertTo-Json -Depth 3";
+            "Switch = ($_.NetworkAdapters | Select-Object -First 1).SwitchName; " +
+            "StatusDesc = ($_.StatusDescriptions -join ' ') } } | ConvertTo-Json -Depth 3";
 
         var (ok, output) = await RunAsync(script);
         return DeserializeArrayOrObject<VmStatus>(ok ? output : "");

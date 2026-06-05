@@ -45,6 +45,7 @@ OutputBaseFilename=HyperVNetworkSwitcher-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\Assets\app.ico
 ; Let a silent (background) update close the running tray app and replace its files.
 ; Do NOT auto-restart it afterwards — the app is requireAdministrator, so relaunching
 ; would pop a UAC prompt out of nowhere. It returns at the next sign-in / manual launch.

@@ -9,6 +9,7 @@ public sealed class VmStatus
     public string  Name        { get; set; } = "";
     public string  State       { get; set; } = "Unknown";  // Running, Off, Paused, Saved, …
     public string  Switch      { get; set; } = "";          // current virtual switch name
+    public string  StatusDesc  { get; set; } = "";          // joined StatusDescriptions (e.g. "Saving, 47 %")
     public int     Cpu         { get; set; }                // % of host
     public long    MemAssigned { get; set; }                // bytes
     public long    MemMax      { get; set; }                // bytes

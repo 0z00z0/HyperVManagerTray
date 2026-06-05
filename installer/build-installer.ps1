@@ -48,7 +48,7 @@ dotnet publish $proj `
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed ($LASTEXITCODE)." }
 
 if (-not (Test-Path (Join-Path $publishDir "HyperVNetworkSwitcher.pri"))) {
-    throw "HyperVNetworkSwitcher.pri missing from publish output — WinUI would crash at startup (0xC000027B)."
+    throw "HyperVNetworkSwitcher.pri missing from publish output - WinUI would crash at startup (0xC000027B)."
 }
 
 # ── 3. Locate Inno Setup compiler ────────────────────────────────────────────

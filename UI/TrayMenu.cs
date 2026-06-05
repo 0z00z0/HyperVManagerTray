@@ -39,15 +39,21 @@ internal sealed class TrayMenu
 
         Flyout = new MenuFlyout();
         Add("Force Re-evaluate", () => _ = _monitor.ForceEvaluateAsync());
+        Flyout.Items.Add(new MenuFlyoutSeparator());
         Flyout.Items.Add(_vmPowerMenu);
         Flyout.Items.Add(_overrideMenu);
+        Flyout.Items.Add(new MenuFlyoutSeparator());
         Add("Add current network as bridged", AddCurrentAsBridged);
         Flyout.Items.Add(new MenuFlyoutSeparator());
-        Add("Open config.json", () => OpenPath(ConfigManager.GetConfigPath()));
-        Add("Open log file",    () => OpenPath(LogPath()));
-        Add("Reload config",    () => _config.Load());
-        Flyout.Items.Add(new MenuFlyoutSeparator());
-        Flyout.Items.Add(_startupItem);
+
+        var settingsMenu = new MenuFlyoutSubItem { Text = "Settings" };
+        settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Open config.json", Command = new RelayCommand(() => OpenPath(ConfigManager.GetConfigPath())) });
+        settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Open log file",    Command = new RelayCommand(() => OpenPath(LogPath())) });
+        settingsMenu.Items.Add(new MenuFlyoutSeparator());
+        settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Reload config",    Command = new RelayCommand(() => _config.Load()) });
+        settingsMenu.Items.Add(new MenuFlyoutSeparator());
+        settingsMenu.Items.Add(_startupItem);
+        Flyout.Items.Add(settingsMenu);
         Flyout.Items.Add(new MenuFlyoutSeparator());
         Add("Exit", onExit);
 

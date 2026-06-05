@@ -20,7 +20,7 @@ public sealed partial class DashboardWindow : Window
     private const double ContentWidth = 320;
     private const int    EdgeMargin   = 12;
 
-    private static readonly TimeSpan PollInterval    = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan PollInterval    = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan VhdPollInterval = TimeSpan.FromSeconds(15);
 
     private readonly ConfigManager  _config;
@@ -185,7 +185,7 @@ public sealed partial class DashboardWindow : Window
         };
         var stateLabel = new TextBlock
         {
-            Text              = s?.State ?? "Unknown",
+            Text              = FormatState(s),
             FontSize          = 11,
             VerticalAlignment = VerticalAlignment.Center,
             Foreground        = StateBrush(s),
@@ -331,4 +331,29 @@ public sealed partial class DashboardWindow : Window
         { IsSaved:   true } => AppColors.IndicatorOrangeBrush,
         _                   => AppColors.IndicatorGreyBrush,
     };
+
+    /// <summary>
+    /// Formats the VM state string, appending a save/resume percentage when available.
+    /// Hyper-V StatusDescriptions during transient states contains strings like "Saving, 47 %"
+    /// or "Restoring, 12 %".  We extract the number and produce "Saving (47%)".
+    /// </summary>
+    private static string FormatState(VmStatus? s)
+    {
+        var state = s?.State ?? "Unknown";
+        if (s is null) return state;
+
+        var desc = s.StatusDesc ?? "";
+        var pIdx = desc.IndexOf('%');
+        if (pIdx > 0)
+        {
+            // Walk back past digits and spaces to find the start of the number
+            var i = pIdx - 1;
+            while (i > 0 && (char.IsDigit(desc[i - 1]) || desc[i - 1] == ' '))
+                i--;
+            var num = desc[i..pIdx].Trim();
+            if (!string.IsNullOrEmpty(num))
+                return $"{state} ({num}%)";
+        }
+        return state;
+    }
 }
