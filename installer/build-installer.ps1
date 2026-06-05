@@ -51,6 +51,16 @@ if (-not (Test-Path (Join-Path $publishDir "HyperVManagerTray.pri"))) {
     throw "HyperVManagerTray.pri missing from publish output - WinUI would crash at startup (0xC000027B)."
 }
 
+# ── 2b. Sign the published exe ───────────────────────────────────────────────
+# dotnet publish creates a fresh apphost in the publish folder — a separate binary
+# from the bin\ build output that SignOutput already signed. Sign this copy so the
+# installed exe is not flagged as Unsigned by security tools.
+$publishedExe = Join-Path $publishDir "HyperVManagerTray.exe"
+if (Test-Path $publishedExe) {
+    Write-Host "==> Signing published exe..." -ForegroundColor Cyan
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "sign.ps1") -Path $publishedExe
+}
+
 # ── 3. Locate Inno Setup compiler ────────────────────────────────────────────
 $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
 if (-not $iscc) {

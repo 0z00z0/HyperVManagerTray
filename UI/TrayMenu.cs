@@ -39,10 +39,12 @@ internal sealed class TrayMenu
 
         Flyout = new MenuFlyout();
 
+        Flyout.Items.Add(_vmPowerMenu);
+        Flyout.Items.Add(new MenuFlyoutSeparator());
+
         var vmNetworkMenu = new MenuFlyoutSubItem { Text = "VM Network" };
         vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Force Re-evaluate", Command = new RelayCommand(() => _ = _monitor.ForceEvaluateAsync()) });
         vmNetworkMenu.Items.Add(new MenuFlyoutSeparator());
-        vmNetworkMenu.Items.Add(_vmPowerMenu);
         vmNetworkMenu.Items.Add(_overrideMenu);
         vmNetworkMenu.Items.Add(new MenuFlyoutSeparator());
         vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Add current network as bridged", Command = new RelayCommand(AddCurrentAsBridged) });
