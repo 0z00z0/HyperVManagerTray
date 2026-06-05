@@ -20,7 +20,7 @@ public partial class App : Application
     private ConfigManager?  _config;
     private HyperVManager?  _hyperV;
     private NetworkMonitor? _monitor;
-    private readonly StartupManager _startup = new();
+    private StartupManager  _startup = null!;
 
     private DispatcherQueue  _ui = null!;
     private Window?          _hostWindow;
@@ -54,6 +54,8 @@ public partial class App : Application
                 b.SetMinimumLevel(LogLevel.Information);
                 b.AddSimpleFileLogger(Path.Combine(logDir, "switcher.log"));
             });
+
+            _startup = new StartupManager(_loggerFactory.CreateLogger<StartupManager>());
 
             var configPath = ConfigManager.GetConfigPath();
             if (!File.Exists(configPath))

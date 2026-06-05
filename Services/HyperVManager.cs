@@ -91,11 +91,17 @@ public sealed class HyperVManager : IDisposable
     /// <summary>Returns the IPv4 addresses reported by the VM's network adapter (may be empty).</summary>
     public async Task<string[]> GetVmIpAddressesAsync(string vmName)
     {
+        _logger.LogDebug("Querying IP addresses for VM '{VmName}'...", vmName);
         var (ok, output) = await RunAsync(
             $"(Get-VMNetworkAdapter -VMName '{Esc(vmName)}').IPAddresses | " +
             $"Where-Object {{ $_ -match '\\.' }}");
 
-        if (!ok || string.IsNullOrWhiteSpace(output)) return [];
+        if (!ok)
+        {
+            _logger.LogWarning("Failed to query IP addresses for VM '{VmName}': {Error}", vmName, output);
+            return [];
+        }
+        if (string.IsNullOrWhiteSpace(output)) return [];
 
         return output.Split(['\n', '\r'], StringSplitOptions.RemoveEmptyEntries)
                      .Select(l => l.Trim())
@@ -121,9 +127,10 @@ public sealed class HyperVManager : IDisposable
 
     private async Task VmActionAsync(string vmName, string script, string verb, TimeSpan? timeout = null)
     {
+        _logger.LogInformation("VM '{VmName}': {Verb}...", vmName, verb);
         var (ok, output) = await RunAsync(script, timeout);
-        if (ok) _logger.LogInformation("VM {Vm} {Verb}", vmName, verb);
-        else    _logger.LogError("VM {Vm} {Verb} failed: {Error}", vmName, verb, output);
+        if (ok) _logger.LogInformation("VM '{VmName}' {Verb} successfully.", vmName, verb);
+        else    _logger.LogWarning("VM '{VmName}' {Verb} failed: {Error}", vmName, verb, output);
     }
 
     // ── VM status / metrics ─────────────────────────────────────────────────────
@@ -133,6 +140,8 @@ public sealed class HyperVManager : IDisposable
     {
         var quoted = names.Select(n => $"'{Esc(n)}'").ToList();
         if (quoted.Count == 0) return [];
+
+        _logger.LogDebug("Querying VM statuses for {VmCount} VM(s)...", quoted.Count);
 
         var script =
             "$ProgressPreference='SilentlyContinue'; " +
@@ -144,6 +153,8 @@ public sealed class HyperVManager : IDisposable
             "StatusDesc = ($_.StatusDescriptions -join ' ') } } | ConvertTo-Json -Depth 3";
 
         var (ok, output) = await RunAsync(script);
+        if (!ok) _logger.LogWarning("GetVmStatusesAsync: PowerShell query failed: {Error}", output);
+        else     _logger.LogDebug("GetVmStatusesAsync: PS query completed.");
         return DeserializeArrayOrObject<VmStatus>(ok ? output : "");
     }
 
@@ -153,6 +164,8 @@ public sealed class HyperVManager : IDisposable
         var quoted = names.Select(n => $"'{Esc(n)}'").ToList();
         if (quoted.Count == 0) return new Dictionary<string, long>();
 
+        _logger.LogDebug("Querying VHD sizes for {VmCount} VM(s)...", quoted.Count);
+
         var script =
             "$ProgressPreference='SilentlyContinue'; " +
             $"Get-VM -Name {string.Join(",", quoted)} -ErrorAction SilentlyContinue | ForEach-Object {{ " +
@@ -160,6 +173,8 @@ public sealed class HyperVManager : IDisposable
             "Get-VHD -ErrorAction SilentlyContinue | Measure-Object -Property FileSize -Sum).Sum) } } | ConvertTo-Json -Depth 3";
 
         var (ok, output) = await RunAsync(script);
+        if (!ok) _logger.LogWarning("GetVmVhdSizesAsync: PowerShell query failed: {Error}", output);
+        else     _logger.LogDebug("GetVmVhdSizesAsync: PS query completed.");
         var list = DeserializeArrayOrObject<VhdEntry>(ok ? output : "");
         return list.ToDictionary(e => e.Name, e => e.Vhd);
     }

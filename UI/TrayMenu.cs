@@ -21,7 +21,7 @@ internal sealed class TrayMenu
     private readonly HyperVManager  _hyperV;
     private readonly StartupManager _startup;
 
-    private readonly MenuFlyoutSubItem  _overrideMenu = new() { Text = "Manual Override" };
+    private readonly MenuFlyoutSubItem  _overrideMenu = new() { Text = "VM Network Override" };
     private readonly MenuFlyoutSubItem  _vmPowerMenu  = new() { Text = "VM Power" };
     private readonly ToggleMenuFlyoutItem _startupItem = new() { Text = "Run on startup" };
 
@@ -38,12 +38,15 @@ internal sealed class TrayMenu
         _startupItem.Command = new RelayCommand(ToggleStartup);
 
         Flyout = new MenuFlyout();
-        Add("Force Re-evaluate", () => _ = _monitor.ForceEvaluateAsync());
-        Flyout.Items.Add(new MenuFlyoutSeparator());
-        Flyout.Items.Add(_vmPowerMenu);
-        Flyout.Items.Add(_overrideMenu);
-        Flyout.Items.Add(new MenuFlyoutSeparator());
-        Add("Add current network as bridged", AddCurrentAsBridged);
+
+        var vmNetworkMenu = new MenuFlyoutSubItem { Text = "VM Network" };
+        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Force Re-evaluate", Command = new RelayCommand(() => _ = _monitor.ForceEvaluateAsync()) });
+        vmNetworkMenu.Items.Add(new MenuFlyoutSeparator());
+        vmNetworkMenu.Items.Add(_vmPowerMenu);
+        vmNetworkMenu.Items.Add(_overrideMenu);
+        vmNetworkMenu.Items.Add(new MenuFlyoutSeparator());
+        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Add current network as bridged", Command = new RelayCommand(AddCurrentAsBridged) });
+        Flyout.Items.Add(vmNetworkMenu);
         Flyout.Items.Add(new MenuFlyoutSeparator());
 
         var settingsMenu = new MenuFlyoutSubItem { Text = "Settings" };

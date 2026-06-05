@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -308,6 +309,21 @@ public sealed partial class DashboardWindow : Window
     {
         var sw = _monitor.LastApplied?.VirtualSwitch;
         if (!string.IsNullOrEmpty(sw)) await _hyperV.ApplySwitchAsync(vm.Name, vm.NicName, sw);
+
+        var vmName = vm.Name;
+        try
+        {
+            Process.Start(new ProcessStartInfo("vmconnect.exe", $"localhost \"{vmName}\"")
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch
+        {
+            NativeMethods.Warn(
+                "Could not open VM Connection.\n\nEnsure Hyper-V Manager tools are installed.",
+                "Hyper-V Manager Tray");
+        }
     }
 
     private async Task StartAndConnectAsync(VmTarget vm)
