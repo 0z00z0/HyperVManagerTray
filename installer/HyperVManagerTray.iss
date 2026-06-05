@@ -60,9 +60,9 @@ Source: "{#PublishDir}\config.json"; DestDir: "{app}"; Flags: onlyifdoesntexist
 
 [Icons]
 ; Flat shortcut in Start Menu → Programs (no sub-folder) so the app is searchable by name.
-; IconFilename points to the static app.ico shipped next to the exe so the shortcut shows the
-; correct icon immediately (not the default WinUI XAML-island placeholder).
-Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\app.ico"; Comment: "Hyper-V VM network and power manager"
+; IconFilename points to AppIcon.ico (Zero Zero Software brand icon) shipped next to the exe
+; so the Start Menu shortcut shows the correct icon immediately.
+Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\AppIcon.ico"; Comment: "Hyper-V VM network and power manager"
 
 [Tasks]
 Name: "runstartup"; Description: "Run {#AppName} automatically at sign-in (starts elevated without a UAC prompt at boot)"; Flags: unchecked
@@ -71,6 +71,7 @@ Name: "runstartup"; Description: "Run {#AppName} automatically at sign-in (start
 [UninstallDelete]
 Type: files;      Name: "{app}\icon-bridged-v2.ico"
 Type: files;      Name: "{app}\icon-fallback-v2.ico"
+Type: files;      Name: "{app}\AppIcon.ico"
 Type: files;      Name: "{app}\app.ico"
 ; v1 names — clean up if upgrading from an older install
 Type: files;      Name: "{app}\switch-blue.ico"

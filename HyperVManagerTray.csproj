@@ -21,7 +21,7 @@
     <AssemblyTitle>Hyper-V Manager Tray</AssemblyTitle>
     <Product>Hyper-V Manager Tray</Product>
     <Description>System-tray app that auto-connects a Hyper-V VM to the right virtual switch and controls VMs from a dashboard.</Description>
-    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
     <Version>2.0.1</Version>
     <Authors>Zero Zero Software</Authors>
     <Company>Zero Zero Software</Company>
@@ -45,11 +45,15 @@
     <Content Include="config.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <!-- AppIcon.ico: Zero Zero Software brand icon used as the installer wizard icon (SetupIconFile).
-         Sourced from the sibling LenovoTray project — same publisher, same icon. -->
-    <None Include="Assets\AppIcon.ico" />
-    <!-- Static app icon: embedded in the exe (ApplicationIcon) AND copied to the publish folder
-         so the installer can reference it for the Start Menu shortcut's IconFilename. -->
+    <!-- AppIcon.ico: Zero Zero Software brand icon — embedded in the exe PE resources
+         (ApplicationIcon), used as the installer wizard icon (SetupIconFile), and shipped
+         next to the exe for the Start Menu shortcut (IconFilename). Sourced from the sibling
+         LenovoTray project — same publisher, same icon. -->
+    <Content Include="Assets\AppIcon.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- app.ico: VM-themed icon used only by the runtime tray icon generator (IconGenerator.cs)
+         as a base; the tray icon itself is rendered dynamically at startup. -->
     <Content Include="Assets\app.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
