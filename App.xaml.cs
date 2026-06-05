@@ -1,3 +1,4 @@
+using System.Net.Http;
 using H.NotifyIcon;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Dispatching;
@@ -21,6 +22,8 @@ public partial class App : Application
     private HyperVManager?  _hyperV;
     private NetworkMonitor? _monitor;
     private StartupManager  _startup = null!;
+    private HttpClient?     _httpClient;
+    private UpdateChecker?  _updateChecker;
 
     private DispatcherQueue  _ui = null!;
     private Window?          _hostWindow;
@@ -55,7 +58,9 @@ public partial class App : Application
                 b.AddSimpleFileLogger(Path.Combine(logDir, "switcher.log"));
             });
 
-            _startup = new StartupManager(_loggerFactory.CreateLogger<StartupManager>());
+            _startup       = new StartupManager(_loggerFactory.CreateLogger<StartupManager>());
+            _httpClient    = new HttpClient();
+            _updateChecker = new UpdateChecker(_httpClient, _loggerFactory.CreateLogger<UpdateChecker>());
 
             var configPath = ConfigManager.GetConfigPath();
             if (!File.Exists(configPath))
@@ -91,7 +96,7 @@ public partial class App : Application
         _trayIcon = (TaskbarIcon)Resources["TrayIcon"];
         SetTrayIcon(bridged: false);
 
-        _menu = new TrayMenu(_config!, _monitor!, _hyperV!, _startup, OnExit);
+        _menu = new TrayMenu(_config!, _monitor!, _hyperV!, _startup, _updateChecker!, OnExit);
         _trayIcon.ContextFlyout     = _menu.Flyout;
         _trayIcon.LeftClickCommand  = new RelayCommand(ToggleDashboard);
         _trayIcon.RightClickCommand = new RelayCommand(() => _menu!.RefreshState());
@@ -154,6 +159,7 @@ public partial class App : Application
         _monitor?.Dispose();
         _config?.Dispose();
         _hyperV?.Dispose();
+        _httpClient?.Dispose();
         _loggerFactory?.Dispose();
         Exit();
     }

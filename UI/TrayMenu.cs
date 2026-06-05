@@ -20,6 +20,7 @@ internal sealed class TrayMenu
     private readonly NetworkMonitor _monitor;
     private readonly HyperVManager  _hyperV;
     private readonly StartupManager _startup;
+    private readonly UpdateChecker  _updateChecker;
 
     private readonly MenuFlyoutSubItem  _overrideMenu = new() { Text = "VM Network Override" };
     private readonly MenuFlyoutSubItem  _vmPowerMenu  = new() { Text = "VM Power" };
@@ -28,12 +29,13 @@ internal sealed class TrayMenu
     public MenuFlyout Flyout { get; }
 
     public TrayMenu(ConfigManager config, NetworkMonitor monitor, HyperVManager hyperV,
-                    StartupManager startup, Action onExit)
+                    StartupManager startup, UpdateChecker updateChecker, Action onExit)
     {
-        _config  = config;
-        _monitor = monitor;
-        _hyperV  = hyperV;
-        _startup = startup;
+        _config        = config;
+        _monitor       = monitor;
+        _hyperV        = hyperV;
+        _startup       = startup;
+        _updateChecker = updateChecker;
 
         _startupItem.Command = new RelayCommand(ToggleStartup);
 
@@ -58,6 +60,8 @@ internal sealed class TrayMenu
         settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Reload config",    Command = new RelayCommand(() => _config.Load()) });
         settingsMenu.Items.Add(new MenuFlyoutSeparator());
         settingsMenu.Items.Add(_startupItem);
+        settingsMenu.Items.Add(new MenuFlyoutSeparator());
+        settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Check for updates", Command = new RelayCommand(() => _ = CheckForUpdatesAsync()) });
         Flyout.Items.Add(settingsMenu);
         Flyout.Items.Add(new MenuFlyoutSeparator());
         Add("Exit", onExit);
@@ -183,6 +187,30 @@ internal sealed class TrayMenu
         catch (Exception ex)
         {
             NativeMethods.Error($"Failed to save rule:\n{ex.Message}", AppName);
+        }
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        var (available, latest, releaseUrl) = await _updateChecker.CheckAsync().ConfigureAwait(false);
+
+        var running = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown";
+
+        if (available)
+        {
+            bool open = NativeMethods.Confirm(
+                $"Version {latest} is available.\n\nCurrent: {running}\n\nOpen the releases page?",
+                AppName);
+            if (open)
+                Process.Start(new ProcessStartInfo(releaseUrl) { UseShellExecute = true });
+        }
+        else if (!string.IsNullOrEmpty(latest))
+        {
+            NativeMethods.Info($"You're on the latest version ({running}).", AppName);
+        }
+        else
+        {
+            NativeMethods.Warn("Could not check for updates. Check your internet connection.", AppName);
         }
     }
 
