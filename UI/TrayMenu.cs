@@ -276,23 +276,61 @@ internal sealed class TrayMenu
 
     private async Task CheckForUpdatesAsync()
     {
-        var (available, latest, releaseUrl) = await _updateChecker.CheckAsync().ConfigureAwait(false);
-
+        var result  = await _updateChecker.CheckAsync().ConfigureAwait(false);
         var running = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown";
 
-        if (available)
+        if (result.UpdateAvailable)
         {
-            bool open = NativeMethods.Confirm(
-                $"Version {latest} is available.\n\nCurrent: {running}\n\nOpen the releases page?",
+            // Prefer direct download; fall back to opening the releases page.
+            bool canDownload = !string.IsNullOrEmpty(result.InstallerUrl);
+
+            bool confirmed = NativeMethods.Confirm(
+                $"Version {result.LatestVersion} is available.\n\nCurrent: {running}\n\n" +
+                (canDownload
+                    ? "Download and install now? The app will close and restart automatically."
+                    : "Open the releases page?"),
                 AppName);
-            if (open)
-                Process.Start(new ProcessStartInfo(releaseUrl) { UseShellExecute = true });
+
+            if (!confirmed) return;
+
+            if (canDownload)
+            {
+                // Download in the background; the installer closes and relaunches the app.
+                NativeMethods.Info(
+                    $"Downloading v{result.LatestVersion}...\n\nThe installer will launch automatically when ready.",
+                    AppName);
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var path = await _updateChecker
+                            .DownloadInstallerAsync(result.InstallerUrl)
+                            .ConfigureAwait(false);
+
+                        // Run installer — CloseApplications=yes in the .iss will shut us down.
+                        Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+                    }
+                    catch (Exception ex)
+                    {
+                        NativeMethods.Warn(
+                            $"Download failed:\n{ex.Message}\n\nTry updating from the releases page.",
+                            AppName);
+                        if (!string.IsNullOrEmpty(result.ReleasePageUrl))
+                            Process.Start(new ProcessStartInfo(result.ReleasePageUrl) { UseShellExecute = true });
+                    }
+                });
+            }
+            else
+            {
+                Process.Start(new ProcessStartInfo(result.ReleasePageUrl) { UseShellExecute = true });
+            }
         }
-        else if (latest == "none")
+        else if (result.LatestVersion == "none")
         {
             NativeMethods.Info("No releases have been published yet.", AppName);
         }
-        else if (!string.IsNullOrEmpty(latest))
+        else if (!string.IsNullOrEmpty(result.LatestVersion))
         {
             NativeMethods.Info($"You're on the latest version ({running}).", AppName);
         }
