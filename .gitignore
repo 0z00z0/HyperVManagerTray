@@ -22,3 +22,6 @@ installer/Output/
 # Uncomment the next line if you don't want to track the sample config:
 # config.json
 CodeDocumentation*
+
+# Machine-specific config backups
+*-config.json
