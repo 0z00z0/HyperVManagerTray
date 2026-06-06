@@ -7,18 +7,22 @@ using Microsoft.Extensions.Logging;
 namespace HyperVManagerTray.Services;
 
 /// <summary>
-/// Checks the GitHub Releases API to determine whether a newer version of the app is available.
+/// Checks the GitHub Releases API for a newer version and can download + launch the installer.
 /// </summary>
 internal sealed class UpdateChecker(HttpClient http, ILogger<UpdateChecker> logger)
 {
     private const string ReleasesApiUrl = "https://api.github.com/repos/ezpl/HyperVManagerTray/releases/latest";
 
+    public record CheckResult(
+        bool   UpdateAvailable,
+        string LatestVersion,   // empty = network error; "none" = no releases yet
+        string ReleasePageUrl,
+        string InstallerUrl);   // direct .exe download URL from release assets; empty if not found
+
     /// <summary>
-    /// Queries the GitHub Releases API for the latest release and compares it to the running version.
-    /// Never throws — returns <c>UpdateAvailable = false</c> on any failure.
-    /// <c>LatestVersion</c> is empty on network/parse failure; <c>"none"</c> when the repo has no releases yet.
+    /// Queries the GitHub Releases API. Never throws.
     /// </summary>
-    public async Task<(bool UpdateAvailable, string LatestVersion, string ReleaseUrl)> CheckAsync()
+    public async Task<CheckResult> CheckAsync()
     {
         try
         {
@@ -32,7 +36,7 @@ internal sealed class UpdateChecker(HttpClient http, ILogger<UpdateChecker> logg
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
                 logger.LogInformation("Update check: no releases found on GitHub yet");
-                return (false, "none", string.Empty);
+                return new(false, "none", string.Empty, string.Empty);
             }
 
             response.EnsureSuccessStatusCode();
@@ -40,31 +44,84 @@ internal sealed class UpdateChecker(HttpClient http, ILogger<UpdateChecker> logg
             await using var stream = await response.Content.ReadAsStreamAsync(cts.Token).ConfigureAwait(false);
             using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cts.Token).ConfigureAwait(false);
 
-            var root       = doc.RootElement;
-            var tagName    = root.GetProperty("tag_name").GetString() ?? string.Empty;
-            var releaseUrl = root.TryGetProperty("html_url", out var u) ? u.GetString() ?? string.Empty : string.Empty;
+            var root        = doc.RootElement;
+            var tagName     = root.GetProperty("tag_name").GetString() ?? string.Empty;
+            var releaseUrl  = root.TryGetProperty("html_url",  out var u) ? u.GetString() ?? string.Empty : string.Empty;
 
-            // tag_name is e.g. "v2.0.2" — strip leading 'v' before parsing
+            // Parse installer URL from assets array — find the first .exe asset
+            var installerUrl = string.Empty;
+            if (root.TryGetProperty("assets", out var assets))
+            {
+                foreach (var asset in assets.EnumerateArray())
+                {
+                    var name = asset.TryGetProperty("name", out var n) ? n.GetString() : null;
+                    if (name?.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) == true)
+                    {
+                        installerUrl = asset.TryGetProperty("browser_download_url", out var dl)
+                            ? dl.GetString() ?? string.Empty : string.Empty;
+                        break;
+                    }
+                }
+            }
+
+            // tag_name is e.g. "v2.1.1" — strip leading 'v'
             var latestStr = tagName.TrimStart('v');
             if (!Version.TryParse(latestStr, out var latest))
             {
                 logger.LogWarning("GitHub returned an unparseable tag_name: {Tag}", tagName);
-                return (false, string.Empty, string.Empty);
+                return new(false, string.Empty, string.Empty, string.Empty);
             }
 
             var running = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0);
-
             logger.LogInformation("Update check: running={Running} latest={Latest}", running, latest);
 
-            if (latest > running)
-                return (true, latestStr, releaseUrl);
-
-            return (false, latestStr, releaseUrl);
+            return new(latest > running, latestStr, releaseUrl, installerUrl);
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Update check failed");
-            return (false, string.Empty, string.Empty);
+            return new(false, string.Empty, string.Empty, string.Empty);
         }
+    }
+
+    /// <summary>
+    /// Downloads the installer to %TEMP% and returns the local file path.
+    /// Reports download progress (0–100) via <paramref name="progress"/>.
+    /// Throws on failure — callers should catch.
+    /// </summary>
+    public async Task<string> DownloadInstallerAsync(string url, IProgress<int>? progress = null,
+                                                      CancellationToken ct = default)
+    {
+        var dest = Path.Combine(Path.GetTempPath(), "HyperVManagerTray-Setup.exe");
+
+        using var request  = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.UserAgent.Add(new ProductInfoHeaderValue("HyperVManagerTray", null));
+
+        using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
+                                       .ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+
+        var total   = response.Content.Headers.ContentLength ?? -1L;
+        var buffer  = new byte[81920];
+        long downloaded = 0;
+        int  lastPct    = -1;
+
+        await using var src  = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        await using var dst  = new FileStream(dest, FileMode.Create, FileAccess.Write, FileShare.None,
+                                              bufferSize: 81920, useAsync: true);
+        int read;
+        while ((read = await src.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+        {
+            await dst.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+            downloaded += read;
+            if (progress != null && total > 0)
+            {
+                var pct = (int)(downloaded * 100 / total);
+                if (pct != lastPct) { progress.Report(pct); lastPct = pct; }
+            }
+        }
+
+        logger.LogInformation("Installer downloaded to {Path} ({Bytes:N0} bytes)", dest, downloaded);
+        return dest;
     }
 }
