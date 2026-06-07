@@ -28,6 +28,16 @@ internal sealed class TrayMenu
 
     private MenuFlyoutItem? _updateBadge;
 
+    /// <summary>UI dispatcher — captured on the UI thread in the constructor.</summary>
+    private readonly Microsoft.UI.Dispatching.DispatcherQueue _ui;
+
+    /// <summary>
+    /// Last known state of the auto-start scheduled task, refreshed in the background on
+    /// every <see cref="RefreshState"/> call.  Reads/writes are always a single bool so
+    /// no lock is needed; <c>volatile</c> prevents stale reads from cache lines.
+    /// </summary>
+    private volatile bool _cachedStartupEnabled;
+
     public MenuFlyout Flyout { get; }
 
     public TrayMenu(ConfigManager config, NetworkMonitor monitor, HyperVManager hyperV,
@@ -38,6 +48,9 @@ internal sealed class TrayMenu
         _hyperV        = hyperV;
         _startup       = startup;
         _updateChecker = updateChecker;
+
+        _ui = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread()
+            ?? throw new InvalidOperationException("TrayMenu must be created on the UI thread.");
 
         _startupItem.Command = new RelayCommand(ToggleStartup);
 
@@ -59,7 +72,7 @@ internal sealed class TrayMenu
         settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Open config.json", Command = new RelayCommand(() => OpenPath(ConfigManager.GetConfigPath())) });
         settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Open log file",    Command = new RelayCommand(() => OpenPath(LogPath())) });
         settingsMenu.Items.Add(new MenuFlyoutSeparator());
-        settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Reload config",    Command = new RelayCommand(() => _config.Load()) });
+        settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Reload config",    Command = new RelayCommand(() => _ = Task.Run(() => _config.Load())) });
         settingsMenu.Items.Add(new MenuFlyoutSeparator());
         settingsMenu.Items.Add(_startupItem);
         settingsMenu.Items.Add(new MenuFlyoutSeparator());
@@ -78,7 +91,19 @@ internal sealed class TrayMenu
     {
         RebuildOverrideMenu();
         RebuildVmPowerMenu();
-        _startupItem.IsChecked = SafeStartupEnabled();
+
+        // Use the cached value immediately — never block the UI thread for schtasks.exe.
+        // Fire a background task to refresh the cache; the check mark is updated on the
+        // UI thread when the query returns (typically within 500 ms).
+        _startupItem.IsChecked = _cachedStartupEnabled;
+        _ = Task.Run(() =>
+        {
+            bool enabled;
+            try   { enabled = _startup.IsEnabled; }
+            catch { enabled = false; }
+            _cachedStartupEnabled = enabled;
+            _ui.TryEnqueue(() => _startupItem.IsChecked = enabled);
+        });
     }
 
     private void RebuildVmPowerMenu()
@@ -134,16 +159,22 @@ internal sealed class TrayMenu
             sub.Items.Add(Item("Resume",          () => _hyperV.ResumeVmAsync(name)));
             sub.Items.Add(Item("Save",            () => _hyperV.SaveVmAsync(name)));
             sub.Items.Add(new MenuFlyoutSeparator());
-            sub.Items.Add(Item("Remove from config…", () =>
+            sub.Items.Add(Item("Remove from config…", async () =>
             {
-                if (NativeMethods.Confirm(
+                if (!NativeMethods.Confirm(
                         $"Remove {name} from config.json?\n\nThis only removes the app's management of this VM — it does not delete the VM.",
                         "Remove VM from Config"))
+                    return;
+
+                try
                 {
-                    _config.RemoveVmFromConfig(name);
+                    await Task.Run(() => _config.RemoveVmFromConfig(name)).ConfigureAwait(false);
                     NativeMethods.Info($"{name} removed from config.", AppName);
                 }
-                return Task.CompletedTask;
+                catch (Exception ex)
+                {
+                    NativeMethods.Error($"Failed to remove VM from config:\n{ex.Message}", AppName);
+                }
             }));
             _vmPowerMenu.Items.Add(sub);
         }
@@ -166,11 +197,11 @@ internal sealed class TrayMenu
             sub.Items.Add(Item("Shutdown", () => _hyperV.ShutdownVmAsync(name)));
             sub.Items.Add(Item("Connect",  () => { ConnectUnmanaged(name); return Task.CompletedTask; }));
             sub.Items.Add(new MenuFlyoutSeparator());
-            sub.Items.Add(Item("Add to config…", () =>
+            sub.Items.Add(Item("Add to config…", async () =>
             {
                 try
                 {
-                    _config.AddVmToConfig(name, nicName);
+                    await Task.Run(() => _config.AddVmToConfig(name, nicName)).ConfigureAwait(false);
                     NativeMethods.Info(
                         $"Added \"{name}\" to config.\nReload to manage it fully.",
                         AppName);
@@ -179,7 +210,6 @@ internal sealed class TrayMenu
                 {
                     NativeMethods.Error($"Failed to add VM to config:\n{ex.Message}", AppName);
                 }
-                return Task.CompletedTask;
             }));
             _vmPowerMenu.Items.Add(sub);
         }
@@ -294,15 +324,18 @@ internal sealed class TrayMenu
             TargetVms     = _config.Current.Fallback.TargetVms.ToList(),
         };
 
-        try
+        _ = Task.Run(() =>
         {
-            _config.AddBridgedRule(rule);
-            _ = _monitor.ForceEvaluateAsync();
-        }
-        catch (Exception ex)
-        {
-            NativeMethods.Error($"Failed to save rule:\n{ex.Message}", AppName);
-        }
+            try
+            {
+                _config.AddBridgedRule(rule);
+                _ = _monitor.ForceEvaluateAsync();
+            }
+            catch (Exception ex)
+            {
+                NativeMethods.Error($"Failed to save rule:\n{ex.Message}", AppName);
+            }
+        });
     }
 
     private async Task CheckForUpdatesAsync()
@@ -403,15 +436,31 @@ internal sealed class TrayMenu
 
     private void ToggleStartup()
     {
-        try
+        // schtasks.exe Create/Delete/Query can take 500 ms – 2 s.  Run everything on the
+        // thread pool so the UI thread stays responsive.  NativeMethods.Warn/Info use
+        // MessageBoxW which is safe to call from any thread.
+        _ = Task.Run(() =>
         {
-            if (_startup.IsEnabled) _startup.Disable();
-            else _startup.Enable(Environment.ProcessPath ?? throw new InvalidOperationException("Cannot determine executable path."));
-        }
-        catch (Exception ex)
-        {
-            NativeMethods.Warn($"Could not change the startup setting:\n\n{ex.Message}", AppName);
-        }
+            try
+            {
+                if (_startup.IsEnabled) _startup.Disable();
+                else _startup.Enable(Environment.ProcessPath
+                    ?? throw new InvalidOperationException("Cannot determine executable path."));
+            }
+            catch (Exception ex)
+            {
+                _ui.TryEnqueue(() =>
+                    NativeMethods.Warn($"Could not change the startup setting:\n\n{ex.Message}", AppName));
+                return;
+            }
+
+            // Refresh cache + check mark after the toggle completes.
+            bool enabled;
+            try   { enabled = _startup.IsEnabled; }
+            catch { enabled = false; }
+            _cachedStartupEnabled = enabled;
+            _ui.TryEnqueue(() => _startupItem.IsChecked = enabled);
+        });
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -436,11 +485,6 @@ internal sealed class TrayMenu
 
     private void Add(string text, Action action)
         => Flyout.Items.Add(new MenuFlyoutItem { Text = text, Command = new RelayCommand(action) });
-
-    private bool SafeStartupEnabled()
-    {
-        try { return _startup.IsEnabled; } catch { return false; }
-    }
 
     private static string LogPath() => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
