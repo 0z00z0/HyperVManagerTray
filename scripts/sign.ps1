@@ -15,8 +15,8 @@
     To use a real CA-issued certificate instead, import it into Cert:\CurrentUser\My
     with the same -Subject and skip -Setup; signing picks it up by subject name.
 
-    NOTE: The same certificate (CN=ZeroZero software) is shared with the sibling
-    LenovoTray project. Running -Setup only once (on either project) is sufficient.
+    NOTE: This project signs with the self-signed certificate CN=ZeroZero Software.
+    Run -Setup once to create + trust it in the current user's store.
 
 .EXAMPLE
     .\scripts\sign.ps1 -Setup          # one-time: create + trust the certificate
@@ -26,7 +26,7 @@
 param(
     [switch] $Setup,
     [string] $Path,                                        # exe to sign (defaults to Release output)
-    [string] $Subject      = "CN=ZeroZero software",
+    [string] $Subject      = "CN=ZeroZero Software",
     [string] $TimestampUrl = "http://timestamp.digicert.com"
 )
 
@@ -46,6 +46,23 @@ function Get-SigningCertificate {
         Select-Object -First 1
 }
 
+# Trusts an existing cert for the current user (idempotent). Importing into
+# CurrentUser\Root pops a one-time Windows consent dialog — that's expected and
+# must be accepted interactively; it cannot be auto-confirmed.
+function Set-CertTrust {
+    param([Parameter(Mandatory)] $Cert)
+    $pub = Join-Path $env:TEMP "zerozerosoftware-pub.cer"
+    try {
+        Export-Certificate -Cert $Cert -FilePath $pub | Out-Null
+        Import-Certificate -FilePath $pub -CertStoreLocation Cert:\CurrentUser\Root             | Out-Null
+        Import-Certificate -FilePath $pub -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
+        Write-Host "Certificate trusted for the current user (thumbprint $($Cert.Thumbprint))."
+    }
+    finally {
+        Remove-Item $pub -ErrorAction SilentlyContinue
+    }
+}
+
 # Creates the self-signed cert and trusts it for the current user.
 function New-TrustedSigningCertificate {
     Write-Host "Creating self-signed code-signing certificate '$Subject'..."
@@ -56,27 +73,20 @@ function New-TrustedSigningCertificate {
         -KeyUsage DigitalSignature `
         -KeyExportPolicy Exportable `
         -NotAfter (Get-Date).AddYears(5) `
-        -FriendlyName "HyperV Manager Tray Code Signing"
+        -FriendlyName "ZeroZero Software Code Signing"
 
-    # Trust the cert for the current user so the signature validates without admin.
-    $pub = Join-Path $env:TEMP "hypervmanagertray-pub.cer"
-    try {
-        Export-Certificate -Cert $cert -FilePath $pub | Out-Null
-        Import-Certificate -FilePath $pub -CertStoreLocation Cert:\CurrentUser\Root             | Out-Null
-        Import-Certificate -FilePath $pub -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
-    }
-    finally {
-        Remove-Item $pub -ErrorAction SilentlyContinue
-    }
-
-    Write-Host "Certificate created and trusted (thumbprint $($cert.Thumbprint))."
+    Set-CertTrust -Cert $cert
     return $cert
 }
 
 # ── Setup mode ──────────────────────────────────────────────────────────────
 if ($Setup) {
-    if (Get-SigningCertificate) {
-        Write-Host "A signing certificate for '$Subject' already exists. Nothing to do."
+    $existing = Get-SigningCertificate
+    if ($existing) {
+        # Cert exists (e.g. created on a previous run) — ensure it is trusted.
+        # Re-importing is idempotent; accept the consent dialog if it appears.
+        Write-Host "A signing certificate for '$Subject' already exists; ensuring it is trusted..."
+        Set-CertTrust -Cert $existing
     }
     else {
         New-TrustedSigningCertificate | Out-Null
@@ -101,7 +111,7 @@ if (-not (Test-Path $Path)) {
 $cert = Get-SigningCertificate
 if (-not $cert) {
     # Don't fail the build — just inform the developer how to enable signing.
-    Write-Warning "No signing certificate for '$Subject'. Run '.\sign.ps1 -Setup' first. Skipping."
+    Write-Warning "No signing certificate for '$Subject'. Run '.\scripts\sign.ps1 -Setup' first. Skipping."
     return
 }
 
@@ -112,7 +122,17 @@ $result = Set-AuthenticodeSignature `
     -HashAlgorithm SHA256 `
     -TimestampServer $TimestampUrl
 
-if ($result.Status -ne "Valid") {
+if ($result.Status -eq "Valid") {
+    Write-Host "Signed successfully (status: Valid)."
+}
+elseif ($result.SignerCertificate) {
+    # A signature WAS applied, but the chain isn't trusted on this machine — typical
+    # for the self-signed cert when 'sign.ps1 -Setup' hasn't been accepted here. The
+    # file is genuinely signed (and CI signs via signtool regardless), so don't break
+    # the build; just tell the developer how to make it verify as Valid locally.
+    Write-Warning "Signed '$Path', but the certificate is not trusted on this machine (status: $($result.Status))."
+    Write-Warning "Run '.\scripts\sign.ps1 -Setup' and accept the prompt to trust '$Subject' locally."
+}
+else {
     throw "Signing failed: $($result.Status) - $($result.StatusMessage)"
 }
-Write-Host "Signed successfully (status: $($result.Status))."

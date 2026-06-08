@@ -9,7 +9,7 @@
 
 #define AppName       "Hyper-V Manager Tray"
 #define AppExe        "HyperVManagerTray.exe"
-#define AppPublisher  "ZeroZero software"
+#define AppPublisher  "ZeroZero Software"
 #define AppUrl        "https://github.com/0z00z0/HyperVManagerTray"
 ; Matches the task name used by the app's in-tray "Run on startup" toggle (StartupManager),
 ; so the installer option and the tray toggle control the exact same logon task.
@@ -61,7 +61,7 @@ Source: "{#PublishDir}\config.json"; DestDir: "{app}"; Flags: onlyifdoesntexist
 
 [Icons]
 ; Flat shortcut in Start Menu → Programs (no sub-folder) so the app is searchable by name.
-; IconFilename points to AppIcon.ico (ZeroZero software brand icon) shipped next to the exe
+; IconFilename points to AppIcon.ico (ZeroZero Software brand icon) shipped next to the exe
 ; so the Start Menu shortcut shows the correct icon immediately.
 Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\AppIcon.ico"; Comment: "Hyper-V VM network and power manager"
 

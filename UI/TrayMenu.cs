@@ -466,7 +466,7 @@ internal sealed class TrayMenu
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
     private const string AppName   = "Hyper-V Manager Tray";
-    private const string Publisher  = "Zero Zero Software";
+    private const string Publisher  = "ZeroZero Software";
     private const string RepoUrl    = "https://github.com/0z00z0/HyperVManagerTray";
 
     private static void ShowAbout()
