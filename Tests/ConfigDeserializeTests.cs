@@ -71,4 +71,45 @@ public class ConfigDeserializeTests
         var cfg = JsonSerializer.Deserialize<AppConfig>(json, Opts)!;
         Assert.Equal("R", cfg.Rules[0].Name);
     }
+
+    [Fact]
+    public void VmTarget_OnBridgeLostAction_Deserializes()
+    {
+        const string json = """
+        {
+          "virtualMachines": [
+            { "name": "VM1", "onBridgeLostAction": "pause",    "onBridgeLostDelaySeconds": 10 },
+            { "name": "VM2", "onBridgeLostAction": "save",     "onBridgeLostDelaySeconds": 60 },
+            { "name": "VM3", "onBridgeLostAction": "shutdown", "onBridgeLostDelaySeconds": 5  }
+          ]
+        }
+        """;
+        var cfg = JsonSerializer.Deserialize<AppConfig>(json, Opts)!;
+
+        Assert.Equal("pause",    cfg.VirtualMachines[0].OnBridgeLostAction);
+        Assert.Equal(10,         cfg.VirtualMachines[0].OnBridgeLostDelaySeconds);
+        Assert.Equal("save",     cfg.VirtualMachines[1].OnBridgeLostAction);
+        Assert.Equal(60,         cfg.VirtualMachines[1].OnBridgeLostDelaySeconds);
+        Assert.Equal("shutdown", cfg.VirtualMachines[2].OnBridgeLostAction);
+        Assert.Equal(5,          cfg.VirtualMachines[2].OnBridgeLostDelaySeconds);
+    }
+
+    [Fact]
+    public void VmTarget_OnBridgeLostAction_DefaultsNullAndDelay30_WhenOmitted()
+    {
+        const string json = """{ "virtualMachines": [ { "name": "VM1" } ] }""";
+        var cfg = JsonSerializer.Deserialize<AppConfig>(json, Opts)!;
+
+        Assert.Null(cfg.VirtualMachines[0].OnBridgeLostAction);
+        Assert.Equal(30, cfg.VirtualMachines[0].OnBridgeLostDelaySeconds);
+    }
+
+    [Fact]
+    public void VmTarget_OnBridgeLostAction_NoneValue_IsPreserved()
+    {
+        const string json = """{ "virtualMachines": [ { "name": "VM1", "onBridgeLostAction": "none" } ] }""";
+        var cfg = JsonSerializer.Deserialize<AppConfig>(json, Opts)!;
+
+        Assert.Equal("none", cfg.VirtualMachines[0].OnBridgeLostAction);
+    }
 }

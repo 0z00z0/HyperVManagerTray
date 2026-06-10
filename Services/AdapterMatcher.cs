@@ -40,21 +40,45 @@ public static class AdapterMatcher
         var nic = PrimaryAdapter(physical, virtual_);
         if (nic is null) return null;
 
-        // When the physical NIC is bridged its IP moves to the Hyper-V virtual NIC.
-        // Try the physical NIC first, then fall back to any virtual NIC with an IPv4.
-        var unicast = nic.GetIPProperties().UnicastAddresses
-            .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
-            ?? virtual_
-                .SelectMany(v => v.GetIPProperties().UnicastAddresses)
-                .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork);
+        try
+        {
+            // When the physical NIC is bridged its IP moves to the Hyper-V virtual NIC.
+            // Try the physical NIC first, then fall back to any virtual NIC with an IPv4.
+            UnicastIPAddressInformation? unicast = null;
+            try
+            {
+                unicast = nic.GetIPProperties().UnicastAddresses
+                    .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork);
+            }
+            catch { /* adapter removed after PrimaryAdapter() returned */ }
 
-        if (unicast is null) return null;
+            if (unicast is null)
+            {
+                foreach (var v in virtual_)
+                {
+                    try
+                    {
+                        unicast = v.GetIPProperties().UnicastAddresses
+                            .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork);
+                        if (unicast is not null) break;
+                    }
+                    catch { /* skip removed adapter */ }
+                }
+            }
 
-        return new CurrentNetworkInfo(
-            AdapterDescription: FriendlyAdapterName(nic),
-            Mac:    FormatMac(nic.GetPhysicalAddress().ToString()),
-            Ip:     unicast.Address.ToString(),
-            IpCidr: CalculateCidr(unicast));
+            if (unicast is null) return null;
+
+            string mac;
+            try   { mac = FormatMac(nic.GetPhysicalAddress().ToString()); }
+            catch { mac = "—"; }
+
+            return new CurrentNetworkInfo(
+                AdapterDescription: FriendlyAdapterName(nic),
+                Mac:    mac,
+                Ip:     unicast.Address.ToString(),
+                IpCidr: CalculateCidr(unicast));
+        }
+        catch { return null; }
     }
 
     /// <summary>
@@ -104,7 +128,9 @@ public static class AdapterMatcher
         string ruleName, string virtualSwitch, List<string> targetVms,
         NetworkInterface? nic, List<NetworkInterface> virtualAdapters)
     {
-        var props = nic?.GetIPProperties();
+        IPInterfaceProperties? props = null;
+        try { props = nic?.GetIPProperties(); }
+        catch { /* adapter removed just after evaluation — treat as no IP */ }
 
         // When a physical NIC is bridged (AllowManagementOS=true), Windows moves the
         // IP/gateway/DNS to a Hyper-V virtual NIC.  If the physical NIC has no IPv4
@@ -115,15 +141,24 @@ public static class AdapterMatcher
         if (!hasIpv4 && virtualAdapters.Count > 0)
         {
             // Prefer the virtual NIC that also has a default gateway (bridges always do).
-            var vNic = virtualAdapters
-                .Where(n => n.GetIPProperties().UnicastAddresses
-                    .Any(a => a.Address.AddressFamily == AddressFamily.InterNetwork))
-                .OrderByDescending(n => n.GetIPProperties().GatewayAddresses
-                    .Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork) ? 1 : 0)
-                .FirstOrDefault();
-
-            if (vNic is not null)
-                props = vNic.GetIPProperties();
+            NetworkInterface? vNic = null;
+            foreach (var v in virtualAdapters)
+            {
+                try
+                {
+                    var vProps = v.GetIPProperties();
+                    if (!vProps.UnicastAddresses.Any(a => a.Address.AddressFamily == AddressFamily.InterNetwork))
+                        continue;
+                    bool hasGw = vProps.GatewayAddresses.Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork);
+                    if (vNic is null || hasGw)
+                    {
+                        vNic  = v;
+                        props = vProps;
+                        if (hasGw) break; // gateway-bearing NIC wins immediately
+                    }
+                }
+                catch { /* adapter removed mid-evaluation — skip */ }
+            }
         }
 
         var ip = props?.UnicastAddresses
@@ -164,31 +199,39 @@ public static class AdapterMatcher
     {
         foreach (var nic in physicalAdapters)
         {
-            bool macOk = rule.Conditions.AdapterMac is null
-                         || NormalizeMac(nic.GetPhysicalAddress().ToString()) ==
-                            NormalizeMac(rule.Conditions.AdapterMac);
-
-            if (!macOk) continue;
-            if (rule.Conditions.IpCidr is null) return nic;
-
-            // Check the physical NIC's own addresses.
-            foreach (var addr in nic.GetIPProperties().UnicastAddresses)
+            try
             {
-                if (addr.Address.AddressFamily != AddressFamily.InterNetwork) continue;
-                if (IsInCidr(addr.Address, rule.Conditions.IpCidr)) return nic;
-            }
+                bool macOk = rule.Conditions.AdapterMac is null
+                             || NormalizeMac(nic.GetPhysicalAddress().ToString()) ==
+                                NormalizeMac(rule.Conditions.AdapterMac);
 
-            // When bridged, the physical NIC has no IP — check virtual NICs for the CIDR.
-            // If any virtual NIC carries an IP inside the rule's subnet, the rule is matched
-            // and we return the physical NIC (its Name alias is what Set-VMSwitch needs).
-            foreach (var vNic in virtualAdapters)
-            {
-                foreach (var addr in vNic.GetIPProperties().UnicastAddresses)
+                if (!macOk) continue;
+                if (rule.Conditions.IpCidr is null) return nic;
+
+                // Check the physical NIC's own addresses.
+                foreach (var addr in nic.GetIPProperties().UnicastAddresses)
                 {
                     if (addr.Address.AddressFamily != AddressFamily.InterNetwork) continue;
                     if (IsInCidr(addr.Address, rule.Conditions.IpCidr)) return nic;
                 }
+
+                // When bridged, the physical NIC has no IP — check virtual NICs for the CIDR.
+                // If any virtual NIC carries an IP inside the rule's subnet, the rule is matched
+                // and we return the physical NIC (its Name alias is what Set-VMSwitch needs).
+                foreach (var vNic in virtualAdapters)
+                {
+                    try
+                    {
+                        foreach (var addr in vNic.GetIPProperties().UnicastAddresses)
+                        {
+                            if (addr.Address.AddressFamily != AddressFamily.InterNetwork) continue;
+                            if (IsInCidr(addr.Address, rule.Conditions.IpCidr)) return nic;
+                        }
+                    }
+                    catch { /* virtual adapter removed mid-evaluation — skip */ }
+                }
             }
+            catch { /* physical adapter removed mid-evaluation — skip */ }
         }
         return null;
     }
@@ -230,9 +273,16 @@ public static class AdapterMatcher
                 // Require a valid 6-byte MAC to exclude tunnel/WAN-miniport adapters that
                 // also lack an IPv4 but are not real NICs.
                 var bridged = physicalAdapters
-                    .Where(n => HasValidMac(n)
+                    .Where(n =>
+                    {
+                        try
+                        {
+                            return HasValidMac(n)
                                 && !n.GetIPProperties().UnicastAddresses
-                                    .Any(a => a.Address.AddressFamily == AddressFamily.InterNetwork))
+                                    .Any(a => a.Address.AddressFamily == AddressFamily.InterNetwork);
+                        }
+                        catch { return false; }
+                    })
                     .OrderBy(n => n.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 ? 1 : 0)
                     .FirstOrDefault();
 
@@ -245,8 +295,15 @@ public static class AdapterMatcher
         // then pick the fastest.  Wi-Fi 6E can report a higher Speed than Gigabit Ethernet, so
         // Speed alone would incorrectly prefer wireless when both share the same subnet.
         return physicalAdapters
-            .Where(n => n.GetIPProperties().GatewayAddresses
-                .Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork))
+            .Where(n =>
+            {
+                try
+                {
+                    return n.GetIPProperties().GatewayAddresses
+                        .Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork);
+                }
+                catch { return false; }
+            })
             .OrderBy(n => n.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 ? 1 : 0)
             .ThenByDescending(n => n.Speed)
             .FirstOrDefault()
@@ -256,8 +313,11 @@ public static class AdapterMatcher
     // ── Small utilities ───────────────────────────────────────────────────────
 
     /// <summary>True only for adapters that carry a standard 48-bit (6-byte) MAC address.</summary>
-    private static bool HasValidMac(NetworkInterface nic) =>
-        nic.GetPhysicalAddress().GetAddressBytes().Length == 6;
+    private static bool HasValidMac(NetworkInterface nic)
+    {
+        try   { return nic.GetPhysicalAddress().GetAddressBytes().Length == 6; }
+        catch { return false; }
+    }
 
     /// <summary>
     /// Returns a display-friendly adapter name by stripping the Windows filter-driver
