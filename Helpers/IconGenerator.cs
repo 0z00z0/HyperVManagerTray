@@ -5,7 +5,7 @@ using System.Drawing.Imaging;
 namespace HyperVManagerTray.Helpers;
 
 /// <summary>Three tray icon states reflected as background colour.</summary>
-internal enum TrayIconState
+public enum TrayIconState
 {
     Unknown,  // grey  — startup / no data yet
     Bridged,  // green — VM on physical LAN
