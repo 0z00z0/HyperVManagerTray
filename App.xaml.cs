@@ -98,6 +98,10 @@ public partial class App : Application
             // Background startup update check — inserts a badge at the top of the tray menu
             // if a newer GitHub release exists.  Never blocks startup; failures are silent.
             _ = CheckForUpdatesOnStartupAsync();
+
+            // Once initial binding has settled, clean up any orphaned management vNICs left on
+            // the rule switches by older builds.  Idle-guarded, so it never disturbs a live link.
+            _ = HealSwitchOrphansOnStartupAsync();
         }
         catch (Exception ex)
         {
@@ -261,6 +265,31 @@ public partial class App : Application
                 _ui.TryEnqueue(() => _menu.SetUpdateBadge(result));
         }
         catch { /* never surface a background check failure */ }
+    }
+
+    /// <summary>
+    /// A short while after startup (once initial binding has settled), removes any orphaned
+    /// duplicate management vNICs left on the rule switches by older builds.  The cleanup is
+    /// idle-guarded inside <see cref="HyperVManager.HealSwitchOrphansAsync"/> so it never
+    /// disturbs a live connection.  Best-effort; all failures are swallowed.
+    /// </summary>
+    private async Task HealSwitchOrphansOnStartupAsync()
+    {
+        if (_hyperV is null || _config is null) return;
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+
+            var switches = _config.Current.Rules
+                .Select(r => r.VirtualSwitch)
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            foreach (var sw in switches)
+                await _hyperV.HealSwitchOrphansAsync(sw).ConfigureAwait(false);
+        }
+        catch { /* best-effort cleanup; never surface */ }
     }
 
     /// <summary>Truncates <paramref name="line"/> to <paramref name="maxLen"/> chars, appending "…" if trimmed.</summary>

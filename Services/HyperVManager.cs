@@ -98,14 +98,10 @@ public sealed class HyperVManager : IDisposable
         var script =
             $"$want = (Get-NetAdapter -Name '{nic}' -ErrorAction SilentlyContinue).InterfaceDescription; " +
             $"$s = Get-VMSwitch -Name '{sw}' -ErrorAction SilentlyContinue; " +
-             "if (-not $want) { 'NOADAPTER' } elseif (-not $s) { 'NOSWITCH' } else { " +
-             "if ($s.SwitchType -eq 'External' -and $s.AllowManagementOS -and " +
-             "$s.NetAdapterInterfaceDescription -eq $want) { $r = 'SKIP' } else { " +
-            $"Set-VMSwitch -Name '{sw}' -NetAdapterName '{nic}' -AllowManagementOS $true; $r = 'BOUND' }} " +
-             // Collapse any orphaned/duplicate management vNICs to a single one (no sharing toggle).
-            $"$m = @(Get-VMNetworkAdapter -ManagementOS -SwitchName '{sw}'); " +
-             "if ($m.Count -gt 1) { $m | Select-Object -Skip 1 | Remove-VMNetworkAdapter -ErrorAction SilentlyContinue } " +
-             "$r }";
+             "if (-not $want) { 'NOADAPTER' } elseif (-not $s) { 'NOSWITCH' } " +
+             "elseif ($s.SwitchType -eq 'External' -and $s.AllowManagementOS -and " +
+             "$s.NetAdapterInterfaceDescription -eq $want) { 'SKIP' } else { " +
+            $"Set-VMSwitch -Name '{sw}' -NetAdapterName '{nic}' -AllowManagementOS $true; 'BOUND' }}";
 
         var (ok, output) = await RunAsync(script, BindTimeout);
 
@@ -114,6 +110,32 @@ public sealed class HyperVManager : IDisposable
         else if (output.Contains("NOSWITCH"))   _logger.LogWarning("Virtual switch '{Switch}' not found — cannot bind", switchName);
         else if (output.Contains("SKIP"))       _logger.LogInformation("Switch '{Switch}' already bound to '{Adapter}' — no rebind", switchName, adapterName);
         else                                    _logger.LogInformation("Switch '{Switch}' bound to '{Adapter}'", switchName, adapterName);
+    }
+
+    /// <summary>
+    /// Removes orphaned/duplicate <c>vEthernet (&lt;switch&gt;)</c> management vNICs that older
+    /// builds could leave behind — but <b>only when it is provably safe</b>: it acts solely when
+    /// none of the switch's host vNICs is currently <c>Up</c> (i.e. the switch is not carrying a
+    /// live host connection), so the cleanup can never interrupt networking. Always keeps one
+    /// management vNIC. No-op when there's nothing to clean or the switch is in use. Safe to call
+    /// on a timer or after startup.
+    /// </summary>
+    public async Task HealSwitchOrphansAsync(string switchName)
+    {
+        var sw = Esc(switchName);
+        var script =
+            $"$h = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {{ $_.Name -like 'vEthernet ({sw})*' }}); " +
+            $"$m = @(Get-VMNetworkAdapter -ManagementOS -SwitchName '{sw}' -ErrorAction SilentlyContinue); " +
+             "if ($m.Count -le 1) { 'NONE' } " +
+             "elseif (@($h | Where-Object { $_.Status -eq 'Up' }).Count -gt 0) { 'BUSY' } " +
+             "else { $m | Select-Object -Skip 1 | Remove-VMNetworkAdapter -ErrorAction SilentlyContinue; 'HEALED ' + ($m.Count - 1) }";
+
+        var (ok, output) = await RunAsync(script, BindTimeout);
+
+        if (!ok)                            _logger.LogWarning("HealSwitchOrphansAsync('{Switch}') error: {Error}", switchName, output);
+        else if (output.Contains("HEALED")) _logger.LogInformation("Removed orphaned management vNIC(s) on switch '{Switch}' ({Detail})", switchName, output.Trim());
+        else if (output.Contains("BUSY"))   _logger.LogInformation("Switch '{Switch}' has duplicate vNICs but is in use — deferring cleanup", switchName);
+        // NONE → nothing to clean; no log.
     }
 
     /// <summary>

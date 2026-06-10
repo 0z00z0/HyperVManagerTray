@@ -103,7 +103,7 @@ Write-Host "==> Compiling installer with $iscc ..." -ForegroundColor Cyan
 & $iscc "/DAppVersion=$Version" "/DPublishDir=$publishDir" $iss
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)." }
 
-$setup = Join-Path $installerDir "Output\HyperVManagerTray-Setup.exe"
+$setup = Join-Path $installerDir "Output\HyperVManagerTray-Setup-$Version.exe"
 
 # ── 5. Sign the installer exe ────────────────────────────────────────────────
 # Sign before computing the SHA so the printed hash matches the distributed file.
