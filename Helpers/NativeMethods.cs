@@ -200,7 +200,7 @@ internal static class NativeMethods
     internal static UpdateAction ShowUpdateDialog(
         string latestVersion, string runningVersion,
         string releaseNotes,  string appName,
-        bool   canDownload)
+        bool   canDownload,   IntPtr hwndParent = default)
     {
         // Collect all unmanaged string allocations so we can free them in one pass.
         var strings = new List<IntPtr>(12);
@@ -239,6 +239,7 @@ internal static class NativeMethods
             var config   = new TASKDIALOGCONFIG
             {
                 cbSize                  = 176,
+                hwndParent              = hwndParent,
                 dwFlags                 = TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT,
                 dwCommonButtons         = TDCBF_CANCEL_BUTTON,
                 pszWindowTitle          = Str(appName),

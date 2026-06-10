@@ -58,6 +58,9 @@ public sealed partial class AboutWindow : Window
 
     private async Task CheckForUpdatesAsync()
     {
+        // Capture HWND on the UI thread before ConfigureAwait(false); TaskDialogIndirect
+        // needs a parent HWND to appear in front of this always-on-top window.
+        var hwnd    = Microsoft.UI.Win32Interop.GetWindowFromWindowId(AppWindow.Id);
         var result  = await _updateChecker.CheckAsync().ConfigureAwait(false);
         var running = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown";
 
@@ -67,7 +70,7 @@ public sealed partial class AboutWindow : Window
             var action = NativeMethods.ShowUpdateDialog(
                 result.LatestVersion, running,
                 result.ReleaseNotes,  AppName,
-                canDownload);
+                canDownload,          hwnd);
 
             switch (action)
             {
