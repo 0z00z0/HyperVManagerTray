@@ -333,7 +333,7 @@ public sealed partial class DashboardWindow : Window
             Btn("Resume", () => _hyperV.ResumeVmAsync(vm.Name));
             Btn("Save",   () => _hyperV.SaveVmAsync(vm.Name));
         }
-        else // Off / Saved / unknown
+        else if (s is not null) // Off / Saved — hide Start buttons while status is still loading
         {
             Btn("Start",           () => _hyperV.StartOrResumeVmAsync(vm.Name));
             Btn("Start & Connect", () => StartAndConnectAsync(vm));
