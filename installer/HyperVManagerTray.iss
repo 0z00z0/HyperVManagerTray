@@ -95,7 +95,11 @@ const
 
 // ── .NET 10 Desktop Runtime prerequisite check ─────────────────────────────
 // The app is published framework-dependent and requires .NET 10 Desktop Runtime
-// (Microsoft.WindowsDesktop.App 10.x). Check the registry that dotnet writes on install.
+// (Microsoft.WindowsDesktop.App 10.x).
+//
+// IMPORTANT: dotnet writes to the 64-bit registry hive. Inno Setup runs as a 32-bit
+// process, so HKLM alone reads WOW6432Node and never finds the key. HKLM64 forces
+// the 64-bit view and is required for the check to work correctly.
 function IsDotNet10DesktopInstalled: Boolean;
 var
   SubKeyNames: TArrayOfString;
@@ -104,7 +108,7 @@ var
 begin
   Result := False;
   RootPath := 'SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App';
-  if RegGetSubkeyNames(HKLM, RootPath, SubKeyNames) then
+  if RegGetSubkeyNames(HKLM64, RootPath, SubKeyNames) then
     for I := 0 to GetArrayLength(SubKeyNames) - 1 do
       if Copy(SubKeyNames[I], 1, 3) = '10.' then
       begin
@@ -113,22 +117,74 @@ begin
       end;
 end;
 
+// urlmon.dll — synchronous HTTP(S) download to a local file; no external dependencies.
+function URLDownloadToFileW(pCaller: IUnknown; URL, FileName: String;
+  Reserved: LongWord; lpfnCB: IUnknown): HResult;
+  external 'URLDownloadToFileW@urlmon.dll stdcall';
+
 function InitializeSetup: Boolean;
 var
   ResultCode: Integer;
+  TempExe: String;
 begin
   Result := True;
+  if IsDotNet10DesktopInstalled then Exit;
+
+  if MsgBox(
+      '.NET 10 Desktop Runtime is required but was not found on this machine.'
+      + #13#10#13#10
+      + 'Click OK to download and install it automatically (~55 MB).'
+      + #13#10
+      + 'Setup will be unresponsive for 30–60 seconds while downloading,'
+      + #13#10
+      + 'then the .NET installer will appear and complete on its own.'
+      + #13#10#13#10
+      + 'Click Cancel to abort.',
+      mbInformation, MB_OKCANCEL) <> IDOK then
+  begin
+    Result := False;
+    Exit;
+  end;
+
+  TempExe := ExpandConstant('{tmp}\dotnet-windowsdesktop-runtime.exe');
+
+  if URLDownloadToFileW(nil,
+      'https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-x64.exe',
+      TempExe, 0, nil) <> 0 then
+  begin
+    MsgBox('Download failed. Check your internet connection and try again.',
+           mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+
+  // /passive: shows a minimal progress window, no user interaction required.
+  // /norestart: suppress any reboot prompt (we handle it below if needed).
+  // ewWaitUntilTerminated: blocks until the runtime install finishes.
+  if not Exec(TempExe, '/install /passive /norestart', '',
+              SW_SHOW, ewWaitUntilTerminated, ResultCode) then
+  begin
+    MsgBox('Failed to launch the .NET installer. Please install .NET 10 Desktop Runtime manually.',
+           mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+
+  // Exit code 0 = success, 3010 = success + reboot pending (we suppress the reboot).
+  if (ResultCode <> 0) and (ResultCode <> 3010) then
+  begin
+    MsgBox('The .NET installer exited with code ' + IntToStr(ResultCode) + '.'
+           + #13#10 + 'Please install .NET 10 Desktop Runtime manually and try again.',
+           mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+
   if not IsDotNet10DesktopInstalled then
   begin
-    if MsgBox(
-        '.NET 10 Desktop Runtime is required but was not found on this machine.'
-        + #13#10#13#10
-        + 'Click OK to download and install it now, then run this installer again.'
-        + #13#10
-        + 'Click Cancel to abort.',
-        mbInformation, MB_OKCANCEL) = IDOK then
-      ShellExec('open', 'https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-x64.exe',
-                '', '', SW_SHOWNORMAL, ewNoWait, ResultCode);
+    MsgBox('.NET 10 Desktop Runtime installation did not register correctly.'
+           + #13#10 + 'Please restart your machine and run this installer again.',
+           mbError, MB_OK);
     Result := False;
   end;
 end;
