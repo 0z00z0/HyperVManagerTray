@@ -131,10 +131,27 @@ const
 // checks are pure Win32 API calls (no subprocess, no PATH, no quoting pitfalls) and
 // are tried first; the dotnet CLI is only a last resort.
 //   Source: https://learn.microsoft.com/en-us/dotnet/core/install/how-to-detect-installed-versions
+
+// True if the given registry root has a sharedfx\Microsoft.WindowsDesktop.App\10.* subkey.
+function SharedfxHas10(RootKey: Integer; const SharedfxPath: string): Boolean;
+var
+  SubKeyNames: TArrayOfString;
+  I: Integer;
+begin
+  Result := False;
+  if RegGetSubkeyNames(RootKey, SharedfxPath, SubKeyNames) then
+    for I := 0 to GetArrayLength(SubKeyNames) - 1 do
+      if Copy(SubKeyNames[I], 1, 3) = '10.' then
+      begin
+        Result := True;
+        Exit;
+      end;
+end;
+
 function IsDotNet10DesktopInstalled: Boolean;
 var
   TempFile, SharedfxPath, DotNetPath, DotNetExe: string;
-  Lines, SubKeyNames: TArrayOfString;
+  Lines: TArrayOfString;
   I: Integer;
   ResultCode: Integer;
   FindRec: TFindRec;
@@ -166,22 +183,12 @@ begin
   SharedfxPath := 'SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App';
 
   // Check 2 (registry, 32-bit view): WOW6432Node — what HKLM gives a 32-bit process.
-  if RegGetSubkeyNames(HKLM, SharedfxPath, SubKeyNames) then
-    for I := 0 to GetArrayLength(SubKeyNames) - 1 do
-      if Copy(SubKeyNames[I], 1, 3) = '10.' then
-      begin
-        Result := True;
-        Exit;
-      end;
-
   // Check 3 (registry, 64-bit view): native hive via HKLM64.
-  if RegGetSubkeyNames(HKLM64, SharedfxPath, SubKeyNames) then
-    for I := 0 to GetArrayLength(SubKeyNames) - 1 do
-      if Copy(SubKeyNames[I], 1, 3) = '10.' then
-      begin
-        Result := True;
-        Exit;
-      end;
+  if SharedfxHas10(HKLM, SharedfxPath) or SharedfxHas10(HKLM64, SharedfxPath) then
+  begin
+    Result := True;
+    Exit;
+  end;
 
   // Check 4 (CLI, last resort): `dotnet --list-runtimes` by absolute path.
   // The whole command is wrapped in an extra pair of quotes: cmd.exe strips the
