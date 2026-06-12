@@ -69,6 +69,36 @@ Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; IconFilename: "{
 Name: "runstartup"; Description: "Run {#AppName} automatically at sign-in (starts elevated without a UAC prompt at boot)"; Flags: unchecked
 Name: "autoupdate"; Description: "Auto update in background (checks for updates via winget after each sign-in)"
 
+; ── Repair poisoned installs ────────────────────────────────────────────────
+; An older SELF-CONTAINED build (≤ April 2026) deposited a full app-local .NET
+; runtime (coreclr.dll, hostpolicy.dll, hostfxr.dll, mscorlib.dll, ~190 System.*.dll,
+; workloads*.json) into {app}.  Inno overwrites changed files on upgrade but never
+; removes orphaned ones, so those host components linger.  The current framework-
+; dependent apphost, seeing a local coreclr.dll + hostpolicy.dll, switches to
+; self-contained mode, looks for the framework app-local, finds nothing, and reports
+; "You must install .NET to run this application." — the app then never starts.
+;
+; [InstallDelete] runs BEFORE [Files], so deleting the stale runtime here cleans the
+; poison; the handful of legitimate app-local assemblies the new build ships
+; (System.Drawing.Common.dll, System.Numerics.Tensors.dll, …) are re-copied immediately
+; afterwards by [Files].  config.json is never matched, so user settings survive.
+[InstallDelete]
+Type: files; Name: "{app}\coreclr.dll"
+Type: files; Name: "{app}\clr*.dll"
+Type: files; Name: "{app}\hostfxr.dll"
+Type: files; Name: "{app}\hostpolicy.dll"
+Type: files; Name: "{app}\mscor*.dll"
+Type: files; Name: "{app}\msquic.dll"
+Type: files; Name: "{app}\netstandard.dll"
+Type: files; Name: "{app}\ucrtbase.dll"
+Type: files; Name: "{app}\WindowsBase.dll"
+Type: files; Name: "{app}\Microsoft.CSharp.dll"
+Type: files; Name: "{app}\Microsoft.VisualBasic*.dll"
+Type: files; Name: "{app}\Microsoft.Win32.*.dll"
+Type: files; Name: "{app}\Microsoft.DiaSymReader.Native.amd64.dll"
+Type: files; Name: "{app}\System.*.dll"
+Type: files; Name: "{app}\workloads*.json"
+
 ; Generated at runtime by the app — remove on uninstall so the folder can be cleaned up.
 [UninstallDelete]
 Type: files;      Name: "{app}\icon-unknown-v3.ico"
@@ -97,17 +127,10 @@ const
 // The app is published framework-dependent and requires .NET 10 Desktop Runtime
 // (Microsoft.WindowsDesktop.App 10.x).
 //
-// DETECTION — four-level check from most to least reliable:
-//
-// Primary (CLI): run dotnet.exe by absolute path (avoids PATH lookup ambiguity in
-//   the 32-bit Inno Setup process) and parse `--list-runtimes` output.
+// DETECTION — three-level check, most reliable first.  The two registry/filesystem
+// checks are pure Win32 API calls (no subprocess, no PATH, no quoting pitfalls) and
+// are tried first; the dotnet CLI is only a last resort.
 //   Source: https://learn.microsoft.com/en-us/dotnet/core/install/how-to-detect-installed-versions
-//
-// Fallback A/B (registry): HKLM sharedfx subkeys — present after most installers.
-//   On some machines only the HKLM64 view is written; both are checked.
-//
-// Fallback C (filesystem): version directory under the runtime payload path.
-//   The directory is always present; independent of any registry key.
 function IsDotNet10DesktopInstalled: Boolean;
 var
   TempFile, SharedfxPath, DotNetPath, DotNetExe: string;
@@ -118,44 +141,10 @@ var
 begin
   Result := False;
 
-  // Primary: invoke dotnet.exe by absolute path so the check is independent of
-  // the installer process's PATH.  Output: "Microsoft.WindowsDesktop.App 10.x.y [path]"
-  DotNetExe := ExpandConstant('{pf64}') + '\dotnet\dotnet.exe';
-  TempFile  := ExpandConstant('{tmp}\dotnet-runtimes.txt');
-  if FileExists(DotNetExe) then
-    if Exec(ExpandConstant('{cmd}'),
-        '/C "' + DotNetExe + '" --list-runtimes > "' + TempFile + '" 2>nul',
-        '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-      if LoadStringsFromFile(TempFile, Lines) then
-        for I := 0 to GetArrayLength(Lines) - 1 do
-          if Pos('Microsoft.WindowsDesktop.App 10.', Lines[I]) > 0 then
-          begin
-            Result := True;
-            Exit;
-          end;
-
-  SharedfxPath := 'SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App';
-
-  // Fallback A: 32-bit registry view (WOW6432Node — what HKLM gives a 32-bit process)
-  if RegGetSubkeyNames(HKLM, SharedfxPath, SubKeyNames) then
-    for I := 0 to GetArrayLength(SubKeyNames) - 1 do
-      if Copy(SubKeyNames[I], 1, 3) = '10.' then
-      begin
-        Result := True;
-        Exit;
-      end;
-
-  // Fallback B: 64-bit registry view (native hive via HKLM64)
-  if RegGetSubkeyNames(HKLM64, SharedfxPath, SubKeyNames) then
-    for I := 0 to GetArrayLength(SubKeyNames) - 1 do
-      if Copy(SubKeyNames[I], 1, 3) = '10.' then
-      begin
-        Result := True;
-        Exit;
-      end;
-
-  // Fallback C: filesystem — look for a version directory (10.x.y) under the
-  // runtime payload folder.  Works even if dotnet.exe is not at {pf64}\dotnet.
+  // Check 1 (filesystem): a version directory (10.x.y) under the runtime payload
+  // folder.  Always present when the Desktop Runtime is installed, independent of
+  // any registry key or PATH.  Read the install root from the registry, falling back
+  // to the default Program Files location.
   if not RegQueryStringValue(HKLM64,
       'SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedhost',
       'Path', DotNetPath) then
@@ -173,6 +162,44 @@ begin
       Exit;
     end;
   end;
+
+  SharedfxPath := 'SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App';
+
+  // Check 2 (registry, 32-bit view): WOW6432Node — what HKLM gives a 32-bit process.
+  if RegGetSubkeyNames(HKLM, SharedfxPath, SubKeyNames) then
+    for I := 0 to GetArrayLength(SubKeyNames) - 1 do
+      if Copy(SubKeyNames[I], 1, 3) = '10.' then
+      begin
+        Result := True;
+        Exit;
+      end;
+
+  // Check 3 (registry, 64-bit view): native hive via HKLM64.
+  if RegGetSubkeyNames(HKLM64, SharedfxPath, SubKeyNames) then
+    for I := 0 to GetArrayLength(SubKeyNames) - 1 do
+      if Copy(SubKeyNames[I], 1, 3) = '10.' then
+      begin
+        Result := True;
+        Exit;
+      end;
+
+  // Check 4 (CLI, last resort): `dotnet --list-runtimes` by absolute path.
+  // The whole command is wrapped in an extra pair of quotes: cmd.exe strips the
+  // outermost quote pair from a /C argument, so without the doubled quotes the space
+  // in "C:\Program Files" would break the dotnet.exe path and the check silently fail.
+  DotNetExe := ExpandConstant('{pf64}') + '\dotnet\dotnet.exe';
+  TempFile  := ExpandConstant('{tmp}\dotnet-runtimes.txt');
+  if FileExists(DotNetExe) then
+    if Exec(ExpandConstant('{cmd}'),
+        '/C ""' + DotNetExe + '" --list-runtimes > "' + TempFile + '" 2>nul"',
+        '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      if LoadStringsFromFile(TempFile, Lines) then
+        for I := 0 to GetArrayLength(Lines) - 1 do
+          if Pos('Microsoft.WindowsDesktop.App 10.', Lines[I]) > 0 then
+          begin
+            Result := True;
+            Exit;
+          end;
 end;
 
 // urlmon.dll — synchronous HTTPS download; fallback when winget is unavailable.
