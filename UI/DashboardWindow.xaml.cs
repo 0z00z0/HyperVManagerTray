@@ -32,6 +32,7 @@ public sealed partial class DashboardWindow : Window
     private readonly Dictionary<string, long> _vhd = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _lastVhdUtc = DateTime.MinValue;
     private bool     _loading;
+    private bool     _priming;   // true during the off-screen composition warm-up (see Prime)
 
     // ── Same-click detection ────────────────────────────────────────────────────
     // Clicking the tray icon while the popup is open first deactivates it (auto-hide),
@@ -91,6 +92,27 @@ public sealed partial class DashboardWindow : Window
         AppWindow.Hide();
     }
 
+    /// <summary>
+    /// One-time, off-screen composition warm-up to eliminate the white flash on first open.
+    /// A Mica window paints its HWND white for the first frame before the backdrop composes;
+    /// doing that first frame here (tiny and far off-screen, so it's invisible) means the first
+    /// real <see cref="ShowNearTray"/> reuses an already-composed window and never flashes.
+    /// Call once, on the UI thread, at startup.
+    /// </summary>
+    public void Prime()
+    {
+        _priming = true;   // suppress OnActivated's timer/load + auto-hide during the warm-up
+        AppWindow.Resize(new Windows.Graphics.SizeInt32(1, 1));
+        AppWindow.Move(new Windows.Graphics.PointInt32(-32000, -32000));
+        AppWindow.Show();
+        // Hide after a frame has composed (low priority runs post-render), then arm for real use.
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            AppWindow.Hide();
+            _priming = false;
+        });
+    }
+
     /// <summary>Called by App (UI thread) when a switch change is applied.</summary>
     public void OnSwitchApplied(MatchResult result) => ApplyHostStatus(result);
 
@@ -127,6 +149,8 @@ public sealed partial class DashboardWindow : Window
 
     private void OnActivated(object sender, WindowActivatedEventArgs e)
     {
+        if (_priming) return;   // ignore activation churn during the off-screen warm-up
+
         if (e.WindowActivationState == WindowActivationState.Deactivated)
             HideWindow();
         else

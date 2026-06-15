@@ -102,6 +102,12 @@ public partial class App : Application
             // Once initial binding has settled, clean up any orphaned management vNICs left on
             // the rule switches by older builds.  Idle-guarded, so it never disturbs a live link.
             _ = HealSwitchOrphansOnStartupAsync();
+
+            // Pre-create and prime the dashboard so its first real open has no white flash:
+            // the Mica window's initial (white) composition frame happens now, off-screen.
+            _dashboard = new DashboardWindow(_config!, _monitor!, _hyperV!);
+            _dashboard.Closed += (_, _) => _dashboard = null;
+            _dashboard.Prime();
         }
         catch (Exception ex)
         {

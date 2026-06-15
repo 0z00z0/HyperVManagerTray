@@ -1,3 +1,5 @@
+using System.Drawing;
+using System.Drawing.Imaging;
 using HyperVManagerTray.Helpers;
 using Xunit;
 
@@ -17,9 +19,9 @@ public class IconGeneratorTests : IDisposable
     // ── Each state produces the correct named file ──────────────────────────────
 
     [Theory]
-    [InlineData(TrayIconState.Unknown,  "icon-unknown-v3.ico")]
-    [InlineData(TrayIconState.Bridged,  "icon-bridged-v3.ico")]
-    [InlineData(TrayIconState.Fallback, "icon-fallback-v3.ico")]
+    [InlineData(TrayIconState.Unknown,  "icon-unknown-v4.ico")]
+    [InlineData(TrayIconState.Bridged,  "icon-bridged-v4.ico")]
+    [InlineData(TrayIconState.Fallback, "icon-fallback-v4.ico")]
     public void GenerateAndSave_CreatesExpectedFile(TrayIconState state, string expectedFileName)
     {
         var path = IconGenerator.GenerateAndSave(_dir, state);
@@ -72,5 +74,65 @@ public class IconGeneratorTests : IDisposable
 
         Assert.Equal(path, recreated);
         Assert.True(File.Exists(recreated));
+    }
+
+    // ── New v4 requirements: transparent background + coloured glyph ─────────────
+
+    // The background must be fully transparent so the icon reads on light AND dark taskbars.
+    [Theory]
+    [InlineData(TrayIconState.Unknown)]
+    [InlineData(TrayIconState.Bridged)]
+    [InlineData(TrayIconState.Fallback)]
+    public void RenderIcon_HasTransparentBackground(TrayIconState state)
+    {
+        using var bmp = IconGenerator.RenderIcon(32, state);
+
+        // All four corners sit outside the glyph and must be fully transparent.
+        foreach (var (x, y) in new[] { (0, 0), (31, 0), (0, 31), (31, 31) })
+            Assert.Equal(0, bmp.GetPixel(x, y).A);
+    }
+
+    // The glyph itself must actually be drawn (opaque pixels present somewhere).
+    [Theory]
+    [InlineData(TrayIconState.Unknown)]
+    [InlineData(TrayIconState.Bridged)]
+    [InlineData(TrayIconState.Fallback)]
+    public void RenderIcon_DrawsOpaqueGlyph(TrayIconState state)
+    {
+        using var bmp = IconGenerator.RenderIcon(32, state);
+
+        bool anyOpaque = false;
+        for (int y = 0; y < bmp.Height && !anyOpaque; y++)
+            for (int x = 0; x < bmp.Width; x++)
+                if (bmp.GetPixel(x, y).A == 255) { anyOpaque = true; break; }
+
+        Assert.True(anyOpaque, "Expected the glyph to draw at least one fully-opaque pixel.");
+    }
+
+    // Bridged is green-dominant, Fallback blue-dominant — the colour encodes the state.
+    [Fact]
+    public void RenderIcon_StateColoursAreDistinctAndCorrectHue()
+    {
+        var bridged  = DominantGlyphColor(TrayIconState.Bridged);
+        var fallback = DominantGlyphColor(TrayIconState.Fallback);
+
+        Assert.True(bridged.G  > bridged.R  && bridged.G  > bridged.B,  $"Bridged should be green-dominant, was {bridged}");
+        Assert.True(fallback.B > fallback.R && fallback.B > fallback.G, $"Fallback should be blue-dominant, was {fallback}");
+    }
+
+    // Averages every fully-opaque glyph pixel to get the icon's dominant colour.
+    private static Color DominantGlyphColor(TrayIconState state)
+    {
+        using var bmp = IconGenerator.RenderIcon(48, state);
+        long r = 0, g = 0, b = 0, n = 0;
+        for (int y = 0; y < bmp.Height; y++)
+            for (int x = 0; x < bmp.Width; x++)
+            {
+                var p = bmp.GetPixel(x, y);
+                if (p.A < 255) continue;
+                r += p.R; g += p.G; b += p.B; n++;
+            }
+        Assert.True(n > 0, "No opaque glyph pixels found.");
+        return Color.FromArgb(255, (int)(r / n), (int)(g / n), (int)(b / n));
     }
 }

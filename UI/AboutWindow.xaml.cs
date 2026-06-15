@@ -48,12 +48,17 @@ public sealed partial class AboutWindow : Window
         Root.Measure(new Size(320, double.PositiveInfinity));
 
         var (work, scale) = NativeMethods.GetCursorMonitorMetrics();
-        int w = (int)Math.Round(320 * scale);
-        int h = (int)Math.Round((Root.DesiredSize.Height > 0 ? Root.DesiredSize.Height : 270) * scale);
-        AppWindow.Resize(new SizeInt32(w, h));
+        int cw = (int)Math.Round(320 * scale);
+        int ch = (int)Math.Round((Root.DesiredSize.Height > 0 ? Root.DesiredSize.Height : 270) * scale);
+
+        // ResizeClient sizes the CLIENT area (not the outer window), so the 320-DIP content fills
+        // it exactly — sizing the outer window instead left the border eating into the client
+        // area and clipping the right-hand buttons. Centre using the resulting outer size.
+        AppWindow.ResizeClient(new SizeInt32(cw, ch));
+        var outer = AppWindow.Size;
         AppWindow.Move(new PointInt32(
-            work.Left + (work.Right  - work.Left - w) / 2,
-            work.Top  + (work.Bottom - work.Top  - h) / 2));
+            work.Left + (work.Right  - work.Left - outer.Width)  / 2,
+            work.Top  + (work.Bottom - work.Top  - outer.Height) / 2));
     }
 
     private async Task CheckForUpdatesAsync()

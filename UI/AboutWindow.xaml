@@ -12,7 +12,7 @@
         <StackPanel>
 
             <!-- ── Brand header ──────────────────────────────────────────────── -->
-            <Border Padding="14,12,8,12">
+            <Border Padding="16,12,12,12">
                 <Border.Background>
                     <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5">
                         <GradientStop Color="#0E2235" Offset="0"/>
@@ -26,26 +26,29 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
-                    <!-- Interlocking rings: teal/blue left, purple/indigo right, amber Z in moat -->
+                    <!-- Interlocking rings (stroked, not filled): teal/blue left, purple/indigo
+                         right, thin amber Z in the moat — matches the ZeroZero Software logo. -->
                     <Canvas Width="44" Height="40" Grid.Column="0" VerticalAlignment="Center">
-                        <Ellipse Width="28" Height="28" Canvas.Left="0" Canvas.Top="6">
-                            <Ellipse.Fill>
+                        <Ellipse Width="26" Height="26" Canvas.Left="0" Canvas.Top="7"
+                                 StrokeThickness="4" Fill="Transparent">
+                            <Ellipse.Stroke>
                                 <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
                                     <GradientStop Color="#27E0C8" Offset="0"/>
                                     <GradientStop Color="#11A9D6" Offset="1"/>
                                 </LinearGradientBrush>
-                            </Ellipse.Fill>
+                            </Ellipse.Stroke>
                         </Ellipse>
-                        <Ellipse Width="28" Height="28" Canvas.Left="16" Canvas.Top="6" Opacity="0.88">
-                            <Ellipse.Fill>
+                        <Ellipse Width="26" Height="26" Canvas.Left="14" Canvas.Top="7"
+                                 StrokeThickness="4" Fill="Transparent">
+                            <Ellipse.Stroke>
                                 <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
                                     <GradientStop Color="#7B8CFF" Offset="0"/>
                                     <GradientStop Color="#3F5BE0" Offset="1"/>
                                 </LinearGradientBrush>
-                            </Ellipse.Fill>
+                            </Ellipse.Stroke>
                         </Ellipse>
-                        <TextBlock Text="Z" Canvas.Left="18" Canvas.Top="9"
-                                   FontSize="12" FontWeight="Bold"
+                        <TextBlock Text="Z" Canvas.Left="18" Canvas.Top="11"
+                                   FontSize="13" FontWeight="Bold"
                                    Foreground="#D8A657"/>
                     </Canvas>
 
