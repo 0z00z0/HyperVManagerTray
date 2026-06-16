@@ -84,6 +84,12 @@ public sealed class NetworkMonitor : IDisposable
             {
                 _evaluatePending = false;
 
+                // Breadcrumb BEFORE the native adapter enumeration: GetAllNetworkInterfaces /
+                // GetIPProperties run on an adapter that may be tearing down during a dock
+                // disconnect.  If a native fault kills the process here, this is the last line
+                // written, pinpointing evaluation as the area to inspect in the minidump.
+                _logger.LogInformation("Network change — re-evaluating adapters...");
+
                 var result = AdapterMatcher.Evaluate(_config.Current);
                 _logger.LogInformation("Evaluated: rule='{Rule}' switch='{Switch}'", result.RuleName, result.VirtualSwitch);
 

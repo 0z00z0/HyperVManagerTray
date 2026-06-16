@@ -63,6 +63,11 @@ public partial class App : Application
                 b.AddSimpleFileLogger(Path.Combine(logDir, "switcher.log"));
             });
 
+            // Capture a minidump if the app dies from a NATIVE fault (GDI+, comctl32, the
+            // WinUI/Mica compositor during a dock/display/power transition, …).  Those bypass
+            // the managed handlers below, so without this a crash leaves no trace at all.
+            CrashDumps.TryRegisterLocalDumps(Path.Combine(logDir, "dumps"));
+
             _startup       = new StartupManager(_loggerFactory.CreateLogger<StartupManager>());
             _httpClient    = new HttpClient();
             _updateChecker = new UpdateChecker(_httpClient, _loggerFactory.CreateLogger<UpdateChecker>());

@@ -63,10 +63,12 @@ public sealed partial class AboutWindow : Window
 
     private async Task CheckForUpdatesAsync()
     {
-        // Capture HWND on the UI thread before ConfigureAwait(false); TaskDialogIndirect
-        // needs a parent HWND to appear in front of this always-on-top window.
+        // Do NOT use ConfigureAwait(false): ShowUpdateDialog → TaskDialogIndirect needs the
+        // comctl32 v6 activation context, which only the UI thread has (a thread-pool thread
+        // throws EntryPointNotFoundException). Capture the parent HWND first so the dialog
+        // appears in front of this always-on-top window.
         var hwnd    = Microsoft.UI.Win32Interop.GetWindowFromWindowId(AppWindow.Id);
-        var result  = await _updateChecker.CheckAsync().ConfigureAwait(false);
+        var result  = await _updateChecker.CheckAsync();
         var running = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown";
 
         if (result.UpdateAvailable)

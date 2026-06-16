@@ -141,8 +141,12 @@ internal static class NativeMethods
     // TaskDialogIndirect supports fully custom button text and an expandable section,
     // making it ideal for the "update available" prompt with inline release notes.
     //
-    // Struct layout is pinned with LayoutKind.Explicit at verified 64-bit byte offsets
-    // (total size 176 bytes) to avoid any ambiguity with the sequential-layout marshaler.
+    // CRITICAL: TASKDIALOGCONFIG and TASKDIALOG_BUTTON are declared with 1-byte packing
+    // in commctrl.h (they sit inside a #include <pshpack1.h> … <poppack.h> block), so the
+    // x64 sizes are 160 and 12 — NOT the 176/16 you'd get from natural 8-byte alignment.
+    // Pack=1 reproduces that. If the size/offsets are wrong, TaskDialogIndirect rejects the
+    // call with E_INVALIDARG and silently shows nothing (no exception), so "Check for
+    // updates" appears to do nothing. (See TaskDialogConfigSize regression test.)
 
     internal enum UpdateAction { Update, ShowReleases, Cancel }
 
@@ -153,44 +157,48 @@ internal static class NativeMethods
     // TD_INFORMATION_ICON = MAKEINTRESOURCEW(-3) = (WCHAR*)0xFFFD (resource ID, not HICON)
     private static readonly IntPtr TD_INFORMATION_ICON = new(65533);
 
-    // TASKDIALOGCONFIG — 64-bit layout, Size=176.
-    // Fields that are unused in our call are left zero-initialised by the struct default.
-    [StructLayout(LayoutKind.Explicit, Size = 176)]
+    // Field order matches commctrl.h exactly; Pack=1 gives the byte-packed layout the API
+    // expects.  Unused fields are left zero by the struct default.
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
     private struct TASKDIALOGCONFIG
     {
-        [FieldOffset(0)]   public uint   cbSize;
-        [FieldOffset(8)]   public IntPtr hwndParent;
-        [FieldOffset(16)]  public IntPtr hInstance;
-        [FieldOffset(24)]  public uint   dwFlags;
-        [FieldOffset(28)]  public uint   dwCommonButtons;
-        [FieldOffset(32)]  public IntPtr pszWindowTitle;
-        [FieldOffset(40)]  public IntPtr hMainIcon;           // union: HICON or resource PCWSTR
-        [FieldOffset(48)]  public IntPtr pszMainInstruction;
-        [FieldOffset(56)]  public IntPtr pszContent;
-        [FieldOffset(64)]  public uint   cButtons;
-        [FieldOffset(72)]  public IntPtr pButtons;
-        [FieldOffset(80)]  public int    nDefaultButton;
-        [FieldOffset(84)]  public uint   cRadioButtons;
-        [FieldOffset(88)]  public IntPtr pRadioButtons;
-        [FieldOffset(96)]  public int    nDefaultRadioButton;
-        [FieldOffset(104)] public IntPtr pszVerificationText;
-        [FieldOffset(112)] public IntPtr pszExpandedInformation;
-        [FieldOffset(120)] public IntPtr pszExpandedControlText;
-        [FieldOffset(128)] public IntPtr pszCollapsedControlText;
-        [FieldOffset(136)] public IntPtr hFooterIcon;
-        [FieldOffset(144)] public IntPtr pszFooter;
-        [FieldOffset(152)] public IntPtr pfCallback;
-        [FieldOffset(160)] public IntPtr lpCallbackData;
-        [FieldOffset(168)] public uint   cxWidth;
+        public uint   cbSize;
+        public IntPtr hwndParent;
+        public IntPtr hInstance;
+        public uint   dwFlags;
+        public uint   dwCommonButtons;
+        public IntPtr pszWindowTitle;
+        public IntPtr hMainIcon;             // union: HICON or resource PCWSTR
+        public IntPtr pszMainInstruction;
+        public IntPtr pszContent;
+        public uint   cButtons;
+        public IntPtr pButtons;
+        public int    nDefaultButton;
+        public uint   cRadioButtons;
+        public IntPtr pRadioButtons;
+        public int    nDefaultRadioButton;
+        public IntPtr pszVerificationText;
+        public IntPtr pszExpandedInformation;
+        public IntPtr pszExpandedControlText;
+        public IntPtr pszCollapsedControlText;
+        public IntPtr hFooterIcon;
+        public IntPtr pszFooter;
+        public IntPtr pfCallback;
+        public IntPtr lpCallbackData;
+        public uint   cxWidth;
     }
 
-    // TASKDIALOG_BUTTON — 64-bit layout: int(4) + pad(4) + ptr(8) = 16 bytes.
-    [StructLayout(LayoutKind.Explicit, Size = 16)]
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
     private struct TASKDIALOG_BUTTON
     {
-        [FieldOffset(0)] public int    nButtonID;
-        [FieldOffset(8)] public IntPtr pszButtonText;
+        public int    nButtonID;
+        public IntPtr pszButtonText;
     }
+
+    /// <summary>x64 marshalled size of TASKDIALOGCONFIG (must be 160); exposed for a regression test.</summary>
+    internal static int TaskDialogConfigSize => Marshal.SizeOf<TASKDIALOGCONFIG>();
+    /// <summary>x64 marshalled size of TASKDIALOG_BUTTON (must be 12); exposed for a regression test.</summary>
+    internal static int TaskDialogButtonSize => Marshal.SizeOf<TASKDIALOG_BUTTON>();
 
     [DllImport("comctl32.dll", CharSet = CharSet.Unicode, SetLastError = false)]
     private static extern int TaskDialogIndirect(
@@ -254,7 +262,7 @@ internal static class NativeMethods
             var hasNotes = !string.IsNullOrWhiteSpace(releaseNotes);
             var config   = new TASKDIALOGCONFIG
             {
-                cbSize                  = 176,
+                cbSize                  = (uint)Marshal.SizeOf<TASKDIALOGCONFIG>(),
                 hwndParent              = hwndParent,
                 dwFlags                 = TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT,
                 dwCommonButtons         = TDCBF_CANCEL_BUTTON,
@@ -270,7 +278,18 @@ internal static class NativeMethods
                 pszExpandedControlText  = Str("Hide release notes"),
             };
 
-            TaskDialogIndirect(ref config, out int nButton, IntPtr.Zero, IntPtr.Zero);
+            int hr = TaskDialogIndirect(ref config, out int nButton, IntPtr.Zero, IntPtr.Zero);
+            if (hr != 0)   // S_OK = 0; any failure means no dialog was shown
+            {
+                // Degrade gracefully instead of silently doing nothing: a plain message box
+                // still lets the user reach the download.
+                var pick = MessageBoxW(hwndParent,
+                    $"Version {latestVersion} is available (you have {runningVersion}).\n\n" +
+                    "Open the releases page to download it?",
+                    appName, MB_YESNO | MB_ICONINFORMATION | MB_TOPMOST);
+                return pick == IDYES ? UpdateAction.ShowReleases : UpdateAction.Cancel;
+            }
+
             return nButton switch
             {
                 BtnUpdate   => UpdateAction.Update,
