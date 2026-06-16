@@ -47,9 +47,12 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 SetupIconFile=..\Assets\AppIcon.ico
-; Let a silent (background) update close the running tray app and replace its files.
-; Do NOT auto-restart it afterwards — the app is requireAdministrator, so relaunching
-; would pop a UAC prompt out of nowhere. It returns at the next sign-in / manual launch.
+; CloseApplications uses the Restart Manager, which CANNOT close the running app on an
+; interactive upgrade: the app is requireAdministrator (high integrity) and this installer
+; is per-user (low integrity), so it has no rights to terminate it.  PrepareToInstall (see
+; [Code]) handles that case with a single elevated taskkill.  CloseApplications stays on as
+; the non-elevated fallback for the silent (winget) path, which never elevates.  Do NOT
+; auto-restart — the app is relaunched explicitly by LaunchApp on interactive installs only.
 CloseApplications=yes
 RestartApplications=no
 
@@ -376,6 +379,28 @@ begin
   // the app is simply not running; they can launch it from the Start Menu later.
   // Do NOT check AppIsRunning here: the check would fire before UAC is approved,
   // falsely reporting that the app "did not start" and confusing the user.
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Result := '';
+  // Close the running app BEFORE files are copied, otherwise its locked exe/dll can't be
+  // overwritten on upgrade.  The Restart Manager (CloseApplications) can't do it because the
+  // app runs elevated while this installer doesn't, so an interactive upgrade elevates a
+  // single taskkill — one UAC prompt, exactly like the uninstaller.  Silent installs (the
+  // winget background update) are skipped so they never pop a prompt; they replace the files
+  // the next time the app happens not to be running.
+  if (not WizardSilent()) and AppIsRunning() then
+  begin
+    ShellExec('runas', ExpandConstant('{cmd}'),
+              '/C taskkill /IM "{#AppExe}" /F',
+              '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // Give Windows a moment to tear the process down and release its file handles before
+    // Inno starts copying over them.
+    Sleep(700);
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
