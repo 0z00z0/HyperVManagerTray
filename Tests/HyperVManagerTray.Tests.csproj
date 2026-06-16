@@ -17,6 +17,7 @@
     <Compile Include="..\Helpers\UptimeFormatter.cs"  Link="Linked\UptimeFormatter.cs" />
     <Compile Include="..\Helpers\IconGenerator.cs"    Link="Linked\IconGenerator.cs" />
     <Compile Include="..\Helpers\NativeMethods.cs"    Link="Linked\NativeMethods.cs" />
+    <Compile Include="..\Services\FileLogger.cs"      Link="Linked\FileLogger.cs" />
     <Compile Include="..\Models\AppConfig.cs"         Link="Linked\AppConfig.cs" />
     <Compile Include="..\Models\NetworkRule.cs"       Link="Linked\NetworkRule.cs" />
     <Compile Include="..\Models\VmTarget.cs"          Link="Linked\VmTarget.cs" />
