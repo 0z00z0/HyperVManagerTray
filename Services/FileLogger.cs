@@ -30,9 +30,13 @@ internal sealed class FileLoggerProvider(string path) : ILoggerProvider
     /// permission), fall back to a no-op writer: losing this session's log is acceptable, crashing
     /// the app over a log file is not.
     /// </summary>
+    // Retry budget for riding out a departing instance still holding the log (~1.5 s total).
+    private const int OpenAttempts = 10;
+    private static readonly TimeSpan OpenRetryDelay = TimeSpan.FromMilliseconds(150);
+
     private static StreamWriter OpenWriter(string path)
     {
-        for (int attempt = 0; attempt < 10; attempt++)
+        for (int attempt = 0; attempt < OpenAttempts; attempt++)
         {
             try
             {
@@ -40,8 +44,8 @@ internal sealed class FileLoggerProvider(string path) : ILoggerProvider
                     new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
                     { AutoFlush = true };
             }
-            catch (IOException)                  { Thread.Sleep(150); }  // sharing violation — retry
-            catch (UnauthorizedAccessException)  { break; }              // won't resolve by waiting
+            catch (IOException)                  { Thread.Sleep(OpenRetryDelay); }  // sharing violation — retry
+            catch (UnauthorizedAccessException)  { break; }                         // won't resolve by waiting
         }
         return StreamWriter.Null;  // logging disabled this session; app still starts
     }
