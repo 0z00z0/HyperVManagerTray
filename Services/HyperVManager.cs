@@ -184,9 +184,11 @@ public sealed class HyperVManager : IDisposable
             if (!json.StartsWith('[')) json = $"[{json}]";
 
             var entries = JsonSerializer.Deserialize<List<VmIpEntry>>(json, JsonOpts) ?? [];
-            return entries
+            var map = entries
                 .Where(e => !string.IsNullOrWhiteSpace(e.Name) && !string.IsNullOrWhiteSpace(e.IP))
-                .ToDictionary(e => e.Name, e => e.IP);
+                .ToDictionary(e => e.Name, e => e.IP, StringComparer.OrdinalIgnoreCase);
+            _lastVmIps = map;   // cache for sync UI reads (see GetCachedVmIp)
+            return map;
         }
         catch (Exception ex)
         {
@@ -194,6 +196,20 @@ public sealed class HyperVManager : IDisposable
             return [];
         }
     }
+
+    // Last IPv4-per-VM map from GetVmIpAddressesAsync. The tray tooltip already refreshes this on
+    // every network change / startup; the dashboard reads it synchronously (no extra PowerShell
+    // poll). volatile = readers always see the latest whole-map reference (each refresh replaces it).
+    private volatile IReadOnlyDictionary<string, string> _lastVmIps =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Returns the cached first IPv4 for a VM (or null), without any I/O or lock — safe on the UI
+    /// thread. Populated by <see cref="GetVmIpAddressesAsync(IEnumerable{string})"/>, which the tray
+    /// tooltip already calls; lets the dashboard show the IP without its own poll.
+    /// </summary>
+    public string? GetCachedVmIp(string vmName) =>
+        _lastVmIps.TryGetValue(vmName, out var ip) ? ip : null;
 
     private sealed class VmIpEntry { public string Name { get; set; } = ""; public string IP { get; set; } = ""; }
 

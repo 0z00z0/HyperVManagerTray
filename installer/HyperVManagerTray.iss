@@ -64,9 +64,10 @@ Source: "{#PublishDir}\config.json"; DestDir: "{app}"; Flags: onlyifdoesntexist
 
 [Icons]
 ; Flat shortcut in Start Menu → Programs (no sub-folder) so the app is searchable by name.
-; IconFilename points to AppIcon.ico (ZeroZero Software brand icon) shipped next to the exe
-; so the Start Menu shortcut shows the correct icon immediately.
-Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\AppIcon.ico"; Comment: "Hyper-V VM network and power manager"
+; IconFilename points to Assets\TrayBlue.ico — the blue (Fallback) tray glyph, pre-rendered and
+; shipped under Assets\ (Content items keep their relative path) so the shortcut matches the tray
+; icon (the runtime icon-*-v4.ico files don't exist until first launch, so can't be used here).
+Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\Assets\TrayBlue.ico"; Comment: "Hyper-V VM network and power manager"
 
 [Tasks]
 Name: "runstartup"; Description: "Run {#AppName} automatically at sign-in (starts elevated without a UAC prompt at boot)"; Flags: unchecked

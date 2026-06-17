@@ -25,7 +25,7 @@
     <Product>Hyper-V Manager Tray</Product>
     <Description>System-tray app that auto-connects a Hyper-V VM to the right virtual switch and controls VMs from a dashboard.</Description>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
-    <Version>2.1.39</Version>
+    <Version>2.1.40</Version>
     <Authors>ZeroZero Software</Authors>
     <Company>ZeroZero Software</Company>
     <Copyright>Copyright © 2026 ZeroZero Software</Copyright>
@@ -58,6 +58,13 @@
     <!-- app.ico: VM-themed icon used only by the runtime tray icon generator (IconGenerator.cs)
          as a base; the tray icon itself is rendered dynamically at startup. -->
     <Content Include="Assets\app.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- TrayBlue.ico: the blue (Fallback) tray glyph, pre-rendered from IconGenerator.RenderIcon
+         so the Start Menu shortcut shows the VM-monitor glyph (the runtime tray icons are generated
+         on first launch and don't exist at install time). Regenerate from IconGenerator if the v4
+         glyph changes (Fallback state). -->
+    <Content Include="Assets\TrayBlue.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

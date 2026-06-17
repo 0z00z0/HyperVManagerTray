@@ -241,9 +241,11 @@ public sealed partial class DashboardWindow : Window
     private sealed class VmCard
     {
         public required Border    Root;
+        public required string    VmName;    // config VM name — keys the IP cache lookup
         public required string    Shape;     // layout signature — rebuild when it changes
         public required TextBlock State;
         public required TextBlock Subtitle;
+        public required TextBlock Ip;        // right-justified IPv4 on the subtitle line
         public TextBlock?   Uptime;
         public TextBlock?   CpuValue;
         public ProgressBar? CpuBar;
@@ -312,6 +314,7 @@ public sealed partial class DashboardWindow : Window
         card.State.Text       = FormatState(s);
         card.State.Foreground = StateBrush(s);
         card.Subtitle.Text    = Subtitle(s);
+        card.Ip.Text          = _hyperV.GetCachedVmIp(card.VmName) ?? "";
         if (card.Uptime is not null) card.Uptime.Text = FormatUptime(s);
         if (s is null) return;
         if (card.CpuValue is not null) { card.CpuValue.Text = $"{s.Cpu}%"; SetBar(card.CpuBar, s.Cpu / 100.0); }
@@ -388,14 +391,36 @@ public sealed partial class DashboardWindow : Window
 
         rows.Children.Add(header);
 
-        // ── Switch / rule subtitle ───────────────────────────────────────────
+        // ── Switch / rule subtitle (left) + guest IPv4 (right, stands alone) ──
+        var tertiary = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"];
+        var subRow = new Grid();
+        subRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        subRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
         var subtitle = new TextBlock
         {
-            Text       = Subtitle(s),
-            FontSize   = 10,
-            Foreground = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+            Text              = Subtitle(s),
+            FontSize          = 10,
+            Foreground        = tertiary,
+            VerticalAlignment = VerticalAlignment.Center,
         };
-        rows.Children.Add(subtitle);
+        Grid.SetColumn(subtitle, 0);
+
+        // IP comes from HyperVManager's cache (refreshed by the tray-tooltip path) — no extra poll.
+        var ipLabel = new TextBlock
+        {
+            Text                = _hyperV.GetCachedVmIp(vm.Name) ?? "",
+            FontSize            = 10,
+            Foreground          = tertiary,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment   = VerticalAlignment.Center,
+            Margin              = new Thickness(8, 0, 0, 0),
+        };
+        Grid.SetColumn(ipLabel, 1);
+
+        subRow.Children.Add(subtitle);
+        subRow.Children.Add(ipLabel);
+        rows.Children.Add(subRow);
 
         // ── Metrics (running VMs only) ───────────────────────────────────────
         (TextBlock Value, ProgressBar? Bar)? cpu = null, mem = null, disk = null;
@@ -423,9 +448,11 @@ public sealed partial class DashboardWindow : Window
         return new VmCard
         {
             Root      = root,
+            VmName    = vm.Name,
             Shape     = ShapeOf(s),
             State     = stateLabel,
             Subtitle  = subtitle,
+            Ip        = ipLabel,
             Uptime    = uptimeLbl,
             CpuValue  = cpu?.Value,  CpuBar = cpu?.Bar,
             MemValue  = mem?.Value,  MemBar = mem?.Bar,
