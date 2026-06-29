@@ -287,10 +287,10 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// A short while after startup (once initial binding has settled), removes any orphaned
-    /// duplicate management vNICs left on the rule switches by older builds.  The cleanup is
-    /// idle-guarded inside <see cref="HyperVManager.HealSwitchOrphansAsync"/> so it never
-    /// disturbs a live connection.  Best-effort; all failures are swallowed.
+    /// A short while after startup (once initial binding has settled), collapses any duplicate
+    /// host vNICs on the rule switches back to one (see <see cref="HyperVManager.RepairHostVNicAsync"/>),
+    /// repairing the "host offline but VM online" state a prior dock cycle may have left behind.
+    /// Best-effort; all failures are swallowed.
     /// </summary>
     private async Task HealSwitchOrphansOnStartupAsync()
     {
@@ -306,7 +306,7 @@ public partial class App : Application
                 .ToList();
 
             foreach (var sw in switches)
-                await _hyperV.HealSwitchOrphansAsync(sw).ConfigureAwait(false);
+                await _hyperV.RepairHostVNicAsync(sw).ConfigureAwait(false);
         }
         catch { /* best-effort cleanup; never surface */ }
     }

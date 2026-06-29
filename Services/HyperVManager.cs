@@ -119,33 +119,70 @@ public sealed class HyperVManager : IDisposable
         else if (output.Contains("NOADAPTER"))  _logger.LogInformation("Adapter '{Adapter}' not present — switch '{Switch}' left unchanged", adapterName, switchName);
         else if (output.Contains("NOSWITCH"))   _logger.LogWarning("Virtual switch '{Switch}' not found — cannot bind", switchName);
         else if (output.Contains("SKIP"))       _logger.LogInformation("Switch '{Switch}' already bound to '{Adapter}' — no rebind", switchName, adapterName);
-        else                                    _logger.LogInformation("Switch '{Switch}' bound to '{Adapter}'", switchName, adapterName);
+        else
+        {
+            _logger.LogInformation("Switch '{Switch}' bound to '{Adapter}'", switchName, adapterName);
+            // A rebind (especially across a dock undock/redock) can leave Hyper-V with a duplicate
+            // host vNIC sharing one MAC, which kills the HOST's connectivity while the VM stays
+            // fine. Collapse it right here so the broken state never persists. No-op when healthy.
+            await RepairHostVNicAsync(switchName);
+        }
     }
 
+    /// <summary>Outcome of <see cref="RepairHostVNicAsync"/>.</summary>
+    public enum HostVNicState { Ok, Repaired, Reshared, NoSwitch, Error }
+
     /// <summary>
-    /// Removes orphaned/duplicate <c>vEthernet (&lt;switch&gt;)</c> management vNICs that older
-    /// builds could leave behind — but <b>only when it is provably safe</b>: it acts solely when
-    /// none of the switch's host vNICs is currently <c>Up</c> (i.e. the switch is not carrying a
-    /// live host connection), so the cleanup can never interrupt networking. Always keeps one
-    /// management vNIC. No-op when there's nothing to clean or the switch is in use. Safe to call
-    /// on a timer or after startup.
+    /// Ensures a switch has exactly ONE host (management-OS) vNIC, repairing the failure mode where
+    /// the host loses its own network while the VM stays connected.
+    ///
+    /// <para>After a rebind — typically a dock undock/redock — Hyper-V can leave the switch with a
+    /// DUPLICATE host vNIC, and the duplicate carries the SAME MAC as the original. Two host vNICs
+    /// sharing a MAC break the host's egress (the VM, with its own MAC, is unaffected). The earlier
+    /// "only clean when no host vNIC is Up" guard never fired here, because the dead duplicate is Up
+    /// (APIPA). So we act on the unambiguous signal — host vNIC count &gt; 1 — and collapse to a
+    /// single fresh vNIC via an <c>AllowManagementOS $false→$true</c> reset (a ~1.5 s host blip; the
+    /// VM keeps its connection). This is exactly the manual recovery that resolves it.</para>
+    ///
+    /// <para>Also self-heals an interrupted reset: if the switch is External but sharing was left
+    /// off (count 0), it re-enables sharing. No-op (and no blip) when already healthy. Safe to call
+    /// after every bind, on startup, or on demand.</para>
     /// </summary>
-    public async Task HealSwitchOrphansAsync(string switchName)
+    public async Task<HostVNicState> RepairHostVNicAsync(string switchName)
     {
         var sw = Esc(switchName);
         var script =
-            $"$h = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {{ $_.Name -like 'vEthernet ({sw})*' }}); " +
+            $"$s = Get-VMSwitch -Name '{sw}' -ErrorAction SilentlyContinue; " +
+             "if (-not $s) { 'NOSWITCH' } else { " +
             $"$m = @(Get-VMNetworkAdapter -ManagementOS -SwitchName '{sw}' -ErrorAction SilentlyContinue); " +
-             "if ($m.Count -le 1) { 'NONE' } " +
-             "elseif (@($h | Where-Object { $_.Status -eq 'Up' }).Count -gt 0) { 'BUSY' } " +
-             "else { $m | Select-Object -Skip 1 | Remove-VMNetworkAdapter -ErrorAction SilentlyContinue; 'HEALED ' + ($m.Count - 1) }";
+             "if ($m.Count -gt 1) { " +
+            $"Set-VMSwitch -Name '{sw}' -AllowManagementOS $false; " +
+             "Start-Sleep -Milliseconds 1500; " +
+            $"Set-VMSwitch -Name '{sw}' -AllowManagementOS $true; " +
+             "'REPAIRED ' + $m.Count " +
+             "} elseif ($s.SwitchType -eq 'External' -and -not $s.AllowManagementOS) { " +
+            $"Set-VMSwitch -Name '{sw}' -AllowManagementOS $true; 'RESHARED' " +
+             "} else { 'OK' } }";
 
         var (ok, output) = await RunAsync(script, BindTimeout);
 
-        if (!ok)                            _logger.LogWarning("HealSwitchOrphansAsync('{Switch}') error: {Error}", switchName, output);
-        else if (output.Contains("HEALED")) _logger.LogInformation("Removed orphaned management vNIC(s) on switch '{Switch}' ({Detail})", switchName, output.Trim());
-        else if (output.Contains("BUSY"))   _logger.LogInformation("Switch '{Switch}' has duplicate vNICs but is in use — deferring cleanup", switchName);
-        // NONE → nothing to clean; no log.
+        if (!ok)
+        {
+            _logger.LogWarning("RepairHostVNicAsync('{Switch}') error: {Error}", switchName, output);
+            return HostVNicState.Error;
+        }
+        if (output.Contains("REPAIRED"))
+        {
+            _logger.LogWarning("Collapsed duplicate host vNIC(s) on switch '{Switch}' to one ({Detail})", switchName, output.Trim());
+            return HostVNicState.Repaired;
+        }
+        if (output.Contains("RESHARED"))
+        {
+            _logger.LogInformation("Restored host sharing on switch '{Switch}'", switchName);
+            return HostVNicState.Reshared;
+        }
+        if (output.Contains("NOSWITCH")) return HostVNicState.NoSwitch;
+        return HostVNicState.Ok;   // already healthy
     }
 
     /// <summary>

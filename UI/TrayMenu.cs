@@ -61,6 +61,7 @@ internal sealed class TrayMenu
 
         var vmNetworkMenu = new MenuFlyoutSubItem { Text = "VM Network" };
         vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Force Re-evaluate", Command = new RelayCommand(() => _ = _monitor.ForceEvaluateAsync()) });
+        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Repair host networking", Command = new RelayCommand(() => _ = RepairHostNetworkingAsync()) });
         vmNetworkMenu.Items.Add(new MenuFlyoutSeparator());
         vmNetworkMenu.Items.Add(_overrideMenu);
         vmNetworkMenu.Items.Add(new MenuFlyoutSeparator());
@@ -336,6 +337,54 @@ internal sealed class TrayMenu
                 NativeMethods.Error($"Failed to save rule:\n{ex.Message}", AppName);
             }
         });
+    }
+
+    /// <summary>
+    /// Manual escape hatch for the "host offline but VM online" failure: collapses any duplicate
+    /// host vNIC on each configured bridged switch back to one (see
+    /// <see cref="HyperVManager.RepairHostVNicAsync"/>) and reports the outcome.
+    /// </summary>
+    private async Task RepairHostNetworkingAsync()
+    {
+        try
+        {
+            var switches = _config.Current.Rules
+                .Select(r => r.VirtualSwitch)
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (switches.Count == 0)
+            {
+                NativeMethods.Info("No bridged switches are configured — nothing to repair.", AppName);
+                return;
+            }
+
+            var repaired = new List<string>();
+            bool anyError = false;
+            foreach (var sw in switches)
+            {
+                var state = await _hyperV.RepairHostVNicAsync(sw).ConfigureAwait(false);
+                if (state is HyperVManager.HostVNicState.Repaired or HyperVManager.HostVNicState.Reshared)
+                    repaired.Add(sw);
+                else if (state == HyperVManager.HostVNicState.Error)
+                    anyError = true;
+            }
+
+            if (repaired.Count > 0)
+                NativeMethods.Info(
+                    $"Repaired host networking on: {string.Join(", ", repaired)}.\n\n" +
+                    "A duplicate host network adapter was collapsed back to one — your wired connection should return within a few seconds.",
+                    AppName);
+            else if (anyError)
+                NativeMethods.Warn("Could not repair host networking. See the log file for details.", AppName);
+            else
+                NativeMethods.Info("Host networking looks healthy — nothing to repair.", AppName);
+        }
+        catch (Exception ex)
+        {
+            NativeMethods.Warn($"Repair failed:\n{ex.Message}", AppName);
+        }
     }
 
     private async Task CheckForUpdatesAsync()
