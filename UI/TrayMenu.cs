@@ -22,7 +22,7 @@ internal sealed class TrayMenu
     private readonly StartupManager _startup;
     private readonly UpdateChecker  _updateChecker;
 
-    private readonly MenuFlyoutSubItem    _overrideMenu = new() { Text = "VM Network Override" };
+    private readonly MenuFlyoutSubItem    _overrideMenu = new() { Text = "Override VM switch" };
     private readonly MenuFlyoutSubItem    _vmPowerMenu  = new() { Text = "VM Power" };
     private readonly ToggleMenuFlyoutItem _startupItem  = new() { Text = "Run on startup" };
 
@@ -60,12 +60,12 @@ internal sealed class TrayMenu
         Flyout.Items.Add(new MenuFlyoutSeparator());
 
         var vmNetworkMenu = new MenuFlyoutSubItem { Text = "VM Network" };
-        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Force Re-evaluate", Command = new RelayCommand(() => _ = _monitor.ForceEvaluateAsync()) });
-        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Repair host networking", Command = new RelayCommand(() => _ = RepairHostNetworkingAsync()) });
+        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Re-check network now", Command = new RelayCommand(() => _ = _monitor.ForceEvaluateAsync()) });
+        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Repair host networking (host offline, VM online)", Command = new RelayCommand(() => _ = RepairHostNetworkingAsync()) });
         vmNetworkMenu.Items.Add(new MenuFlyoutSeparator());
         vmNetworkMenu.Items.Add(_overrideMenu);
         vmNetworkMenu.Items.Add(new MenuFlyoutSeparator());
-        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Add current network as bridged", Command = new RelayCommand(AddCurrentAsBridged) });
+        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Add current network as a bridged rule", Command = new RelayCommand(AddCurrentAsBridged) });
         Flyout.Items.Add(vmNetworkMenu);
         Flyout.Items.Add(new MenuFlyoutSeparator());
 
@@ -73,7 +73,7 @@ internal sealed class TrayMenu
         settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Open config.json", Command = new RelayCommand(() => OpenPath(ConfigManager.GetConfigPath())) });
         settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Open log file",    Command = new RelayCommand(() => OpenPath(LogPath())) });
         settingsMenu.Items.Add(new MenuFlyoutSeparator());
-        settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Reload config",    Command = new RelayCommand(() => _ = Task.Run(() => _config.Load())) });
+        settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Reload config from disk", Command = new RelayCommand(() => _ = Task.Run(() => _config.Load())) });
         settingsMenu.Items.Add(new MenuFlyoutSeparator());
         settingsMenu.Items.Add(_startupItem);
         settingsMenu.Items.Add(new MenuFlyoutSeparator());
