@@ -12,7 +12,8 @@ namespace HyperVManagerTray.Services;
 public sealed class NetworkMonitor : IDisposable
 {
     private readonly ConfigManager _config;
-    private readonly HyperVManager _hyperV;
+    private readonly HyperVManager _hyperV;   // switch binding (PowerShell)
+    private readonly VmService     _vm;       // VM power (WMI)
     private readonly ILogger<NetworkMonitor> _logger;
     private readonly System.Threading.Timer _debounceTimer;
     // Single-flight guard: only one evaluate/apply runs at a time.  '_evaluatePending'
@@ -36,10 +37,11 @@ public sealed class NetworkMonitor : IDisposable
     /// <summary>The most recently applied match result, or null if nothing applied yet.</summary>
     public MatchResult? LastApplied => _lastApplied;
 
-    public NetworkMonitor(ConfigManager config, HyperVManager hyperV, ILogger<NetworkMonitor> logger)
+    public NetworkMonitor(ConfigManager config, HyperVManager hyperV, VmService vm, ILogger<NetworkMonitor> logger)
     {
         _config = config;
         _hyperV = hyperV;
+        _vm     = vm;
         _logger = logger;
         _debounceTimer = new System.Threading.Timer(OnDebounceElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
@@ -212,7 +214,7 @@ public sealed class NetworkMonitor : IDisposable
                 foreach (var vmName in rule.TargetVms)
                 {
                     _logger.LogInformation("Autostart: starting/resuming {Vm} for rule '{Rule}'", vmName, rule.Name);
-                    _ = _hyperV.StartOrResumeVmAsync(vmName);
+                    _vm.BeginPowerAction(vmName, VmOpKind.Start);
                 }
             }
         }
@@ -281,13 +283,12 @@ public sealed class NetworkMonitor : IDisposable
                             "Bridge-lost action: {Action} {Vm} (bridge absent for {Delay}s)",
                             action, vmName, delaySec);
 
-                        await (action switch
+                        switch (action)
                         {
-                            "pause"    => _hyperV.SuspendVmAsync(vmName),
-                            "save"     => _hyperV.SaveVmAsync(vmName),
-                            "shutdown" => _hyperV.ShutdownVmAsync(vmName),
-                            _          => Task.CompletedTask,
-                        });
+                            case "pause":    _vm.BeginPowerAction(vmName, VmOpKind.Pause);    break;
+                            case "save":     _vm.BeginPowerAction(vmName, VmOpKind.Save);     break;
+                            case "shutdown": _vm.BeginPowerAction(vmName, VmOpKind.Shutdown); break;
+                        }
                     }
                     catch (OperationCanceledException) { /* bridge restored — expected */ }
                     catch (Exception ex)

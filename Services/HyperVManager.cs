@@ -1,15 +1,13 @@
 using System.Text;
-using System.Text.Json;
 using Microsoft.Extensions.Logging;
-using HyperVManagerTray.Models;
 
 namespace HyperVManagerTray.Services;
 
 /// <summary>
 /// Runs Hyper-V PowerShell cmdlets through a single persistent powershell.exe worker
 /// process (read-eval loop over stdin/stdout), avoiding the 1-2 s process+module startup
-/// that a per-command spawn would cost on every dashboard poll.  The worker is reaped
-/// after a couple of minutes of inactivity so an idle tray app holds no extra process.
+/// that a per-command spawn would cost on every call.  The worker is reaped after a couple
+/// of minutes of inactivity so an idle tray app holds no extra process.
 ///
 /// An out-of-process worker (rather than the Microsoft.PowerShell.SDK in-process runspace)
 /// is used because the SDK fails to initialise in self-contained builds due to a registry
@@ -17,27 +15,16 @@ namespace HyperVManagerTray.Services;
 /// absent.  powershell.exe (Windows PowerShell 5.1) is always present on Windows 10/11 and
 /// supports all required Hyper-V cmdlets.  Commands are passed as Base64-encoded Unicode
 /// lines to sidestep all quoting/escaping concerns.
+///
+/// Phase 1 scope: this class now owns ONLY switch binding and host-vNIC repair — safety-critical
+/// host-networking operations kept on PowerShell deliberately. VM status/metrics/power/IPs moved
+/// to <see cref="VmService"/> (native WMI, event-driven, no polling). See <c>VmService</c>'s
+/// class doc for the full migration rationale.
 /// </summary>
 public sealed class HyperVManager : IDisposable
 {
     private readonly ILogger<HyperVManager> _logger;
     private readonly SemaphoreSlim _lock = new(1, 1);  // serialise concurrent calls
-
-    // ── GetAllVmsAsync cache ──────────────────────────────────────────────────
-    private List<DiscoveredVm>? _allVmsCache;
-    private DateTime _allVmsCacheUtc = DateTime.MinValue;
-    private static readonly TimeSpan AllVmsCacheTtl = TimeSpan.FromSeconds(30);
-
-    /// <summary>
-    /// Returns the cached VM list without any I/O or lock acquisition — safe to call on the
-    /// UI thread.  Returns <c>null</c> when the cache has never been populated (i.e. before
-    /// the first <see cref="GetAllVmsAsync"/> call completes).  Returns the list even when
-    /// stale; callers should trigger a background <see cref="GetAllVmsAsync"/> for the next use.
-    /// </summary>
-    public List<DiscoveredVm>? GetCachedVmsSync() => _allVmsCache;
-
-    /// <summary>Represents a VM discovered on the local Hyper-V host (may or may not be in config).</summary>
-    public sealed record DiscoveredVm(string Name, string NicName);
 
     public HyperVManager(ILogger<HyperVManager> logger)
     {
@@ -75,10 +62,6 @@ public sealed class HyperVManager : IDisposable
     // never disables host sharing, so even a hard kill mid-sequence cannot leave the host
     // without a management vNIC (the failure mode that previously disconnected the host).
     private static readonly TimeSpan BindTimeout = TimeSpan.FromSeconds(120);
-
-    // Save-VM writes all assigned RAM to disk — can take several minutes for large VMs.
-    // Stop-VM (graceful) sends a shutdown signal and waits for the guest OS to finish.
-    private static readonly TimeSpan SlowVmTimeout = TimeSpan.FromMinutes(5);
 
     /// <summary>
     /// Binds a Hyper-V virtual switch to a physical NIC (makes it External, with the host
@@ -185,274 +168,13 @@ public sealed class HyperVManager : IDisposable
         return HostVNicState.Ok;   // already healthy
     }
 
-    /// <summary>
-    /// Queries the first IPv4 address for each of the named VMs in a single PowerShell call.
-    /// Returns a dictionary of VM name → first IPv4 address; VMs with no address are omitted.
-    /// Never throws — returns an empty dictionary on any error.
-    /// </summary>
-    public async Task<Dictionary<string, string>> GetVmIpAddressesAsync(IEnumerable<string> vmNames)
-    {
-        var names = vmNames.ToList();
-        if (names.Count == 0) return [];
-
-        _logger.LogDebug("Querying IP addresses for {Count} VM(s)...", names.Count);
-
-        // Build a PowerShell array literal: @('vm1','vm2')
-        var quoted = string.Join(",", names.Select(n => $"'{Esc(n)}'"));
-        var script =
-            $"Get-VM -Name @({quoted}) -ErrorAction SilentlyContinue | " +
-             "Get-VMNetworkAdapter | " +
-             "Where-Object { $_.IPAddresses.Count -gt 0 } | " +
-             "Select-Object @{N='Name';E={$_.VMName}}, " +
-             "@{N='IP';E={($_.IPAddresses | Where-Object { $_ -notmatch ':' } | Select-Object -First 1)}} | " +
-             "ConvertTo-Json -Compress";
-
-        var (ok, output) = await RunAsync(script);
-        if (!ok || string.IsNullOrWhiteSpace(output))
-        {
-            if (!ok) _logger.LogWarning("GetVmIpAddressesAsync failed: {Error}", output);
-            return [];
-        }
-
-        try
-        {
-            // ConvertTo-Json emits a bare object for a single VM — normalise to array.
-            var json = output.TrimStart();
-            if (!json.StartsWith('[')) json = $"[{json}]";
-
-            var entries = JsonSerializer.Deserialize<List<VmIpEntry>>(json, JsonOpts) ?? [];
-            var map = entries
-                .Where(e => !string.IsNullOrWhiteSpace(e.Name) && !string.IsNullOrWhiteSpace(e.IP))
-                .ToDictionary(e => e.Name, e => e.IP, StringComparer.OrdinalIgnoreCase);
-            _lastVmIps = map;   // cache for sync UI reads (see GetCachedVmIp)
-            return map;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "GetVmIpAddressesAsync: failed to parse JSON output");
-            return [];
-        }
-    }
-
-    // Last IPv4-per-VM map from GetVmIpAddressesAsync. The tray tooltip already refreshes this on
-    // every network change / startup; the dashboard reads it synchronously (no extra PowerShell
-    // poll). volatile = readers always see the latest whole-map reference (each refresh replaces it).
-    private volatile IReadOnlyDictionary<string, string> _lastVmIps =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// Returns the cached first IPv4 for a VM (or null), without any I/O or lock — safe on the UI
-    /// thread. Populated by <see cref="GetVmIpAddressesAsync(IEnumerable{string})"/>, which the tray
-    /// tooltip already calls; lets the dashboard show the IP without its own poll.
-    /// </summary>
-    public string? GetCachedVmIp(string vmName) =>
-        _lastVmIps.TryGetValue(vmName, out var ip) ? ip : null;
-
-    private sealed class VmIpEntry { public string Name { get; set; } = ""; public string IP { get; set; } = ""; }
-
-    /// <summary>Returns the IPv4 addresses reported by the VM's network adapter (may be empty).</summary>
-    public async Task<string[]> GetVmIpAddressesAsync(string vmName)
-    {
-        _logger.LogDebug("Querying IP addresses for VM '{VmName}'...", vmName);
-        var (ok, output) = await RunAsync(
-            $"(Get-VMNetworkAdapter -VMName '{Esc(vmName)}').IPAddresses | " +
-            $"Where-Object {{ $_ -match '\\.' }}");
-
-        if (!ok)
-        {
-            _logger.LogWarning("Failed to query IP addresses for VM '{VmName}': {Error}", vmName, output);
-            return [];
-        }
-        if (string.IsNullOrWhiteSpace(output)) return [];
-
-        return output.Split(['\n', '\r'], StringSplitOptions.RemoveEmptyEntries)
-                     .Select(l => l.Trim())
-                     .Where(l => l.Length > 0)
-                     .ToArray();
-    }
-
-    // ── All-VM discovery ────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Returns all VMs on the local Hyper-V host, regardless of whether they are in config.
-    /// Result is cached for 30 seconds to avoid repeated PowerShell startups.
-    /// Never throws — returns an empty list on any error.
-    /// </summary>
-    public async Task<List<DiscoveredVm>> GetAllVmsAsync(bool forceRefresh = false)
-    {
-        if (!forceRefresh && _allVmsCache is not null
-            && DateTime.UtcNow - _allVmsCacheUtc < AllVmsCacheTtl)
-        {
-            return _allVmsCache;
-        }
-
-        _logger.LogDebug("Discovering all Hyper-V VMs on localhost...");
-
-        const string script =
-            "$ProgressPreference='SilentlyContinue'; " +
-            "Get-VM -ErrorAction SilentlyContinue | ForEach-Object { " +
-            "$adapters = $_ | Get-VMNetworkAdapter -ErrorAction SilentlyContinue; " +
-            "[PSCustomObject]@{ " +
-            "Name = $_.Name; " +
-            "NicName = if ($adapters) { $adapters[0].Name } else { '' } " +
-            "} } | ConvertTo-Json -Compress";
-
-        var (ok, output) = await RunAsync(script);
-
-        if (!ok || string.IsNullOrWhiteSpace(output))
-        {
-            if (!ok) _logger.LogWarning("GetAllVmsAsync failed: {Error}", output);
-            _allVmsCache   = [];
-            _allVmsCacheUtc = DateTime.UtcNow;
-            return _allVmsCache;
-        }
-
-        try
-        {
-            var list = DeserializeArrayOrObject<DiscoveredVmJson>(output);
-            _allVmsCache = list
-                .Where(v => !string.IsNullOrWhiteSpace(v.Name))
-                .Select(v => new DiscoveredVm(v.Name, v.NicName ?? ""))
-                .ToList();
-            _allVmsCacheUtc = DateTime.UtcNow;
-            _logger.LogInformation("Discovered {Count} VM(s) on localhost.", _allVmsCache.Count);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "GetAllVmsAsync: failed to parse JSON output");
-            _allVmsCache   = [];
-            _allVmsCacheUtc = DateTime.UtcNow;
-        }
-
-        return _allVmsCache;
-    }
-
-    private sealed class DiscoveredVmJson { public string Name { get; set; } = ""; public string? NicName { get; set; } }
-
-    // ── VM power control ────────────────────────────────────────────────────────
-
-    /// <summary>Graceful shutdown via guest OS integration services (no -Force/-TurnOff).</summary>
-    public Task ShutdownVmAsync(string vm) => VmActionAsync(vm, $"Stop-VM -Name '{Esc(vm)}'",   "shut down", SlowVmTimeout);
-    public Task SuspendVmAsync(string vm)  => VmActionAsync(vm, $"Suspend-VM -Name '{Esc(vm)}'","paused");
-    /// <summary>Saves VM state (RAM) to disk — can take several minutes; uses extended timeout.</summary>
-    public Task SaveVmAsync(string vm)     => VmActionAsync(vm, $"Save-VM -Name '{Esc(vm)}'",   "saved",     SlowVmTimeout);
-    public Task ResumeVmAsync(string vm)   => VmActionAsync(vm, $"Resume-VM -Name '{Esc(vm)}'", "resumed");
-
-    /// <summary>Starts the VM, or resumes it if currently Paused (covers Off/Saved via Start-VM).</summary>
-    public Task StartOrResumeVmAsync(string vm) => VmActionAsync(vm,
-        $"$v = Get-VM -Name '{Esc(vm)}' -ErrorAction Stop; " +
-        $"if ($v.State -eq 'Paused') {{ Resume-VM -Name '{Esc(vm)}' }} else {{ Start-VM -Name '{Esc(vm)}' }}",
-        "started/resumed");
-
-    private async Task VmActionAsync(string vmName, string script, string verb, TimeSpan? timeout = null)
-    {
-        _logger.LogInformation("VM '{VmName}': {Verb}...", vmName, verb);
-        var (ok, output) = await RunAsync(script, timeout);
-        if (ok) _logger.LogInformation("VM '{VmName}' {Verb} successfully.", vmName, verb);
-        else    _logger.LogWarning("VM '{VmName}' {Verb} failed: {Error}", vmName, verb, output);
-    }
-
-    // ── VM status / metrics ─────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Queries live state + metrics — and optionally VHD sizes — for the named VMs in a
-    /// SINGLE PowerShell round-trip.  The dashboard polls this every second while open, so
-    /// batching the (slow) VHD enumeration into the same call halves the per-cycle cost
-    /// versus issuing two separate queries that the worker would serialise anyway.
-    /// Never throws — returns empty collections on any error.
-    /// </summary>
-    public async Task<(IReadOnlyList<VmStatus> Statuses, IReadOnlyDictionary<string, long> VhdBytes)>
-        GetVmDashboardAsync(IEnumerable<string> names, bool includeVhd)
-    {
-        var quoted = names.Select(n => $"'{Esc(n)}'").ToList();
-        if (quoted.Count == 0) return ([], new Dictionary<string, long>());
-
-        _logger.LogDebug("Querying dashboard data for {VmCount} VM(s) (vhd={Vhd})...", quoted.Count, includeVhd);
-
-        var vhdPart = includeVhd
-            ? "@($vms | ForEach-Object { [PSCustomObject]@{ Name = $_.Name; Vhd = [int64](($_ | Get-VMHardDiskDrive | " +
-              "Get-VHD -ErrorAction SilentlyContinue | Measure-Object -Property FileSize -Sum).Sum) } })"
-            : "@()";
-
-        var script =
-            "$ProgressPreference='SilentlyContinue'; " +
-            $"$vms = @(Get-VM -Name {string.Join(",", quoted)} -ErrorAction SilentlyContinue); " +
-            "$st = @($vms | ForEach-Object { [PSCustomObject]@{ Name = $_.Name; State = $_.State.ToString(); Cpu = [int]$_.CPUUsage; " +
-            "MemAssigned = [int64]$_.MemoryAssigned; MemMax = [int64]$_.MemoryMaximum; " +
-            "Uptime = $_.Uptime.ToString(); " +
-            "Switch = ($_.NetworkAdapters | Select-Object -First 1).SwitchName; " +
-            "StatusDesc = ($_.StatusDescriptions -join ' ') } }); " +
-            $"$vhd = {vhdPart}; " +
-            "[PSCustomObject]@{ Status = $st; Vhd = $vhd } | ConvertTo-Json -Depth 4";
-
-        var (ok, output) = await RunAsync(script);
-        if (!ok || string.IsNullOrWhiteSpace(output))
-        {
-            if (!ok) _logger.LogWarning("GetVmDashboardAsync: PowerShell query failed: {Error}", output);
-            return ([], new Dictionary<string, long>());
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(output);
-            var statuses = doc.RootElement.TryGetProperty("Status", out var st)
-                ? ParseListElement<VmStatus>(st) : [];
-            var vhdList  = doc.RootElement.TryGetProperty("Vhd", out var vh)
-                ? ParseListElement<VhdEntry>(vh) : [];
-            return (statuses, vhdList.ToDictionary(e => e.Name, e => e.Vhd));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "GetVmDashboardAsync: failed to parse JSON output");
-            return ([], new Dictionary<string, long>());
-        }
-    }
-
-    private sealed class VhdEntry { public string Name { get; set; } = ""; public long Vhd { get; set; } }
-
-    /// <summary>
-    /// Deserialises a nested element that PS 5.1's <c>ConvertTo-Json</c> may emit as an array,
-    /// a bare object (single item), or null/absent (empty).
-    /// </summary>
-    private static IReadOnlyList<T> ParseListElement<T>(JsonElement el)
-    {
-        try
-        {
-            return el.ValueKind switch
-            {
-                JsonValueKind.Array  => JsonSerializer.Deserialize<List<T>>(el.GetRawText(), JsonOpts) ?? [],
-                JsonValueKind.Object => [JsonSerializer.Deserialize<T>(el.GetRawText(), JsonOpts)!],
-                _                    => [],
-            };
-        }
-        catch { return []; }
-    }
-
-    private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
-
-    /// <summary>Deserialises PS <c>ConvertTo-Json</c> output, which emits a bare object for a single item.</summary>
-    private static IReadOnlyList<T> DeserializeArrayOrObject<T>(string json)
-    {
-        if (string.IsNullOrWhiteSpace(json)) return [];
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind == JsonValueKind.Array)
-                return JsonSerializer.Deserialize<List<T>>(json, JsonOpts) ?? [];
-            var one = JsonSerializer.Deserialize<T>(json, JsonOpts);
-            return one is null ? [] : [one];
-        }
-        catch { return []; }
-    }
-
     // ── Persistent PowerShell worker ────────────────────────────────────────────
     //
-    // Spawning a fresh powershell.exe per query costs 1-2 s of startup + Hyper-V module
-    // load each time; with the dashboard polling every second that meant dozens of process
-    // launches per minute.  Instead, one hidden worker process runs a read-eval loop:
-    // each command is sent as a Base64 line on stdin, executed in the warm session, and
-    // the output is terminated by an OK/ERR sentinel line.  Commands keep the same
-    // semantics as before (non-terminating errors are merged into output; terminating
+    // Spawning a fresh powershell.exe per command costs 1-2 s of startup + Hyper-V module
+    // load each time. Instead, one hidden worker process runs a read-eval loop: each command
+    // is sent as a Base64 line on stdin, executed in the warm session, and the output is
+    // terminated by an OK/ERR sentinel line. Commands keep the same semantics as a standalone
+    // -EncodedCommand invocation (non-terminating errors are merged into output; terminating
     // errors yield ok=false).
     //
     // Lifecycle: spawned lazily on first use, killed+respawned on timeout or crash, and

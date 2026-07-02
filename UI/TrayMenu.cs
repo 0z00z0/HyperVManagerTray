@@ -18,7 +18,8 @@ internal sealed class TrayMenu
 {
     private readonly ConfigManager  _config;
     private readonly NetworkMonitor _monitor;
-    private readonly HyperVManager  _hyperV;
+    private readonly HyperVManager  _hyperV;   // switch binding / host-vNIC repair (PowerShell, Phase 1)
+    private readonly VmService      _vm;       // VM status/power/IPs (WMI)
     private readonly StartupManager _startup;
     private readonly UpdateChecker  _updateChecker;
 
@@ -40,12 +41,13 @@ internal sealed class TrayMenu
 
     public MenuFlyout Flyout { get; }
 
-    public TrayMenu(ConfigManager config, NetworkMonitor monitor, HyperVManager hyperV,
+    public TrayMenu(ConfigManager config, NetworkMonitor monitor, HyperVManager hyperV, VmService vm,
                     StartupManager startup, UpdateChecker updateChecker, Action onExit)
     {
         _config        = config;
         _monitor       = monitor;
         _hyperV        = hyperV;
+        _vm            = vm;
         _startup       = startup;
         _updateChecker = updateChecker;
 
@@ -115,7 +117,7 @@ internal sealed class TrayMenu
         // GetCachedVmsSync() returns null until the first background discovery completes.
         // When null, show a placeholder and the cache pre-warm (started by App at launch)
         // will call RefreshState() once data arrives.
-        var allVms = _hyperV.GetCachedVmsSync();
+        var allVms = _vm.GetCachedVmsSync();
 
         if (allVms is null)
         {
@@ -123,15 +125,8 @@ internal sealed class TrayMenu
             // Show managed-VM submenus from config (power ops only — no unmanaged section yet).
             foreach (var vm in _config.Current.VirtualMachines)
             {
-                var name = vm.Name;
-                var nic  = vm.NicName;
-                var sub  = new MenuFlyoutSubItem { Text = vm.Name };
-                sub.Items.Add(Item("Start",           () => _hyperV.StartOrResumeVmAsync(name)));
-                sub.Items.Add(Item("Start && Connect", () => StartAndConnect(name, nic)));
-                sub.Items.Add(Item("Shutdown",        () => _hyperV.ShutdownVmAsync(name)));
-                sub.Items.Add(Item("Pause",           () => _hyperV.SuspendVmAsync(name)));
-                sub.Items.Add(Item("Resume",          () => _hyperV.ResumeVmAsync(name)));
-                sub.Items.Add(Item("Save",            () => _hyperV.SaveVmAsync(name)));
+                var sub = new MenuFlyoutSubItem { Text = vm.Name };
+                AddPowerItems(sub, vm.Name, vm.NicName);
                 _vmPowerMenu.Items.Add(sub);
             }
 
@@ -151,14 +146,8 @@ internal sealed class TrayMenu
         foreach (var vm in _config.Current.VirtualMachines)
         {
             var name = vm.Name;
-            var nic  = vm.NicName;
             var sub  = new MenuFlyoutSubItem { Text = vm.Name };
-            sub.Items.Add(Item("Start",           () => _hyperV.StartOrResumeVmAsync(name)));
-            sub.Items.Add(Item("Start && Connect", () => StartAndConnect(name, nic)));
-            sub.Items.Add(Item("Shutdown",        () => _hyperV.ShutdownVmAsync(name)));
-            sub.Items.Add(Item("Pause",           () => _hyperV.SuspendVmAsync(name)));
-            sub.Items.Add(Item("Resume",          () => _hyperV.ResumeVmAsync(name)));
-            sub.Items.Add(Item("Save",            () => _hyperV.SaveVmAsync(name)));
+            AddPowerItems(sub, name, vm.NicName);
             sub.Items.Add(new MenuFlyoutSeparator());
             sub.Items.Add(Item("Remove from config…", async () =>
             {
@@ -194,8 +183,8 @@ internal sealed class TrayMenu
             var name    = vm.Name;
             var nicName = vm.NicName;
             var sub     = new MenuFlyoutSubItem { Text = $"{name} (unmanaged)" };
-            sub.Items.Add(Item("Start",    () => _hyperV.StartOrResumeVmAsync(name)));
-            sub.Items.Add(Item("Shutdown", () => _hyperV.ShutdownVmAsync(name)));
+            sub.Items.Add(PowerItem("Start",    name, VmOpKind.Start));
+            sub.Items.Add(PowerItem("Shutdown", name, VmOpKind.Shutdown));
             sub.Items.Add(Item("Connect",  () => { ConnectUnmanaged(name); return Task.CompletedTask; }));
             sub.Items.Add(new MenuFlyoutSeparator());
             sub.Items.Add(Item("Add to config…", async () =>
@@ -219,10 +208,9 @@ internal sealed class TrayMenu
             _vmPowerMenu.Items.Add(new MenuFlyoutItem { Text = "(no VMs found)", IsEnabled = false });
 
         // Kick off a background cache refresh so the *next* menu open is up-to-date.
-        // GetAllVmsAsync() returns immediately if the cache is still fresh (< 30 s).
         _ = Task.Run(async () =>
         {
-            try { await _hyperV.GetAllVmsAsync().ConfigureAwait(false); }
+            try { await _vm.RefreshOnceAsync().ConfigureAwait(false); }
             catch { /* non-fatal */ }
         });
     }
@@ -246,9 +234,26 @@ internal sealed class TrayMenu
     private MenuFlyoutItem Item(string text, Func<Task> action)
         => new() { Text = text, Command = new RelayCommand(() => _ = action()) };
 
+    /// <summary>A menu item that fires a VM power action — synchronous, non-blocking (see <see cref="VmService.BeginPowerAction"/>).</summary>
+    private MenuFlyoutItem PowerItem(string text, string vmName, VmOpKind kind)
+        => new() { Text = text, Command = new RelayCommand(() => _vm.BeginPowerAction(vmName, kind)) };
+
+    /// <summary>The full power-action set for a managed VM: Start/Start&&Connect/Shutdown/Pause/Resume/Save.</summary>
+    private void AddPowerItems(MenuFlyoutSubItem sub, string vmName, string nicName)
+    {
+        sub.Items.Add(PowerItem("Start",       vmName, VmOpKind.Start));
+        sub.Items.Add(Item("Start && Connect", () => StartAndConnect(vmName, nicName)));
+        sub.Items.Add(PowerItem("Shutdown",    vmName, VmOpKind.Shutdown));
+        sub.Items.Add(PowerItem("Pause",       vmName, VmOpKind.Pause));
+        sub.Items.Add(PowerItem("Resume",      vmName, VmOpKind.Resume));
+        sub.Items.Add(PowerItem("Save",        vmName, VmOpKind.Save));
+    }
+
     private async Task StartAndConnect(string vmName, string nicName)
     {
-        await _hyperV.StartOrResumeVmAsync(vmName);
+        // BeginPowerAction is fire-and-forget; the flat delay is the same heuristic the old
+        // PowerShell path used to give the VM time to boot before vmconnect can attach.
+        _vm.BeginPowerAction(vmName, VmOpKind.Start);
         await Task.Delay(2500);
         var sw = _monitor.LastApplied?.VirtualSwitch;
         if (!string.IsNullOrEmpty(sw)) await _hyperV.ApplySwitchAsync(vmName, nicName, sw);
@@ -520,9 +525,7 @@ internal sealed class TrayMenu
 
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
-    private const string AppName   = "Hyper-V Manager Tray";
-    private const string Publisher  = "ZeroZero Software";
-    private const string RepoUrl    = "https://github.com/0z00z0/HyperVManagerTray";
+    private const string AppName = "Hyper-V Manager Tray";
 
     private void ShowAbout()
     {

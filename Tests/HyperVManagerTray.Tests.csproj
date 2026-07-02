@@ -15,6 +15,8 @@
     <Compile Include="..\Services\AdapterMatcher.cs"  Link="Linked\AdapterMatcher.cs" />
     <Compile Include="..\Services\ConfigManager.cs"   Link="Linked\ConfigManager.cs" />
     <Compile Include="..\Helpers\UptimeFormatter.cs"  Link="Linked\UptimeFormatter.cs" />
+    <Compile Include="..\Helpers\WmiVmMapper.cs"      Link="Linked\WmiVmMapper.cs" />
+    <Compile Include="..\Models\VmOperation.cs"       Link="Linked\VmOperation.cs" />
     <Compile Include="..\Helpers\IconGenerator.cs"    Link="Linked\IconGenerator.cs" />
     <Compile Include="..\Helpers\NativeMethods.cs"    Link="Linked\NativeMethods.cs" />
     <Compile Include="..\Services\FileLogger.cs"      Link="Linked\FileLogger.cs" />

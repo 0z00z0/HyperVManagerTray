@@ -19,7 +19,8 @@ public partial class App : Application
 {
     private ILoggerFactory? _loggerFactory;
     private ConfigManager?  _config;
-    private HyperVManager?  _hyperV;
+    private HyperVManager?  _hyperV;   // Phase 1: switch binding / host-vNIC repair only (PowerShell)
+    private VmService?      _vm;       // VM status/metrics/power/IPs via WMI
     private NetworkMonitor? _monitor;
     private StartupManager  _startup = null!;
     private HttpClient?     _httpClient;
@@ -85,7 +86,8 @@ public partial class App : Application
             _exeDir  = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
             _config  = new ConfigManager(configPath, _loggerFactory.CreateLogger<ConfigManager>());
             _hyperV  = new HyperVManager(_loggerFactory.CreateLogger<HyperVManager>());
-            _monitor = new NetworkMonitor(_config, _hyperV, _loggerFactory.CreateLogger<NetworkMonitor>());
+            _vm      = new VmService(_loggerFactory.CreateLogger<VmService>());
+            _monitor = new NetworkMonitor(_config, _hyperV, _vm, _loggerFactory.CreateLogger<NetworkMonitor>());
 
             InitTrayIcon();
 
@@ -110,7 +112,7 @@ public partial class App : Application
 
             // Pre-create and prime the dashboard so its first real open has no white flash:
             // the Mica window's initial (white) composition frame happens now, off-screen.
-            _dashboard = new DashboardWindow(_config!, _monitor!, _hyperV!);
+            _dashboard = new DashboardWindow(_config!, _monitor!, _hyperV!, _vm!);
             _dashboard.Closed += (_, _) => _dashboard = null;
             _dashboard.Prime();
         }
@@ -181,7 +183,7 @@ public partial class App : Application
         _trayIcon = (TaskbarIcon)Resources["TrayIcon"];
         SetTrayIcon(null);  // grey = unknown until first SwitchApplied fires
 
-        _menu = new TrayMenu(_config!, _monitor!, _hyperV!, _startup, _updateChecker!, OnExit);
+        _menu = new TrayMenu(_config!, _monitor!, _hyperV!, _vm!, _startup, _updateChecker!, OnExit);
         _trayIcon.ContextFlyout     = _menu.Flyout;
         _trayIcon.LeftClickCommand  = new RelayCommand(ToggleDashboard);
         _trayIcon.RightClickCommand = new RelayCommand(() => _menu!.RefreshState());
@@ -218,13 +220,14 @@ public partial class App : Application
     /// </summary>
     private async Task UpdateTooltipAsync()
     {
-        if (_hyperV is null || _config is null || _trayIcon is null) return;
+        if (_vm is null || _config is null || _trayIcon is null) return;
 
         try
         {
             var switchName = _monitor?.LastApplied?.VirtualSwitch ?? "No switch";
             var vmNames    = _config.Current.VirtualMachines.Select(v => v.Name).ToList();
-            var ips        = await _hyperV.GetVmIpAddressesAsync(vmNames);
+            // Refresh the WMI caches once (background), then read the per-VM IPs synchronously.
+            await _vm.RefreshOnceAsync().ConfigureAwait(false);
 
             var lines = new System.Collections.Generic.List<string>
             {
@@ -234,7 +237,7 @@ public partial class App : Application
 
             foreach (var name in vmNames)
             {
-                if (ips.TryGetValue(name, out var ip))
+                if (_vm.GetCachedVmIp(name) is { } ip)
                     lines.Add(TruncateLine($"{name}: {ip}", 63));
             }
 
@@ -259,10 +262,10 @@ public partial class App : Application
     /// </summary>
     private async Task PreWarmVmCacheAsync()
     {
-        if (_hyperV is null || _menu is null) return;
+        if (_vm is null || _menu is null) return;
         try
         {
-            await _hyperV.GetAllVmsAsync().ConfigureAwait(false);
+            await _vm.RefreshOnceAsync().ConfigureAwait(false);
             // Cache is now populated — rebuild the menu on the UI thread so any previously
             // shown "Loading VMs…" placeholder is replaced with the real VM list.
             _ui.TryEnqueue(() => _menu.RefreshState());
@@ -336,7 +339,7 @@ public partial class App : Application
     {
         if (_dashboard is null)
         {
-            _dashboard = new DashboardWindow(_config!, _monitor!, _hyperV!);
+            _dashboard = new DashboardWindow(_config!, _monitor!, _hyperV!, _vm!);
             _dashboard.Closed += (_, _) => _dashboard = null;
         }
 
@@ -357,6 +360,7 @@ public partial class App : Application
         _trayIcon?.Dispose();
         _iconImage?.Dispose();
         _monitor?.Dispose();
+        _vm?.Dispose();
         _config?.Dispose();
         _hyperV?.Dispose();
         _httpClient?.Dispose();

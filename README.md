@@ -211,14 +211,15 @@ HyperVManagerTray/
 ├─ Services/                UI-agnostic logic (no WinUI dependency)
 │  ├─ NetworkMonitor.cs        watches NICs, debounces, drives switch changes
 │  ├─ AdapterMatcher.cs        rule evaluation (MAC + CIDR), adapter selection
-│  ├─ HyperVManager.cs         runs Hyper-V cmdlets via powershell.exe; VM power + metrics
+│  ├─ VmService.cs             VM status/metrics/power/guest IPs via native WMI (event-driven)
+│  ├─ HyperVManager.cs         switch binding + host-vNIC repair via powershell.exe (Phase 2 will move this to WMI too)
 │  ├─ ConfigManager.cs         loads/watches config.json
 │  ├─ StartupManager.cs        "run at startup" scheduled task
 │  ├─ ProcessRunner.cs         shared process-spawning helper (timeout, stream capture)
 │  └─ FileLogger.cs            minimal ILogger file sink
-├─ Models/                  POCOs: AppConfig, NetworkRule, VmTarget, VmStatus
+├─ Models/                  POCOs: AppConfig, NetworkRule, VmTarget, VmStatus, DiscoveredVm, VmOperation
 ├─ UI/                      DashboardWindow (Mica popup + VM cards), TrayMenu
-├─ Helpers/                 AppColors, IconGenerator, NativeMethods, RelayCommand
+├─ Helpers/                 AppColors, IconGenerator, NativeMethods, RelayCommand, WmiVmMapper
 ├─ Tests/                   xUnit tests (links the pure Services/Models sources)
 ├─ installer/              per-user Inno Setup installer (.iss + build script)
 └─ config.json             sample config (shipped next to the exe)
@@ -246,7 +247,7 @@ the app talks to Hyper-V or the host network.
 ## Built with
 
 - **Language / UI:** C# on **.NET 10**, **WinUI 3 / Windows App SDK** (`net10.0-windows10.0.26100.0`, unpackaged, Mica backdrop)
-- **OS integration:** Win32 P/Invoke (`iphlpapi.dll` `GetBestInterface`, `user32.dll`/`Shcore.dll` for popup positioning + message boxes), and the Windows-bundled `powershell.exe` (Hyper-V cmdlets) and `schtasks.exe` (auto-start task)
+- **OS integration:** Win32 P/Invoke (`iphlpapi.dll` `GetBestInterface`, `user32.dll`/`Shcore.dll` for popup positioning + message boxes); VM status/metrics/power/guest IPs via native WMI (`root\virtualization\v2`, `System.Management`) — event-driven, no polling; switch binding + host-vNIC repair still via the Windows-bundled `powershell.exe`; `schtasks.exe` for the auto-start task
 
 ### External libraries
 
@@ -257,6 +258,7 @@ the app talks to Hyper-V or the host network.
 | [H.NotifyIcon.WinUI](https://github.com/HavenDV/H.NotifyIcon) | 2.4.1 | Dmitry Kolchev (HavenDV) | System-tray icon + native context menu for WinUI 3 | MIT |
 | [System.Drawing.Common](https://www.nuget.org/packages/System.Drawing.Common) | 10.0.8 | Microsoft | Renders the tray `.ico` at runtime | MIT |
 | [Microsoft.Extensions.Logging](https://www.nuget.org/packages/Microsoft.Extensions.Logging) | 10.0.8 | Microsoft | Logging abstraction; output goes to a small custom file sink | MIT |
+| [System.Management](https://www.nuget.org/packages/System.Management) | 10.0.8 | Microsoft | WMI access (`root\virtualization\v2`) for VM status/power — replaces PowerShell polling | MIT |
 
 All are MIT-licensed. The only non-Microsoft dependency is **H.NotifyIcon.WinUI** (used for the tray icon, the same way the sibling LenovoTray app does).
 

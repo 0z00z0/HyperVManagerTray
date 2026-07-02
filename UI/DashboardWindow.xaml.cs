@@ -13,26 +13,27 @@ namespace HyperVManagerTray.UI;
 /// <summary>
 /// Borderless Mica popup: host-network status card on top, then a control card per configured
 /// VM (current switch/rule, state, CPU / memory / VHD meters, power buttons).  Appears
-/// bottom-right above the taskbar and auto-dismisses when it loses focus.  VM metrics refresh
-/// on a timer only while it is open, so a closed dashboard costs nothing.
+/// bottom-right above the taskbar and auto-dismisses when it loses focus.  VM status/metrics come
+/// from <see cref="VmService"/> (WMI event watcher + a metrics loop) only while this window is
+/// subscribed (<see cref="SubscribeMetricsIfNeeded"/>/<see cref="UnsubscribeMetricsIfNeeded"/>),
+/// so a closed dashboard costs nothing.
 /// </summary>
 public sealed partial class DashboardWindow : Window
 {
     private const double ContentWidth = 320;
     private const int    EdgeMargin   = 12;
 
-    private static readonly TimeSpan PollInterval    = TimeSpan.FromSeconds(1);
-    private static readonly TimeSpan VhdPollInterval = TimeSpan.FromSeconds(15);
-
     private readonly ConfigManager  _config;
     private readonly NetworkMonitor _monitor;
-    private readonly HyperVManager  _hyperV;
+    private readonly HyperVManager  _hyperV;   // Connect-VM-NIC / switch (PowerShell, Phase 1)
+    private readonly VmService      _vm;       // status/metrics/power/IPs (WMI, event-driven)
 
-    private readonly DispatcherTimer _timer = new() { Interval = PollInterval };
-    private readonly Dictionary<string, long> _vhd = new(StringComparer.OrdinalIgnoreCase);
-    private DateTime _lastVhdUtc = DateTime.MinValue;
-    private bool     _loading;
-    private bool     _priming;   // true during the off-screen composition warm-up (see Prime)
+    private IReadOnlyList<VmStatus> _latest = [];
+    // In-flight/failed power-op message per VM, overlaid on the card's state label (optimistic
+    // "Requesting start…", live "Saving (47%)…", or a sticky "Failed: not enough memory").
+    private readonly Dictionary<string, VmOperationProgress> _op = new(StringComparer.OrdinalIgnoreCase);
+    private bool _metricsOn;   // true while subscribed to VmService metrics (dashboard shown)
+    private bool _priming;     // true during the off-screen composition warm-up (see Prime)
 
     // ── Same-click detection ────────────────────────────────────────────────────
     // Clicking the tray icon while the popup is open first deactivates it (auto-hide),
@@ -60,18 +61,26 @@ public sealed partial class DashboardWindow : Window
         }
     }
 
-    public DashboardWindow(ConfigManager config, NetworkMonitor monitor, HyperVManager hyperV)
+    public DashboardWindow(ConfigManager config, NetworkMonitor monitor, HyperVManager hyperV, VmService vm)
     {
         _config  = config;
         _monitor = monitor;
         _hyperV  = hyperV;
+        _vm      = vm;
 
         InitializeComponent();
         ConfigureWindowChrome();
 
-        _timer.Tick += (_, _) => _ = LoadVmsAsync();
-        Activated   += OnActivated;
-        Closed      += (_, _) => _timer.Stop();
+        _vm.StatusesChanged   += OnVmStatusesChanged;
+        _vm.OperationProgress += OnVmOperationProgress;
+
+        Activated += OnActivated;
+        Closed    += (_, _) =>
+        {
+            UnsubscribeMetricsIfNeeded();
+            _vm.StatusesChanged   -= OnVmStatusesChanged;
+            _vm.OperationProgress -= OnVmOperationProgress;
+        };
     }
 
     // ── Public surface ──────────────────────────────────────────────────────────
@@ -86,10 +95,24 @@ public sealed partial class DashboardWindow : Window
 
     public void HideWindow()
     {
-        _timer.Stop();
+        UnsubscribeMetricsIfNeeded();
         _hiddenAtUtc  = DateTime.UtcNow;
         _hiddenCursor = NativeMethods.GetCursorPosition();
         AppWindow.Hide();
+    }
+
+    private void SubscribeMetricsIfNeeded()
+    {
+        if (_metricsOn) return;
+        _metricsOn = true;
+        _vm.SubscribeMetrics();
+    }
+
+    private void UnsubscribeMetricsIfNeeded()
+    {
+        if (!_metricsOn) return;
+        _metricsOn = false;
+        _vm.UnsubscribeMetrics();
     }
 
     /// <summary>
@@ -154,10 +177,7 @@ public sealed partial class DashboardWindow : Window
         if (e.WindowActivationState == WindowActivationState.Deactivated)
             HideWindow();
         else
-        {
-            _timer.Start();
-            _ = LoadVmsAsync();
-        }
+            SubscribeMetricsIfNeeded();   // triggers an immediate refresh (see VmService.SubscribeMetrics)
     }
 
     // ── Host network card ───────────────────────────────────────────────────────
@@ -174,7 +194,8 @@ public sealed partial class DashboardWindow : Window
         // First open only: build placeholder "Updating" cards so the popup opens at full
         // size instead of growing when data arrives.  On later opens the cards from the
         // previous session are still present (the window is hidden, never closed) and
-        // LoadVmsAsync — triggered by OnActivated — refreshes them in place.
+        // OnActivated's SubscribeMetricsIfNeeded triggers an immediate VmService refresh
+        // that repopulates them via OnVmStatusesChanged.
         if (VmPanel.Children.Count == 0) BuildCards([]);
     }
 
@@ -190,46 +211,45 @@ public sealed partial class DashboardWindow : Window
 
     // ── Per-VM cards ────────────────────────────────────────────────────────────
 
-    private async Task LoadVmsAsync()
+    /// <summary>
+    /// Raised by <see cref="VmService"/> (background thread) on the state-change watcher, the
+    /// metrics timer, or right after <see cref="VmService.SubscribeMetrics"/>. Replaces the old
+    /// 1-second UI-thread poll: cards now update the instant WMI reports something changed.
+    /// </summary>
+    private void OnVmStatusesChanged(IReadOnlyList<VmStatus> statuses)
     {
-        if (_loading) return;
-        _loading = true;
-        try
+        DispatcherQueue.TryEnqueue(() =>
         {
-            var names = _config.Current.VirtualMachines.Select(v => v.Name).ToList();
-
-            IReadOnlyList<VmStatus> statuses = [];
-            if (names.Count > 0)
-            {
-                // Status + (periodically) VHD sizes in ONE PowerShell round-trip — the
-                // worker serialises commands anyway, so two separate queries would just
-                // double the per-cycle cost.
-                bool wantVhd = DateTime.UtcNow - _lastVhdUtc > VhdPollInterval;
-                var (st, vhd) = await _hyperV.GetVmDashboardAsync(names, wantVhd);
-                statuses = st;
-                if (wantVhd)
+            _latest = statuses;
+            bool layoutChanged = BuildCards(statuses);
+            // Only re-measure the window when a card's layout actually changed (rows
+            // appeared/disappeared); pure value updates never affect the size.  Defer
+            // by one frame so WinUI's layout pass has processed the new children —
+            // otherwise DesiredSize still reflects the previous layout.
+            if (layoutChanged)
+                DispatcherQueue.TryEnqueue(() =>
                 {
-                    foreach (var kv in vhd) _vhd[kv.Key] = kv.Value;
-                    _lastVhdUtc = DateTime.UtcNow;
-                }
-            }
-            foreach (var s in statuses) if (_vhd.TryGetValue(s.Name, out var b)) s.VhdBytes = b;
+                    if (AppWindow.IsVisible) ResizeAndPlace();
+                });
+        });
+    }
 
-            DispatcherQueue.TryEnqueue(() =>
-            {
-                bool layoutChanged = BuildCards(statuses);
-                // Only re-measure the window when a card's layout actually changed (rows
-                // appeared/disappeared); pure value updates never affect the size.  Defer
-                // by one frame so WinUI's layout pass has processed the new children —
-                // otherwise DesiredSize still reflects the previous layout.
-                if (layoutChanged)
-                    DispatcherQueue.TryEnqueue(() =>
-                    {
-                        if (AppWindow.IsVisible) ResizeAndPlace();
-                    });
-            });
-        }
-        finally { _loading = false; }
+    /// <summary>
+    /// Raised by <see cref="VmService"/> as a power action progresses: an optimistic "Requesting
+    /// start…" the instant a button is clicked, then live WMI-job percent, then success (state
+    /// watcher takes over) or the exact failure text (e.g. "not enough memory").
+    /// </summary>
+    private void OnVmOperationProgress(VmOperationProgress progress)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (progress.Phase == VmOpPhase.Succeeded) _op.Remove(progress.VmName);
+            else _op[progress.VmName] = progress;
+
+            // Update just the affected card in place — no need to wait for the next status tick.
+            if (_cards.TryGetValue(progress.VmName, out var card))
+                ApplyOverlay(card, FindStatus(_latest, progress.VmName));
+        });
     }
 
     // ── Card cache ──────────────────────────────────────────────────────────────
@@ -240,12 +260,13 @@ public sealed partial class DashboardWindow : Window
 
     private sealed class VmCard
     {
-        public required Border    Root;
-        public required string    VmName;    // config VM name — keys the IP cache lookup
-        public required string    Shape;     // layout signature — rebuild when it changes
-        public required TextBlock State;
-        public required TextBlock Subtitle;
-        public required TextBlock Ip;        // right-justified IPv4 on the subtitle line
+        public required Border      Root;
+        public required string      VmName;        // config VM name — keys the IP/op-progress lookups
+        public required string      Shape;         // layout signature — rebuild when it changes
+        public required TextBlock   State;
+        public required TextBlock   Subtitle;
+        public required TextBlock   Ip;            // right-justified IPv4 on the subtitle line
+        public required StackPanel  ButtonsPanel;   // power buttons — disabled while an op is in flight
         public TextBlock?   Uptime;
         public TextBlock?   CpuValue;
         public ProgressBar? CpuBar;
@@ -311,16 +332,48 @@ public sealed partial class DashboardWindow : Window
 
     private void UpdateCard(VmCard card, VmStatus? s)
     {
-        card.State.Text       = FormatState(s);
-        card.State.Foreground = StateBrush(s);
-        card.Subtitle.Text    = Subtitle(s);
-        card.Ip.Text          = _hyperV.GetCachedVmIp(card.VmName) ?? "";
+        ApplyOverlay(card, s);
+        card.Subtitle.Text = Subtitle(s);
+        card.Ip.Text        = _vm.GetCachedVmIp(card.VmName) ?? "";
         if (card.Uptime is not null) card.Uptime.Text = FormatUptime(s);
         if (s is null) return;
         if (card.CpuValue is not null) { card.CpuValue.Text = $"{s.Cpu}%"; SetBar(card.CpuBar, s.Cpu / 100.0); }
         if (card.MemValue is not null) { card.MemValue.Text = $"{s.MemAssignedMb:N0} MB"; SetBar(card.MemBar, s.MemoryFraction); }
         if (card.DiskValue is not null) card.DiskValue.Text = $"{s.VhdGb:N1} GB";
     }
+
+    // ── Live power-op overlay ────────────────────────────────────────────────────
+    // A VM power action doesn't wait for a WMI round-trip before the UI reacts: BeginPowerAction
+    // raises an optimistic "Requesting start…" synchronously, then live job percent, then success
+    // (the state watcher takes over) or the exact failure text. This overlays that message onto the
+    // state label and disables the card's buttons while the operation is in flight, applied both
+    // per-tick (UpdateCard) and the instant a progress event arrives (OnVmOperationProgress).
+
+    private void ApplyOverlay(VmCard card, VmStatus? s)
+    {
+        card.State.Text       = DisplayState(card.VmName, s);
+        card.State.Foreground = DisplayStateBrush(card.VmName, s);
+        SetButtonsEnabled(card, !IsOpActive(card.VmName));
+    }
+
+    private bool IsOpActive(string vmName) =>
+        _op.TryGetValue(vmName, out var op) && op.Phase is VmOpPhase.Requested or VmOpPhase.Running;
+
+    private string DisplayState(string vmName, VmStatus? s) =>
+        _op.TryGetValue(vmName, out var op) && op.Message is { Length: > 0 } msg ? Truncate(msg, 30) : FormatState(s);
+
+    private Brush DisplayStateBrush(string vmName, VmStatus? s) =>
+        _op.TryGetValue(vmName, out var op)
+            ? op.Phase == VmOpPhase.Failed ? AppColors.IndicatorRedBrush : AppColors.IndicatorOrangeBrush
+            : StateBrush(s);
+
+    private static void SetButtonsEnabled(VmCard card, bool enabled)
+    {
+        foreach (var child in card.ButtonsPanel.Children)
+            if (child is Button b) b.IsEnabled = enabled;
+    }
+
+    private static string Truncate(string s, int max) => s.Length <= max ? s : s[..(max - 1)] + "…";
 
     private static void SetBar(ProgressBar? bar, double fraction)
     {
@@ -360,13 +413,13 @@ public sealed partial class DashboardWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
         };
         Grid.SetRowSpan(title, 2);
+        // Text/Foreground set below via ApplyOverlay once the VmCard exists (single source of
+        // truth for the state label, shared with UpdateCard and OnVmOperationProgress).
         var stateLabel = new TextBlock
         {
-            Text              = FormatState(s),
-            FontSize          = 11,
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Foreground        = StateBrush(s),
+            FontSize             = 11,
+            VerticalAlignment    = VerticalAlignment.Center,
+            HorizontalAlignment  = HorizontalAlignment.Right,
         };
         Grid.SetColumn(stateLabel, 1);
         Grid.SetRow(stateLabel, 0);
@@ -406,10 +459,10 @@ public sealed partial class DashboardWindow : Window
         };
         Grid.SetColumn(subtitle, 0);
 
-        // IP comes from HyperVManager's cache (refreshed by the tray-tooltip path) — no extra poll.
+        // IP comes from VmService's cache (WMI, refreshed by the metrics loop/tooltip path) — no extra poll.
         var ipLabel = new TextBlock
         {
-            Text                = _hyperV.GetCachedVmIp(vm.Name) ?? "",
+            Text                = _vm.GetCachedVmIp(vm.Name) ?? "",
             FontSize            = 10,
             Foreground          = tertiary,
             HorizontalAlignment = HorizontalAlignment.Right,
@@ -433,7 +486,8 @@ public sealed partial class DashboardWindow : Window
             disk = AddMeter(rows, "Disk", $"{s.VhdGb:N1} GB", -1);
 
         // ── Power buttons ────────────────────────────────────────────────────
-        rows.Children.Add(BuildButtons(vm, s));
+        var buttonsPanel = BuildButtons(vm, s);
+        rows.Children.Add(buttonsPanel);
 
         var root = new Border
         {
@@ -445,19 +499,22 @@ public sealed partial class DashboardWindow : Window
             Child         = rows,
         };
 
-        return new VmCard
+        var card = new VmCard
         {
-            Root      = root,
-            VmName    = vm.Name,
-            Shape     = ShapeOf(s),
-            State     = stateLabel,
-            Subtitle  = subtitle,
-            Ip        = ipLabel,
-            Uptime    = uptimeLbl,
-            CpuValue  = cpu?.Value,  CpuBar = cpu?.Bar,
-            MemValue  = mem?.Value,  MemBar = mem?.Bar,
-            DiskValue = disk?.Value,
+            Root         = root,
+            VmName       = vm.Name,
+            Shape        = ShapeOf(s),
+            State        = stateLabel,
+            Subtitle     = subtitle,
+            Ip           = ipLabel,
+            ButtonsPanel = buttonsPanel,
+            Uptime       = uptimeLbl,
+            CpuValue     = cpu?.Value,  CpuBar = cpu?.Bar,
+            MemValue     = mem?.Value,  MemBar = mem?.Bar,
+            DiskValue    = disk?.Value,
         };
+        ApplyOverlay(card, s);
+        return card;
     }
 
     // Adds a "label + optional progress bar + value" row and returns the mutable parts
@@ -509,12 +566,25 @@ public sealed partial class DashboardWindow : Window
     {
         var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(0, 2, 0, 0) };
 
-        void Btn(string text, Func<Task> action) => panel.Children.Add(new Button
+        // Power actions are synchronous, non-blocking fire-and-forget calls: BeginPowerAction
+        // raises the optimistic "Requesting …" overlay before returning, then reports live
+        // progress/failure via VmService.OperationProgress. No await, no reload — the card updates
+        // itself from that event and from the state watcher.
+        void PowerBtn(string text, VmOpKind kind) => panel.Children.Add(new Button
         {
             Content  = text,
             FontSize = 11,
             Padding  = new Thickness(8, 3, 8, 3),
-            Command  = new RelayCommand(() => _ = RunThenReload(action)),
+            Command  = new RelayCommand(() => _vm.BeginPowerAction(vm.Name, kind)),
+        });
+
+        // The two actions that also launch vmconnect.exe still need an awaited Task.
+        void TaskBtn(string text, Func<Task> action) => panel.Children.Add(new Button
+        {
+            Content  = text,
+            FontSize = 11,
+            Padding  = new Thickness(8, 3, 8, 3),
+            Command  = new RelayCommand(() => _ = action()),
         });
 
         bool running = s?.IsRunning == true;
@@ -522,20 +592,20 @@ public sealed partial class DashboardWindow : Window
 
         if (running)
         {
-            Btn("Shutdown",  () => _hyperV.ShutdownVmAsync(vm.Name));
-            Btn("Pause",     () => _hyperV.SuspendVmAsync(vm.Name));
-            Btn("Save",      () => _hyperV.SaveVmAsync(vm.Name));
-            Btn("Connect",   () => ConnectAsync(vm));
+            PowerBtn("Shutdown", VmOpKind.Shutdown);
+            PowerBtn("Pause",    VmOpKind.Pause);
+            PowerBtn("Save",     VmOpKind.Save);
+            TaskBtn("Connect",   () => ConnectAsync(vm));
         }
         else if (paused)
         {
-            Btn("Resume", () => _hyperV.ResumeVmAsync(vm.Name));
-            Btn("Save",   () => _hyperV.SaveVmAsync(vm.Name));
+            PowerBtn("Resume", VmOpKind.Resume);
+            PowerBtn("Save",   VmOpKind.Save);
         }
         else if (s is not null) // Off / Saved — hide Start buttons while status is still loading
         {
-            Btn("Start",           () => _hyperV.StartOrResumeVmAsync(vm.Name));
-            Btn("Start & Connect", () => StartAndConnectAsync(vm));
+            PowerBtn("Start",          VmOpKind.Start);
+            TaskBtn("Start & Connect", () => StartAndConnectAsync(vm));
         }
         return panel;
     }
@@ -562,16 +632,11 @@ public sealed partial class DashboardWindow : Window
 
     private async Task StartAndConnectAsync(VmTarget vm)
     {
-        await _hyperV.StartOrResumeVmAsync(vm.Name);
+        // BeginPowerAction is fire-and-forget (see PowerBtn); the flat delay is the same heuristic
+        // the old PowerShell path used to give the VM time to boot before vmconnect can attach.
+        _vm.BeginPowerAction(vm.Name, VmOpKind.Start);
         await Task.Delay(2500);
         await ConnectAsync(vm);
-    }
-
-    private async Task RunThenReload(Func<Task> action)
-    {
-        try { await action(); } catch { /* logged in HyperVManager */ }
-        await Task.Delay(1200);
-        await LoadVmsAsync();
     }
 
     private static Brush StateBrush(VmStatus? s) => s switch
@@ -592,25 +657,13 @@ public sealed partial class DashboardWindow : Window
     /// <summary>
     /// Formats the VM state string, appending a save/resume percentage when available.
     /// Hyper-V StatusDescriptions during transient states contains strings like "Saving, 47 %"
-    /// or "Restoring, 12 %".  We extract the number and produce "Saving (47%)".
+    /// or "Restoring, 12 %" — <see cref="WmiVmMapper.PercentFromStatus"/> extracts the number,
+    /// and here it's appended to produce "Saving (47%)".
     /// </summary>
     private static string FormatState(VmStatus? s)
     {
         var state = s?.State ?? "Updating";
         if (s is null) return state;
-
-        var desc = s.StatusDesc ?? "";
-        var pIdx = desc.IndexOf('%');
-        if (pIdx > 0)
-        {
-            // Walk back past digits and spaces to find the start of the number
-            var i = pIdx - 1;
-            while (i > 0 && (char.IsDigit(desc[i - 1]) || desc[i - 1] == ' '))
-                i--;
-            var num = desc[i..pIdx].Trim();
-            if (!string.IsNullOrEmpty(num))
-                return $"{state} ({num}%)";
-        }
-        return state;
+        return WmiVmMapper.PercentFromStatus(s.StatusDesc) is { } pct ? $"{state} ({pct}%)" : state;
     }
 }

@@ -23,6 +23,7 @@ internal static class AppColors
     internal static readonly SolidColorBrush IndicatorGreenBrush  = new(Green);
     internal static readonly SolidColorBrush IndicatorOrangeBrush = new(Orange);
     internal static readonly SolidColorBrush IndicatorGreyBrush   = new(Grey);
+    internal static readonly SolidColorBrush IndicatorRedBrush    = new(DangerRed);  // failed VM power action
 
     // ── Progress-bar / meter fills (by load) ────────────────────────────────────
     internal static readonly SolidColorBrush GaugeLowBrush  = new(Green);      // ≤ 50 %

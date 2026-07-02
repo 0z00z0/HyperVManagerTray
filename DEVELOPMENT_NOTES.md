@@ -4,7 +4,7 @@
 > design choices — so the same mistakes aren't re-made. Read this before changing how the
 > app talks to Hyper-V or the host network.
 
-_Last updated: 2026-06-05 (project renamed HyperVNetworkSwitcher → HyperVManagerTray; WinUI 3 migration, Inno Setup installer, `Services/` layout, unit tests, Multiplexor adapter fix, icon redesign, dashboard unification)._
+_Last updated: 2026-06-29 (VM status/metrics/power/guest-IPs migrated from PowerShell polling to native WMI — see the dedicated section below). Previously updated 2026-06-05 (project renamed HyperVNetworkSwitcher → HyperVManagerTray; WinUI 3 migration, Inno Setup installer, `Services/` layout, unit tests, Multiplexor adapter fix, icon redesign, dashboard unification)._
 
 ---
 
@@ -19,7 +19,10 @@ _Last updated: 2026-06-05 (project renamed HyperVNetworkSwitcher → HyperVManag
 4. **Evaluation is single-flight** (one at a time, coalesced). Don't let switch changes run
    concurrently.
 5. **Auto-start is a Scheduled Task, not a `Run` key.** An elevated app can't start from `Run`.
-6. **Talk to Hyper-V via `powershell.exe -EncodedCommand`,** not the PowerShell SDK.
+6. **Switch binding + host-vNIC repair still talk to Hyper-V via `powershell.exe -EncodedCommand`,**
+   not the PowerShell SDK (`HyperVManager`). **VM status/metrics/power/guest IPs use native WMI**
+   instead (`VmService`, `root\virtualization\v2`) — see the dedicated section below before
+   touching either.
 
 ---
 
@@ -181,8 +184,72 @@ Gotchas hit (and how they're handled):
   `onlyifdoesntexist` so user edits survive upgrades). `PublishTrimmed=false`
   (WinUI + reflection-y JSON trim poorly) — so reflection-based `System.Text.Json` is kept;
   `PublishReadyToRun=true` on Release for faster startup.
-- **Dashboard polling** (CPU/mem/VHD via `Get-VM`) runs on a `DispatcherTimer` **only between
-  `Activated` and hide/close** — preserving the zero-idle property when the dashboard is shut.
+- **Dashboard polling** (CPU/mem/VHD) originally ran on a `DispatcherTimer` polling `Get-VM` only
+  between `Activated` and hide/close. **Superseded 2026-06-29** — see the WMI section below;
+  the zero-idle-when-closed property is preserved via `VmService.Subscribe/UnsubscribeMetrics`.
+
+---
+
+## Native WMI VM interaction (2026-06-29 — replaces PowerShell polling for VM status/power)
+
+**Why:** the dashboard polled `Get-VM` (via `HyperVManager`'s PowerShell worker) every second
+while open, and a power-button click just fired the cmdlet, waited a fixed 1200 ms, then re-polled
+— no immediate feedback, no real progress, and a failure (e.g. "not enough memory to start") was
+silently swallowed. Hyper-V Manager (MMC) itself doesn't poll: it uses WMI push events and
+async jobs. This migrates VM status/metrics/power/guest-IPs onto that same model.
+
+**What moved where:**
+- `Services/VmService.cs` (new) — VM status, CPU/mem/uptime/VHD metrics, guest IPs, and the five
+  power actions (Start/Resume/Pause/Save/Shutdown), all via `System.Management` against
+  `root\virtualization\v2`.
+- `Services/HyperVManager.cs` (stripped) — kept ONLY `ApplySwitchAsync`, `UpdateSwitchBindingAsync`,
+  `RepairHostVNicAsync` and the PowerShell worker that backs them. These stay on PowerShell
+  deliberately: they're low-frequency, background-thread, and safety-critical host-networking
+  code (see gotchas #1–#7 above) — not worth the WMI rewrite risk in this pass. A later pass could
+  move them too (`Msvm_VirtualEthernetSwitchManagementService`), tracked as a separate task.
+
+**Mechanism (mirrors MMC):**
+- **State** is authoritative from `Msvm_ComputerSystem.EnabledState`, pushed via a
+  `ManagementEventWatcher` on `__InstanceModificationEvent` — the dashboard updates within ~1–2 s
+  of an external change (e.g. starting the VM from Hyper-V Manager itself), not on a fixed tick.
+- **Metrics** (CPU/mem/uptime/StatusDescriptions) come from ONE batched
+  `Msvm_VirtualSystemManagementService.GetSummaryInformation` call per VM per tick — same idea as
+  the old batched `GetVmDashboardAsync`, just over WMI. This only runs on a `PeriodicTimer`
+  **while the dashboard is subscribed** (`SubscribeMetrics`/`UnsubscribeMetrics`, ref-counted) —
+  a closed dashboard still costs nothing.
+- **Power actions** call `RequestStateChange` (or `Msvm_ShutdownComponent.InitiateShutdown` for
+  graceful shutdown); a return of `4096` means a job started, tracked via `Msvm_ConcreteJob`
+  (`JobState`/`PercentComplete`/`ErrorDescription`) on a short poll loop. `VmService.BeginPowerAction`
+  is synchronous and non-blocking: it raises an optimistic "Requesting start…" before returning,
+  then live "Saving (47%)…", then success or the exact WMI failure text — surfaced in
+  `DashboardWindow` as an overlay on the card's state label (`ApplyOverlay`/`_op` dictionary),
+  which also disables that card's buttons while the op is in flight.
+
+**Threading:** `System.Management` is MTA; the WinUI UI thread is STA. **Nothing in `VmService`
+runs on the UI thread** — `RefreshCore` (all WMI reads) is called only from background threads
+(the metrics `PeriodicTimer`, the event watcher, or `RefreshOnceAsync`'s `Task.Run`), and is
+wrapped in a `lock (_refreshLock)` because those three entry points can otherwise fire
+concurrently and race on the plain (non-concurrent) `Dictionary` caches — found and fixed during
+review; don't remove that lock when touching `RefreshCore`.
+
+**⚠️ Flagged assumptions — not validated against a live host from this dev environment (no
+elevated Hyper-V access in the sandbox this was built in). Verify on first real use:**
+- `Msvm_SummaryInformation.MemoryUsage` is assumed to be in **MB**; `Uptime` in **milliseconds**.
+  If memory/uptime display looks wrong, check units first (`WmiVmMapper.BuildStatus`).
+- `RequestStateChange` codes: `32768`=Pause, `32769`=Save (Suspended). If clicking Pause actually
+  saves the VM (or vice versa), these two constants in `VmService` are swapped.
+- Every child-settings class (memory, storage, network port, guest IP) is matched back to its
+  owning VM by checking whether the setting's `InstanceID` *contains* the VM's
+  `Msvm_ComputerSystem.Name` GUID (`VmService.MatchVm`). If a VM's memory/VHD/switch/IP field
+  stays empty while its state/CPU update fine, this matching assumption is the first thing to
+  check (log a raw `InstanceID` next to the VM GUID and compare).
+- `GetSummaryInformation`'s `RequestedInformation` codes (`1,104,106,108,114`) are the commonly
+  documented ones; if a field silently reads as 0/empty, double-check against
+  `Msvm_VirtualSystemManagementService` metadata (`Get-CimClass` won't show the enum values —
+  they're only in the MOF/MSDN docs).
+
+If any of the above turns out wrong, the fix is confined to `WmiVmMapper` (pure, unit-tested) or
+the one `VmService` read method involved — nothing downstream needs to change.
 
 ---
 
@@ -221,6 +288,12 @@ costs nothing.  The WinUI 3 runtime raises the memory baseline versus the old Wi
 - Verify a healthy bridge with: one `Up` `vEthernet (Bridged)` carrying the LAN IP, and no
   numbered `vEthernet (Bridged) N` siblings.
 - **Automated tests** (`dotnet test`) cover the pure logic only — CIDR/MAC matching, `VmStatus`
-  maths, and the `config.json` contract. The `Tests/` project **links** those source files (no
+  maths, `WmiVmMapper` (EnabledState→state, MB/ms conversions, progress messages, percent parsing),
+  and the `config.json` contract. The `Tests/` project **links** those source files (no
   ProjectReference to the WinUI app), so it runs without the Windows App SDK runtime. The
-  UI/Hyper-V layers have no automated coverage — exercise them by building and running the app.
+  UI/Hyper-V/WMI layers have no automated coverage — exercise them by building and running the app.
+- **First real run after the WMI migration:** watch Task Manager while the dashboard is open — no
+  `powershell.exe` should spawn for VM status/metrics anymore (only for switch binding, on network
+  change). Confirm a card updates within ~1–2 s of a state change made from Hyper-V Manager (not
+  this app), confirm Start on an over-provisioned VM surfaces the real WMI failure text on the
+  card, and see the flagged assumptions above if anything reads as zero/blank/swapped.
