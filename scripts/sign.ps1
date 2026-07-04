@@ -47,7 +47,7 @@ function Get-SigningCertificate {
 }
 
 # Trusts an existing cert for the current user (idempotent). Importing into
-# CurrentUser\Root pops a one-time Windows consent dialog — that's expected and
+# CurrentUser\Root pops a one-time Windows consent dialog  -  that's expected and
 # must be accepted interactively; it cannot be auto-confirmed.
 function Set-CertTrust {
     param([Parameter(Mandatory)] $Cert)
@@ -79,11 +79,11 @@ function New-TrustedSigningCertificate {
     return $cert
 }
 
-# ── Setup mode ──────────────────────────────────────────────────────────────
+# -- Setup mode --------------------------------------------------------------
 if ($Setup) {
     $existing = Get-SigningCertificate
     if ($existing) {
-        # Cert exists (e.g. created on a previous run) — ensure it is trusted.
+        # Cert exists (e.g. created on a previous run)  -  ensure it is trusted.
         # Re-importing is idempotent; accept the consent dialog if it appears.
         Write-Host "A signing certificate for '$Subject' already exists; ensuring it is trusted..."
         Set-CertTrust -Cert $existing
@@ -94,7 +94,7 @@ if ($Setup) {
     return
 }
 
-# ── Sign mode ───────────────────────────────────────────────────────────────
+# -- Sign mode ---------------------------------------------------------------
 
 # Default to the Release apphost when no path is supplied.
 # This script lives in scripts\, so the project root is one level up.
@@ -110,7 +110,7 @@ if (-not (Test-Path $Path)) {
 
 $cert = Get-SigningCertificate
 if (-not $cert) {
-    # Don't fail the build — just inform the developer how to enable signing.
+    # Don't fail the build  -  just inform the developer how to enable signing.
     Write-Warning "No signing certificate for '$Subject'. Run '.\scripts\sign.ps1 -Setup' first. Skipping."
     return
 }
@@ -126,7 +126,7 @@ if ($result.Status -eq "Valid") {
     Write-Host "Signed successfully (status: Valid)."
 }
 elseif ($result.SignerCertificate) {
-    # A signature WAS applied, but the chain isn't trusted on this machine — typical
+    # A signature WAS applied, but the chain isn't trusted on this machine  -  typical
     # for the self-signed cert when 'sign.ps1 -Setup' hasn't been accepted here. The
     # file is genuinely signed (and CI signs via signtool regardless), so don't break
     # the build; just tell the developer how to make it verify as Valid locally.

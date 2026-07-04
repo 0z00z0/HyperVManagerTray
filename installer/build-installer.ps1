@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     1. Ensures Assets\app.ico exists (generates it if absent via Generate-AppIcon.ps1).
-    2. Publishes the app fully self-contained (win-x64, Windows App SDK bundled, no trimming —
+    2. Publishes the app fully self-contained (win-x64, Windows App SDK bundled, no trimming  - 
        trimming breaks WinUI 3).
     3. Compiles installer\HyperVManagerTray.iss with Inno Setup (ISCC.exe).
 
@@ -15,7 +15,7 @@
         winget install JRSoftware.InnoSetup
 
 .EXAMPLE
-    .\build-installer.ps1                  # auto-bumps patch (e.g. 2.1.2 → 2.1.3)
+    .\build-installer.ps1                  # auto-bumps patch (e.g. 2.1.2 -> 2.1.3)
     .\build-installer.ps1 -Version 2.2.0   # explicit override
 #>
 [CmdletBinding()]
@@ -31,7 +31,7 @@ $proj         = Join-Path $root "HyperVManagerTray.csproj"
 $publishDir   = Join-Path $root "publish"
 $iss          = Join-Path $installerDir "HyperVManagerTray.iss"
 
-# ── 0. Resolve / bump version ────────────────────────────────────────────────
+# -- 0. Resolve / bump version ------------------------------------------------
 $projContent = Get-Content $proj -Raw
 $vMatch      = [regex]::Match($projContent, '<Version>(\d+\.\d+\.\d+)</Version>')
 if (-not $vMatch.Success) { throw "Cannot find <Version>x.y.z</Version> in $proj" }
@@ -53,7 +53,7 @@ if ($currentVersion -ne $Version) {
     Write-Host "    Updated HyperVManagerTray.csproj: $currentVersion -> $Version" -ForegroundColor DarkGray
 }
 
-# ── 1. Ensure Assets\app.ico exists ─────────────────────────────────────────
+# -- 1. Ensure Assets\app.ico exists -----------------------------------------
 $appIco = Join-Path $root "Assets\app.ico"
 if (-not (Test-Path $appIco)) {
     Write-Host "==> Generating Assets\app.ico ..." -ForegroundColor Cyan
@@ -61,12 +61,12 @@ if (-not (Test-Path $appIco)) {
     if ($LASTEXITCODE -ne 0) { throw "Generate-AppIcon.ps1 failed ($LASTEXITCODE)." }
 }
 
-# ── 2. Publish the app (framework-dependent, Windows App SDK bundled) ────────
+# -- 2. Publish the app (framework-dependent, Windows App SDK bundled) --------
 # Uses an installed .NET 10 Desktop Runtime instead of bundling it, keeping the
 # installer small. Windows App SDK is still self-contained (uncommon dependency).
 # H.NotifyIcon.WinUI and System.Drawing.Common ship as DLLs next to the exe.
 Write-Host "==> Publishing app (framework-dependent win-x64, Windows App SDK bundled)..." -ForegroundColor Cyan
-Write-Host "    (ReadyToRun compilation may take several minutes — this is normal)" -ForegroundColor DarkGray
+Write-Host "    (ReadyToRun compilation may take several minutes  -  this is normal)" -ForegroundColor DarkGray
 if (Test-Path $publishDir) { Remove-Item $publishDir -Recurse -Force }
 dotnet publish $proj `
     -c Release -r win-x64 --self-contained false `
@@ -78,8 +78,8 @@ if (-not (Test-Path (Join-Path $publishDir "HyperVManagerTray.pri"))) {
     throw "HyperVManagerTray.pri missing from publish output - WinUI would crash at startup (0xC000027B)."
 }
 
-# ── 2b. Sign the published exe ───────────────────────────────────────────────
-# dotnet publish creates a fresh apphost in the publish folder — a separate binary
+# -- 2b. Sign the published exe -----------------------------------------------
+# dotnet publish creates a fresh apphost in the publish folder  -  a separate binary
 # from the bin\ build output that SignOutput already signed. Sign this copy so the
 # installed exe is not flagged as Unsigned by security tools.
 $publishedExe = Join-Path $publishDir "HyperVManagerTray.exe"
@@ -88,7 +88,7 @@ if (Test-Path $publishedExe) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "scripts\sign.ps1") -Path $publishedExe
 }
 
-# ── 3. Locate Inno Setup compiler ────────────────────────────────────────────
+# -- 3. Locate Inno Setup compiler --------------------------------------------
 $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
 if (-not $iscc) {
     foreach ($p in @(
@@ -102,7 +102,7 @@ if (-not $iscc) {
     throw "Inno Setup (ISCC.exe) not found. Install it once with:  winget install JRSoftware.InnoSetup"
 }
 
-# ── 4. Compile the installer ─────────────────────────────────────────────────
+# -- 4. Compile the installer -------------------------------------------------
 # Remove any previous installers from Output/ so only the current build ships.
 $outputDir = Join-Path $installerDir "Output"
 if (Test-Path $outputDir) {
@@ -124,7 +124,7 @@ if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)." }
 
 $setup = Join-Path $installerDir "Output\HyperVManagerTray-Setup-$Version.exe"
 
-# ── 5. Sign the installer exe ────────────────────────────────────────────────
+# -- 5. Sign the installer exe ------------------------------------------------
 # Sign before computing the SHA so the printed hash matches the distributed file.
 if (Test-Path $setup) {
     Write-Host "==> Signing installer..." -ForegroundColor Cyan

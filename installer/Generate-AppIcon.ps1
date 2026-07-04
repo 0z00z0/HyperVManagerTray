@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Generates Assets\app.ico — the static icon embedded in the exe and used by the Start Menu shortcut.
+    Generates Assets\app.ico  -  the static icon embedded in the exe and used by the Start Menu shortcut.
 
 .DESCRIPTION
     Renders the same VM-monitor glyph as Helpers\IconGenerator.cs (blue background, green connection

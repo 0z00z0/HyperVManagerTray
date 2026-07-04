@@ -63,6 +63,10 @@ public sealed class VmService : IDisposable
     private readonly Dictionary<string, string> _switchByVm = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _switchCacheAt = DateTime.MinValue;
 
+    // Debounce flags so a persistently degraded WMI read warns once, not once per ~2.5s tick.
+    private bool _summariesDegradedWarned;
+    private bool _switchNamesEmptyWarned;
+
     /// <summary>Raised (on a background thread) whenever VM status/metrics change. Marshal to the UI.</summary>
     public event Action<IReadOnlyList<VmStatus>>? StatusesChanged;
 
@@ -231,20 +235,23 @@ public sealed class VmService : IDisposable
         var result = new Dictionary<string, (int, long, ulong, string)>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            // Realized VM settings — one REF per VM for the batch GetSummaryInformation call.
-            var paths = new List<string>();
-            using (var s = new ManagementObjectSearcher(scope, new ObjectQuery(
-                "SELECT __PATH FROM Msvm_VirtualSystemSettingData WHERE VirtualSystemType='Microsoft:Hyper-V:System:Realized'")))
-                foreach (ManagementObject o in s.Get())
-                    using (o) paths.Add((string)o["__PATH"]);
-            if (paths.Count == 0) return result;
-
+            // SettingData = empty array asks for every VM's summary in one batch call — a prior
+            // per-VM "SELECT __PATH FROM ..." path list silently enumerated zero rows on this host
+            // (see DEVELOPMENT_NOTES.md "Flagged assumptions"); this always returns real data.
             using var mgmt = GetManagementService(scope);
             using var inParams = mgmt.GetMethodParameters("GetSummaryInformation");
-            inParams["SettingData"] = paths.ToArray();
-            // 1=ElementName, 104=ProcessorLoad, 106=MemoryUsage, 108=Uptime, 114=StatusDescriptions.
-            inParams["RequestedInformation"] = new uint[] { 1, 104, 106, 108, 114 };
+            inParams["SettingData"] = Array.Empty<string>();
+            // Msvm_SummaryInformationRequestType (Microsoft Learn, confirmed live 2026-07-03):
+            // 1=ElementName, 101=ProcessorLoad, 103=MemoryUsage, 105=Uptime, 111=StatusDescriptions.
+            inParams["RequestedInformation"] = new uint[] { 1, 101, 103, 105, 111 };
             using var outParams = mgmt.InvokeMethod("GetSummaryInformation", inParams, null);
+
+            uint rv = Convert.ToUInt32(outParams["ReturnValue"]);
+            if (rv != 0)
+            {
+                WarnOnce(ref _summariesDegradedWarned, $"GetSummaryInformation returned non-zero ReturnValue {rv} — metrics degraded to zeros");
+                return result;
+            }
 
             if (outParams["SummaryInformation"] is ManagementBaseObject[] infos)
                 foreach (var info in infos)
@@ -258,8 +265,13 @@ public sealed class VmService : IDisposable
                             SafeULong(info["Uptime"]),
                             (info["StatusDescriptions"] as string[]) is { Length: > 0 } sd ? string.Join(" ", sd) : "");
                     }
+            else if (outParams["SummaryInformation"] is not null)
+                _logger.LogWarning("GetSummaryInformation returned SummaryInformation as unexpected type {Type}", outParams["SummaryInformation"]!.GetType().Name);
+
+            if (result.Count == 0) WarnOnce(ref _summariesDegradedWarned, "GetSummaryInformation returned no VMs — metrics will read as zero");
+            else _summariesDegradedWarned = false;
         }
-        catch (Exception ex) { _logger.LogDebug(ex, "GetSummaryInformation failed — metrics degraded to zeros"); }
+        catch (Exception ex) { _logger.LogWarning(ex, "GetSummaryInformation failed — metrics degraded to zeros"); }
         return result;
     }
 
@@ -284,7 +296,7 @@ public sealed class VmService : IDisposable
                     _memMax[name] = WmiVmMapper.BytesFromMb(mb);
                 }
         }
-        catch (Exception ex) { _logger.LogDebug(ex, "MemMax read failed"); }
+        catch (Exception ex) { _logger.LogWarning(ex, "MemMax read failed"); }
     }
 
     private void RefreshVhd(ManagementScope scope, Dictionary<string, VmIdentity> vms)
@@ -307,7 +319,7 @@ public sealed class VmService : IDisposable
 
             foreach (var (name, bytes) in sums) _vhd[name] = (bytes, now);
         }
-        catch (Exception ex) { _logger.LogDebug(ex, "VHD size read failed"); }
+        catch (Exception ex) { _logger.LogWarning(ex, "VHD size read failed"); }
     }
 
     /// <summary>Friendly name of the virtual switch each VM's primary NIC is connected to (empty if none/disconnected).</summary>
@@ -316,11 +328,12 @@ public sealed class VmService : IDisposable
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         try
         {
+            // Same __PATH pitfall as ReadSummaries above (see DEVELOPMENT_NOTES.md "Flagged
+            // assumptions") — SELECT * avoids it; the path comes from ManagementObject.Path.Path.
             var switchNameByPath = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            using (var sw = new ManagementObjectSearcher(scope, new ObjectQuery(
-                "SELECT ElementName, __PATH FROM Msvm_VirtualEthernetSwitch")))
+            using (var sw = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT * FROM Msvm_VirtualEthernetSwitch")))
                 foreach (ManagementObject o in sw.Get())
-                    using (o) switchNameByPath[(string)o["__PATH"]] = o["ElementName"] as string ?? "";
+                    using (o) switchNameByPath[o.Path.Path] = o["ElementName"] as string ?? "";
 
             // A NIC's connection to a switch is recorded on its EthernetPortAllocationSettingData;
             // HostResource holds the path to the Msvm_VirtualEthernetSwitch it's plugged into.
@@ -334,8 +347,16 @@ public sealed class VmService : IDisposable
                     foreach (var path in paths)
                         if (switchNameByPath.TryGetValue(path, out var swName)) { result[name] = swName; break; }
                 }
+
+            // Empty result despite having VMs to match means either every VM is switch-less, or the
+            // Path.Path/HostResource path formats silently stopped matching — same failure shape as
+            // the __PATH bug above, so warn instead of going quiet like that bug did.
+            if (vms.Count > 0 && result.Count == 0)
+                WarnOnce(ref _switchNamesEmptyWarned, "ReadSwitchNames matched no VM to a switch — switch names will read as blank");
+            else
+                _switchNamesEmptyWarned = false;
         }
-        catch (Exception ex) { _logger.LogDebug(ex, "Switch-name read failed"); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Switch-name read failed"); }
         return result;
     }
 
@@ -352,7 +373,7 @@ public sealed class VmService : IDisposable
                     if (MatchVm(o["InstanceID"] as string ?? "", vms) is { } name)
                         nicByVm[name] = o["ElementName"] as string ?? "Network Adapter";
         }
-        catch (Exception ex) { _logger.LogDebug(ex, "Discovered-VM NIC read failed"); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Discovered-VM NIC read failed"); }
 
         return vms.Keys.Select(name => new DiscoveredVm(name, nicByVm.GetValueOrDefault(name, "Network Adapter"))).ToList();
     }
@@ -374,7 +395,7 @@ public sealed class VmService : IDisposable
                         ips.TryAdd(name, ipv4);
                 }
         }
-        catch (Exception ex) { _logger.LogDebug(ex, "Guest IP read failed"); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Guest IP read failed"); }
         return ips;
     }
 
@@ -519,6 +540,14 @@ public sealed class VmService : IDisposable
     private static int   SafeInt(object? o)   { try { return o is null ? 0 : Convert.ToInt32(o);  } catch { return 0; } }
     private static long  SafeLong(object? o)  { try { return o is null ? 0 : Convert.ToInt64(o);  } catch { return 0; } }
     private static ulong SafeULong(object? o) { try { return o is null ? 0 : Convert.ToUInt64(o); } catch { return 0; } }
+
+    /// <summary>Logs a warning only on the first occurrence of a persistent condition, so a WMI read
+    /// that stays degraded across ticks doesn't flood the log once per tick.</summary>
+    private void WarnOnce(ref bool alreadyWarned, string message)
+    {
+        if (!alreadyWarned) _logger.LogWarning(message);
+        alreadyWarned = true;
+    }
 
     public void Dispose()
     {

@@ -213,8 +213,8 @@ async jobs. This migrates VM status/metrics/power/guest-IPs onto that same model
   `ManagementEventWatcher` on `__InstanceModificationEvent` — the dashboard updates within ~1–2 s
   of an external change (e.g. starting the VM from Hyper-V Manager itself), not on a fixed tick.
 - **Metrics** (CPU/mem/uptime/StatusDescriptions) come from ONE batched
-  `Msvm_VirtualSystemManagementService.GetSummaryInformation` call per VM per tick — same idea as
-  the old batched `GetVmDashboardAsync`, just over WMI. This only runs on a `PeriodicTimer`
+  `Msvm_VirtualSystemManagementService.GetSummaryInformation` call covering every VM, once per
+  tick — same idea as the old batched `GetVmDashboardAsync`, just over WMI. This only runs on a `PeriodicTimer`
   **while the dashboard is subscribed** (`SubscribeMetrics`/`UnsubscribeMetrics`, ref-counted) —
   a closed dashboard still costs nothing.
 - **Power actions** call `RequestStateChange` (or `Msvm_ShutdownComponent.InitiateShutdown` for
@@ -232,21 +232,67 @@ wrapped in a `lock (_refreshLock)` because those three entry points can otherwis
 concurrently and race on the plain (non-concurrent) `Dictionary` caches — found and fixed during
 review; don't remove that lock when touching `RefreshCore`.
 
-**⚠️ Flagged assumptions — not validated against a live host from this dev environment (no
-elevated Hyper-V access in the sandbox this was built in). Verify on first real use:**
-- `Msvm_SummaryInformation.MemoryUsage` is assumed to be in **MB**; `Uptime` in **milliseconds**.
-  If memory/uptime display looks wrong, check units first (`WmiVmMapper.BuildStatus`).
-- `RequestStateChange` codes: `32768`=Pause, `32769`=Save (Suspended). If clicking Pause actually
-  saves the VM (or vice versa), these two constants in `VmService` are swapped.
+**⚠️ Flagged assumptions — status after live-host probing (2026-07-03: one-off elevated
+PowerShell probe on the real host, calling `GetSummaryInformation` both via CIM and via a
+System.Management replica of `ReadSummaries`, cross-checked against `Get-VM`):**
+- **[FIXED 2026-07-03, pending live re-test] CPU/memory stuck at 0: WQL projections containing
+  the system property `__PATH` return ZERO rows — silently.** Verified on the live host: the
+  former query
+  `SELECT __PATH FROM Msvm_VirtualSystemSettingData WHERE VirtualSystemType='Microsoft:Hyper-V:System:Realized'`
+  enumerated **0 instances** through System.Management (no exception, no error — just an empty
+  result), while the same class+filter via `SELECT *` returned all 3 VMs. `ReadSummaries` then hit
+  `if (paths.Count == 0) return result;` and returned an empty dict → every VM's metrics defaulted
+  to 0. **No log entry fired anywhere** because nothing threw — this is why two rounds of
+  RequestedInformation-code fixes appeared to change nothing (the call was never reached). The
+  codes `1,101,103,105,111` were already correct — confirmed against the live provider (see
+  values below).
+  **Same bug pattern was in `ReadSwitchNames`** (`SELECT ElementName, __PATH FROM
+  Msvm_VirtualEthernetSwitch`) — matched the dashboard showing "—" for the switch name. UI was the
+  differential diagnostic: every field fed by a `__PATH`-projecting query was blank/zero (CPU,
+  Mem, switch name); every field from a plain-property query worked (state, guest IP, VHD size).
+  **The fix (implemented in `VmService.cs`):**
+  1. `ReadSummaries`: dropped the setting-data query entirely — calls `GetSummaryInformation` with
+     `SettingData` = `Array.Empty<string>()` (proven live: returns all VMs with real metrics keyed
+     by `ElementName`). Also checks `ReturnValue` and logs a warning on non-zero, and warns if the
+     result comes back empty.
+  2. `ReadSwitchNames`: no longer projects `__PATH` in WQL — uses `SELECT *` and takes the path
+     from `ManagementObject.Path.Path` instead.
+  3. Both `GetSummaryInformation`'s zero-row case and its non-zero `ReturnValue` case now log at
+     `LogWarning` — this failure mode was otherwise 100% silent.
+  **Not yet re-verified live** — the fix was validated by a standalone elevated probe script, not
+  by rebuilding the actual app; confirm CPU%/Mem populate and the switch name shows on the next
+  live test.
+  **Code-review pass (2026-07-04) on this fix** found and corrected: `ReturnValue` is now read via
+  `Convert.ToUInt32` (matching `RequestStateChange`/`InitiateShutdown` elsewhere in this file)
+  instead of `SafeInt`, whose silent catch-to-0 could have masked a genuine large error code as
+  success; the "no VMs"/"non-zero ReturnValue" warnings now fire once per degraded streak
+  (`WarnOnce`) instead of every ~2.5 s tick; `ReadSwitchNames` gained the same empty-result warning
+  as `ReadSummaries` — this doubles as the safety net for the still-unverified `Path.Path` vs.
+  `HostResource` string-format assumption below, since a mismatch there will now warn instead of
+  silently reading blank. Left open (documented, not fixed): the `Path.Path`/`HostResource` format
+  equality itself is still unverified live; `LogDebug`→`LogWarning` was bumped in this file only,
+  not in `NetworkMonitor.cs`/`HyperVManager.cs` which still have invisible `LogDebug` exception logs.
+  **Live-confirmed values** (vDev-2026 running, cross-checked against `Get-VM`):
+  `ProcessorLoad` = uint16 % (2); `MemoryUsage` = uint64 **MB** (14202, == Get-VM
+  MemoryAssigned); `UpTime` = uint64 **ms** (1845737 ≈ Get-VM Uptime 30:48) — note class property
+  is spelled `UpTime`, but WMI property access is case-insensitive so reading "Uptime" works;
+  `StatusDescriptions` = ["Operating normally"]; `EnabledState` 2=Running / 3=Off ✓. Off VMs
+  return NULL `ProcessorLoad`/`MemoryUsage` and `UpTime`=0, so the null→0
+  `SafeInt`/`SafeLong`/`SafeULong` defaults are correct for them.
+- ~~`MemoryUsage` in MB / `Uptime` in ms~~ — **VALIDATED 2026-07-03** via the probe (values
+  matched `Get-VM` exactly). `WmiVmMapper.BuildStatus` conversions are correct as written.
+- **`RequestStateChange` codes — confirmed via docs, not yet live-tested.** `32768`=Pause,
+  `32769`=Save (Suspended) is independently confirmed by Microsoft's `Msvm_ComputerSystem`
+  reference (learn.microsoft.com/en-us/windows/win32/hyperv_v2/msvm-computersystem, fetched
+  2026-07-02): "when disk space is critically low... EnabledState is set to 32768 (Paused)" and
+  "If the virtual machine is suspended or paused, EnabledState will have a value of 32769
+  (Suspended) or 32768 (Paused)." `RequestedState` and `EnabledState` share the same value space
+  in this WMI model, so this is very likely right, but still worth a live Pause/Save click test.
 - Every child-settings class (memory, storage, network port, guest IP) is matched back to its
   owning VM by checking whether the setting's `InstanceID` *contains* the VM's
   `Msvm_ComputerSystem.Name` GUID (`VmService.MatchVm`). If a VM's memory/VHD/switch/IP field
   stays empty while its state/CPU update fine, this matching assumption is the first thing to
   check (log a raw `InstanceID` next to the VM GUID and compare).
-- `GetSummaryInformation`'s `RequestedInformation` codes (`1,104,106,108,114`) are the commonly
-  documented ones; if a field silently reads as 0/empty, double-check against
-  `Msvm_VirtualSystemManagementService` metadata (`Get-CimClass` won't show the enum values —
-  they're only in the MOF/MSDN docs).
 
 If any of the above turns out wrong, the fix is confined to `WmiVmMapper` (pure, unit-tested) or
 the one `VmService` read method involved — nothing downstream needs to change.
