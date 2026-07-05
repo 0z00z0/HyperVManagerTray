@@ -54,14 +54,16 @@ public partial class App : Application
 
         try
         {
-            var logDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "HyperVManagerTray");
+            var configPath = ConfigManager.GetConfigPath();
+
+            var logDir = AppInfo.DataDir;
             Directory.CreateDirectory(logDir);
             _loggerFactory = LoggerFactory.Create(b =>
             {
-                b.SetMinimumLevel(LogLevel.Information);
-                b.AddSimpleFileLogger(Path.Combine(logDir, "switcher.log"));
+                // Minimum level comes from config.json (defaults to Debug). Read directly here — the
+                // logger must exist before the full ConfigManager (which needs a logger) is built.
+                b.SetMinimumLevel(ConfigManager.ReadLogLevel(configPath));
+                b.AddSimpleFileLogger(AppInfo.LogFile);
             });
 
             // Capture a minidump if the app dies from a NATIVE fault (GDI+, comctl32, the
@@ -73,12 +75,11 @@ public partial class App : Application
             _httpClient    = new HttpClient();
             _updateChecker = new UpdateChecker(_httpClient, _loggerFactory.CreateLogger<UpdateChecker>());
 
-            var configPath = ConfigManager.GetConfigPath();
             if (!File.Exists(configPath))
             {
                 NativeMethods.Error(
                     $"config.json not found at:\n{configPath}\n\nPlace config.json next to the executable and restart.",
-                    "Hyper-V Manager Tray");
+                    AppInfo.Name);
                 Exit();
                 return;
             }
@@ -112,13 +113,11 @@ public partial class App : Application
 
             // Pre-create and prime the dashboard so its first real open has no white flash:
             // the Mica window's initial (white) composition frame happens now, off-screen.
-            _dashboard = new DashboardWindow(_config!, _monitor!, _hyperV!, _vm!);
-            _dashboard.Closed += (_, _) => _dashboard = null;
-            _dashboard.Prime();
+            CreateDashboard();
         }
         catch (Exception ex)
         {
-            NativeMethods.Error($"Failed to start Hyper-V Manager Tray:\n\n{ex}", "Hyper-V Manager Tray");
+            NativeMethods.Error($"Failed to start Hyper-V Manager Tray:\n\n{ex}", AppInfo.Name);
             Exit();
         }
     }
@@ -147,8 +146,8 @@ public partial class App : Application
             NativeMethods.Error(
                 $"Hyper-V Manager Tray crashed and needs to close.\n\n" +
                 $"{ex?.Message ?? "Unknown error"}\n\n" +
-                $"Details written to crash.log in %AppData%\\HyperVManagerTray.",
-                "Hyper-V Manager Tray");
+                $"Details written to crash.log in %AppData%\\{AppInfo.Id}.",
+                AppInfo.Name);
         };
 
         // Faulted Tasks whose exception was never awaited/observed.
@@ -166,11 +165,9 @@ public partial class App : Application
         catch { /* logging must never throw */ }
         try
         {
-            var dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "HyperVManagerTray");
-            Directory.CreateDirectory(dir);
+            Directory.CreateDirectory(AppInfo.DataDir);
             File.AppendAllText(
-                Path.Combine(dir, "crash.log"),
+                AppInfo.CrashLog,
                 $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [CRASH] {source}: {ex}{Environment.NewLine}{Environment.NewLine}");
         }
         catch { /* never throw from the crash logger */ }
@@ -231,7 +228,7 @@ public partial class App : Application
 
             var lines = new System.Collections.Generic.List<string>
             {
-                "Hyper-V Manager Tray",
+                AppInfo.Name,
                 TruncateLine($"Switch: {switchName}", 63),
             };
 
@@ -251,7 +248,7 @@ public partial class App : Application
         catch (Exception ex)
         {
             // Best-effort — never let a tooltip failure surface to the user.
-            try { _ui.TryEnqueue(() => _trayIcon.ToolTipText = "Hyper-V Manager Tray"); } catch { }
+            try { _ui.TryEnqueue(() => _trayIcon.ToolTipText = AppInfo.Name); } catch { }
             _ = ex; // suppress unused-variable warning
         }
     }
@@ -302,13 +299,7 @@ public partial class App : Application
         {
             await Task.Delay(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
 
-            var switches = _config.Current.Rules
-                .Select(r => r.VirtualSwitch)
-                .Where(s => !string.IsNullOrWhiteSpace(s))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            foreach (var sw in switches)
+            foreach (var sw in _config.Current.RuleSwitches)
                 await _hyperV.RepairHostVNicAsync(sw).ConfigureAwait(false);
         }
         catch { /* best-effort cleanup; never surface */ }
@@ -335,13 +326,23 @@ public partial class App : Application
 
     // ── Dashboard ───────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Creates and primes the dashboard popup.  Kept alive for the app's lifetime — the window
+    /// cancels close requests and hides instead (see <see cref="DashboardWindow.AllowClose"/>), so
+    /// every open reuses the already-composed window and never shows the Mica white-flash.
+    /// </summary>
+    private void CreateDashboard()
+    {
+        _dashboard = new DashboardWindow(_config!, _monitor!, _hyperV!, _vm!);
+        _dashboard.Closed += (_, _) => _dashboard = null;
+        _dashboard.Prime();
+    }
+
     private void ToggleDashboard()
     {
-        if (_dashboard is null)
-        {
-            _dashboard = new DashboardWindow(_config!, _monitor!, _hyperV!, _vm!);
-            _dashboard.Closed += (_, _) => _dashboard = null;
-        }
+        // Created + primed in OnLaunched (which runs to completion on the UI thread before any tray
+        // click is dispatched) and kept alive thereafter, so this is effectively never null.
+        if (_dashboard is null) return;
 
         if (_dashboard.AppWindow.IsVisible)
             _dashboard.HideWindow();
@@ -357,6 +358,8 @@ public partial class App : Application
 
     private void OnExit()
     {
+        // Let the persistent dashboard actually close now (it otherwise cancels close → hide).
+        if (_dashboard is not null) _dashboard.AllowClose = true;
         _trayIcon?.Dispose();
         _iconImage?.Dispose();
         _monitor?.Dispose();

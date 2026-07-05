@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using HyperVManagerTray.Models;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace HyperVManagerTray.Tests;
@@ -111,5 +112,21 @@ public class ConfigDeserializeTests
         var cfg = JsonSerializer.Deserialize<AppConfig>(json, Opts)!;
 
         Assert.Equal("none", cfg.VirtualMachines[0].OnBridgeLostAction);
+    }
+
+    [Fact]
+    public void LogLevel_Deserializes()
+    {
+        const string json = """{ "logLevel": "Warning" }""";
+        var cfg = JsonSerializer.Deserialize<AppConfig>(json, Opts)!;
+        Assert.Equal(LogLevel.Warning, cfg.LogLevel);
+    }
+
+    [Fact]
+    public void LogLevel_DefaultsToDebug_WhenOmitted()
+    {
+        const string json = """{ "rules": [] }""";
+        var cfg = JsonSerializer.Deserialize<AppConfig>(json, Opts)!;
+        Assert.Equal(LogLevel.Debug, cfg.LogLevel);
     }
 }

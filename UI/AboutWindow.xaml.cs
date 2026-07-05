@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Reflection;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -13,7 +12,6 @@ public sealed partial class AboutWindow : Window
 {
     private const string GitHubUrl = "https://github.com/0z00z0/HyperVManagerTray";
     private const string BmacUrl   = "https://buymeacoffee.com/ezpl";
-    private const string AppName   = "Hyper-V Manager Tray";
 
     private readonly UpdateChecker _updateChecker;
 
@@ -61,64 +59,14 @@ public sealed partial class AboutWindow : Window
             work.Top  + (work.Bottom - work.Top  - outer.Height) / 2));
     }
 
-    private async Task CheckForUpdatesAsync()
+    private Task CheckForUpdatesAsync()
     {
-        // Do NOT use ConfigureAwait(false): ShowUpdateDialog → TaskDialogIndirect needs the
-        // comctl32 v6 activation context, which only the UI thread has (a thread-pool thread
-        // throws EntryPointNotFoundException). Capture the parent HWND first so the dialog
-        // appears in front of this always-on-top window.
-        var hwnd    = Microsoft.UI.Win32Interop.GetWindowFromWindowId(AppWindow.Id);
-        var result  = await _updateChecker.CheckAsync();
-        var running = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown";
-
-        if (result.UpdateAvailable)
-        {
-            bool canDownload = !string.IsNullOrEmpty(result.InstallerUrl);
-            var action = NativeMethods.ShowUpdateDialog(
-                result.LatestVersion, running,
-                result.ReleaseNotes,  AppName,
-                canDownload,          hwnd);
-
-            switch (action)
-            {
-                case NativeMethods.UpdateAction.Update:
-                    NativeMethods.Info(
-                        $"Downloading v{result.LatestVersion}...\n\nThe installer will launch automatically when ready.",
-                        AppName);
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            var path = await _updateChecker
-                                .DownloadInstallerAsync(result.InstallerUrl)
-                                .ConfigureAwait(false);
-                            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
-                        }
-                        catch (Exception ex)
-                        {
-                            NativeMethods.Warn(
-                                $"Download failed:\n{ex.Message}\n\nTry updating from the releases page.",
-                                AppName);
-                            if (!string.IsNullOrEmpty(result.ReleasePageUrl))
-                                Process.Start(new ProcessStartInfo(result.ReleasePageUrl) { UseShellExecute = true });
-                        }
-                    });
-                    break;
-
-                case NativeMethods.UpdateAction.ShowReleases:
-                    if (!string.IsNullOrEmpty(result.ReleasePageUrl))
-                        Process.Start(new ProcessStartInfo(result.ReleasePageUrl) { UseShellExecute = true });
-                    break;
-            }
-        }
-        else if (result.LatestVersion == "none")
-            NativeMethods.Info("No releases have been published yet.", AppName);
-        else if (!string.IsNullOrEmpty(result.LatestVersion))
-            NativeMethods.Info($"You're on the latest version ({running}).", AppName);
-        else
-            NativeMethods.Warn("Could not check for updates. Check your internet connection.", AppName);
+        // Capture the parent HWND first so the update dialog appears in front of this
+        // always-on-top window. The shared flow must stay on the UI thread (comctl32 v6
+        // activation context) — do not add ConfigureAwait(false) around this call.
+        var hwnd = Microsoft.UI.Win32Interop.GetWindowFromWindowId(AppWindow.Id);
+        return UpdatePrompt.RunAsync(_updateChecker, hwnd);
     }
 
-    private static void Open(string url) =>
-        Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+    private static void Open(string url) => Shell.Open(url);
 }

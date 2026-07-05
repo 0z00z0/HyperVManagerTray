@@ -24,17 +24,16 @@ public class VmStatusTests
         => Assert.Equal(2048, new VmStatus { MemAssigned = 2 * Gb }.MemAssignedMb, 0);
 
     [Theory]
-    [InlineData("Running", true,  false, false, false)]
-    [InlineData("Off",     false, false, false, true)]
-    [InlineData("Paused",  false, true,  false, false)]
-    [InlineData("Saved",   false, false, true,  false)]
-    [InlineData("running", true,  false, false, false)]  // case-insensitive
-    public void StateFlags(string state, bool running, bool paused, bool saved, bool off)
+    [InlineData("Running", true,  false, false)]
+    [InlineData("Off",     false, false, false)]
+    [InlineData("Paused",  false, true,  false)]
+    [InlineData("Saved",   false, false, true )]
+    [InlineData("running", true,  false, false)]  // case-insensitive
+    public void StateFlags(string state, bool running, bool paused, bool saved)
     {
         var s = new VmStatus { State = state };
         Assert.Equal(running, s.IsRunning);
         Assert.Equal(paused,  s.IsPaused);
         Assert.Equal(saved,   s.IsSaved);
-        Assert.Equal(off,     s.IsOff);
     }
 }

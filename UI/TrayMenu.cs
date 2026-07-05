@@ -73,7 +73,7 @@ internal sealed class TrayMenu
 
         var settingsMenu = new MenuFlyoutSubItem { Text = "Settings" };
         settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Open config.json", Command = new RelayCommand(() => OpenPath(ConfigManager.GetConfigPath())) });
-        settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Open log file",    Command = new RelayCommand(() => OpenPath(LogPath())) });
+        settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Open log file",    Command = new RelayCommand(() => OpenPath(AppInfo.LogFile)) });
         settingsMenu.Items.Add(new MenuFlyoutSeparator());
         settingsMenu.Items.Add(new MenuFlyoutItem { Text = "Reload config from disk", Command = new RelayCommand(() => _ = Task.Run(() => _config.Load())) });
         settingsMenu.Items.Add(new MenuFlyoutSeparator());
@@ -185,7 +185,7 @@ internal sealed class TrayMenu
             var sub     = new MenuFlyoutSubItem { Text = $"{name} (unmanaged)" };
             sub.Items.Add(PowerItem("Start",    name, VmOpKind.Start));
             sub.Items.Add(PowerItem("Shutdown", name, VmOpKind.Shutdown));
-            sub.Items.Add(Item("Connect",  () => { ConnectUnmanaged(name); return Task.CompletedTask; }));
+            sub.Items.Add(Item("Connect",  () => { Shell.OpenVmConnect(name); return Task.CompletedTask; }));
             sub.Items.Add(new MenuFlyoutSeparator());
             sub.Items.Add(Item("Add to config…", async () =>
             {
@@ -213,22 +213,6 @@ internal sealed class TrayMenu
             try { await _vm.RefreshOnceAsync().ConfigureAwait(false); }
             catch { /* non-fatal */ }
         });
-    }
-
-    private static void ConnectUnmanaged(string vmName)
-    {
-        try
-        {
-            System.Diagnostics.Process.Start(
-                new System.Diagnostics.ProcessStartInfo("vmconnect.exe", $"localhost \"{vmName}\"")
-                { UseShellExecute = true });
-        }
-        catch
-        {
-            NativeMethods.Warn(
-                "Could not open VM Connection.\n\nEnsure Hyper-V Manager tools are installed.",
-                AppName);
-        }
     }
 
     private MenuFlyoutItem Item(string text, Func<Task> action)
@@ -353,11 +337,7 @@ internal sealed class TrayMenu
     {
         try
         {
-            var switches = _config.Current.Rules
-                .Select(r => r.VirtualSwitch)
-                .Where(s => !string.IsNullOrWhiteSpace(s))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            var switches = _config.Current.RuleSwitches.ToList();
 
             if (switches.Count == 0)
             {
@@ -392,77 +372,13 @@ internal sealed class TrayMenu
         }
     }
 
-    private async Task CheckForUpdatesAsync()
+    private Task CheckForUpdatesAsync()
     {
-        // Capture the foreground HWND now (tray flyout is open) so ShowUpdateDialog has a
-        // parent even if the flyout is dismissed by the time the HTTP check completes.
-        // Do NOT use ConfigureAwait(false) here: TaskDialogIndirect requires comctl32 v6
-        // (activated via the app manifest's SxS context), and thread-pool threads do not
-        // inherit that context — calling it there throws EntryPointNotFoundException.
-        var hwnd    = NativeMethods.CaptureHwnd();
-        var result  = await _updateChecker.CheckAsync();
-        var running = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown";
-
-        if (result.UpdateAvailable)
-        {
-            bool canDownload = !string.IsNullOrEmpty(result.InstallerUrl);
-
-            // Win32 TaskDialog — 3 custom buttons (Update / Releases page / Cancel) +
-            // expandable release notes section.  TaskDialogIndirect runs its own message
-            // pump so blocking the UI thread here is safe for a modal dialog.
-            var action = NativeMethods.ShowUpdateDialog(
-                result.LatestVersion, running,
-                result.ReleaseNotes,  AppName,
-                canDownload,          hwnd);
-
-            switch (action)
-            {
-                case NativeMethods.UpdateAction.Update:
-                    // Download in background; Inno Setup's CloseApplications=yes restarts us.
-                    NativeMethods.Info(
-                        $"Downloading v{result.LatestVersion}...\n\nThe installer will launch automatically when ready.",
-                        AppName);
-
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            var path = await _updateChecker
-                                .DownloadInstallerAsync(result.InstallerUrl)
-                                .ConfigureAwait(false);
-                            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
-                        }
-                        catch (Exception ex)
-                        {
-                            NativeMethods.Warn(
-                                $"Download failed:\n{ex.Message}\n\nTry updating from the releases page.",
-                                AppName);
-                            if (!string.IsNullOrEmpty(result.ReleasePageUrl))
-                                Process.Start(new ProcessStartInfo(result.ReleasePageUrl) { UseShellExecute = true });
-                        }
-                    });
-                    break;
-
-                case NativeMethods.UpdateAction.ShowReleases:
-                    if (!string.IsNullOrEmpty(result.ReleasePageUrl))
-                        Process.Start(new ProcessStartInfo(result.ReleasePageUrl) { UseShellExecute = true });
-                    break;
-
-                // Cancel — do nothing
-            }
-        }
-        else if (result.LatestVersion == "none")
-        {
-            NativeMethods.Info("No releases have been published yet.", AppName);
-        }
-        else if (!string.IsNullOrEmpty(result.LatestVersion))
-        {
-            NativeMethods.Info($"You're on the latest version ({running}).", AppName);
-        }
-        else
-        {
-            NativeMethods.Warn("Could not check for updates. Check your internet connection.", AppName);
-        }
+        // Capture the foreground HWND now (tray flyout is open) so the update dialog has a parent
+        // even if the flyout is dismissed by the time the HTTP check completes. The shared flow
+        // must stay on the UI thread (comctl32 v6 activation context for TaskDialogIndirect).
+        var hwnd = NativeMethods.CaptureHwnd();
+        return UpdatePrompt.RunAsync(_updateChecker, hwnd);
     }
 
     /// <summary>
@@ -482,11 +398,7 @@ internal sealed class TrayMenu
         _updateBadge = new MenuFlyoutItem
         {
             Text    = $"⬆  Update available: v{result.LatestVersion}",
-            Command = new RelayCommand(() =>
-            {
-                if (!string.IsNullOrEmpty(result.ReleasePageUrl))
-                    Process.Start(new ProcessStartInfo(result.ReleasePageUrl) { UseShellExecute = true });
-            }),
+            Command = new RelayCommand(() => Shell.Open(result.ReleasePageUrl)),
         };
 
         // Badge + separator always sit above everything else in the menu.
@@ -525,7 +437,7 @@ internal sealed class TrayMenu
 
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
-    private const string AppName = "Hyper-V Manager Tray";
+    private const string AppName = AppInfo.Name;
 
     private void ShowAbout()
     {
@@ -539,13 +451,11 @@ internal sealed class TrayMenu
     private void Add(string text, Action action)
         => Flyout.Items.Add(new MenuFlyoutItem { Text = text, Command = new RelayCommand(action) });
 
-    private static string LogPath() => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "HyperVManagerTray", "switcher.log");
-
+    // Open a file in its default handler; if that fails (e.g. no association), fall back to
+    // revealing it in Explorer.
     private static void OpenPath(string path)
     {
-        try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
-        catch { try { Process.Start("explorer.exe", $"/select,\"{path}\""); } catch { /* ignore */ } }
+        if (Shell.Open(path)) return;
+        try { Process.Start("explorer.exe", $"/select,\"{path}\""); } catch { /* ignore */ }
     }
 }

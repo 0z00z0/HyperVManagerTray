@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace HyperVManagerTray.Models;
 
 /// <summary>
@@ -27,4 +29,21 @@ public sealed class AppConfig
 
     /// <summary>Action applied when no rule matches the current host network.</summary>
     public FallbackAction Fallback { get; set; } = new();
+
+    /// <summary>
+    /// Minimum severity written to <c>switcher.log</c>.  One of <c>Trace</c>, <c>Debug</c>,
+    /// <c>Information</c>, <c>Warning</c>, <c>Error</c>, <c>Critical</c>, <c>None</c>.
+    /// Defaults to <c>Debug</c> so diagnostic detail (e.g. the PowerShell worker echo) is captured.
+    /// </summary>
+    public LogLevel LogLevel { get; set; } = LogLevel.Debug;
+
+    /// <summary>
+    /// The distinct, non-empty virtual-switch names referenced by the rules — the set of
+    /// bridged switches whose host vNICs may need repair.  Used by both the startup self-heal
+    /// and the tray "Repair host networking" action.
+    /// </summary>
+    public IEnumerable<string> RuleSwitches => Rules
+        .Select(r => r.VirtualSwitch)
+        .Where(s => !string.IsNullOrWhiteSpace(s))
+        .Distinct(StringComparer.OrdinalIgnoreCase);
 }

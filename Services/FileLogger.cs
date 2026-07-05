@@ -59,7 +59,9 @@ internal sealed class FileLoggerProvider(string path) : ILoggerProvider
 internal sealed class FileLogger(string category, StreamWriter writer, Lock lockObj) : ILogger
 {
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-    public bool IsEnabled(LogLevel level) => level >= LogLevel.Information;
+    // Level filtering is owned by the LoggerFactory's configured minimum (SetMinimumLevel, driven
+    // by config.json's logLevel). This provider writes whatever the factory lets through.
+    public bool IsEnabled(LogLevel level) => level != LogLevel.None;
 
     public void Log<TState>(LogLevel level, EventId eventId, TState state,
         Exception? exception, Func<TState, Exception?, string> formatter)

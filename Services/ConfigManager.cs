@@ -18,6 +18,14 @@ public sealed class ConfigManager : IDisposable
         Converters = { new JsonStringEnumConverter() }
     };
 
+    private static readonly JsonSerializerOptions WriteOptions = new()
+    {
+        WriteIndented          = true,
+        PropertyNamingPolicy   = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        Converters             = { new JsonStringEnumConverter() }
+    };
+
     private readonly string _configPath;
     private readonly ILogger<ConfigManager> _logger;
     private readonly FileSystemWatcher _watcher;
@@ -75,42 +83,16 @@ public sealed class ConfigManager : IDisposable
     /// Appends a new rule to config.json, saves it, and triggers an immediate reload.
     /// The FileSystemWatcher is paused during the write to avoid a redundant debounced reload.
     /// </summary>
-    public void AddBridgedRule(NetworkRule rule)
-    {
-        _watcher.EnableRaisingEvents = false;
-        try
+    public void AddBridgedRule(NetworkRule rule) => SaveAndReload(
+        new AppConfig
         {
-            var updated = new AppConfig
-            {
-                VirtualMachines = _config.VirtualMachines,
-                Rules           = [.. _config.Rules, rule],
-                Fallback        = _config.Fallback
-            };
-
-            var writeOptions = new JsonSerializerOptions
-            {
-                WriteIndented            = true,
-                PropertyNamingPolicy     = JsonNamingPolicy.CamelCase,
-                DefaultIgnoreCondition   = JsonIgnoreCondition.WhenWritingNull,
-                Converters               = { new JsonStringEnumConverter() }
-            };
-
-            File.WriteAllText(_configPath, JsonSerializer.Serialize(updated, writeOptions));
-            _logger.LogInformation("Rule '{Name}' added and saved to {Path}", rule.Name, _configPath);
-
-            Load();
-            ConfigReloaded?.Invoke(this, _config);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to save new rule '{Name}'", rule.Name);
-            throw;
-        }
-        finally
-        {
-            _watcher.EnableRaisingEvents = true;
-        }
-    }
+            VirtualMachines = _config.VirtualMachines,
+            Rules           = [.. _config.Rules, rule],
+            Fallback        = _config.Fallback,
+            LogLevel        = _config.LogLevel,
+        },
+        $"Rule '{rule.Name}' added and saved to {_configPath}",
+        $"Failed to save new rule '{rule.Name}'");
 
     /// <summary>
     /// Appends a new <see cref="VmTarget"/> to config.json and reloads.
@@ -118,52 +100,28 @@ public sealed class ConfigManager : IDisposable
     /// </summary>
     public void AddVmToConfig(string name, string nicName)
     {
-        if (_config.VirtualMachines.Any(v =>
-                v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+        if (_config.VirtualMachines.Any(v => v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
         {
             _logger.LogInformation("AddVmToConfig: '{Name}' is already in config — skipping.", name);
             return;
         }
 
-        _watcher.EnableRaisingEvents = false;
-        try
+        var newVm = new VmTarget
         {
-            var newVm = new VmTarget
-            {
-                Name    = name,
-                NicName = string.IsNullOrWhiteSpace(nicName) ? "Network Adapter" : nicName,
-            };
+            Name    = name,
+            NicName = string.IsNullOrWhiteSpace(nicName) ? "Network Adapter" : nicName,
+        };
 
-            var updated = new AppConfig
+        SaveAndReload(
+            new AppConfig
             {
                 VirtualMachines = [.. _config.VirtualMachines, newVm],
                 Rules           = _config.Rules,
                 Fallback        = _config.Fallback,
-            };
-
-            var writeOptions = new JsonSerializerOptions
-            {
-                WriteIndented            = true,
-                PropertyNamingPolicy     = JsonNamingPolicy.CamelCase,
-                DefaultIgnoreCondition   = JsonIgnoreCondition.WhenWritingNull,
-                Converters               = { new JsonStringEnumConverter() }
-            };
-
-            File.WriteAllText(_configPath, JsonSerializer.Serialize(updated, writeOptions));
-            _logger.LogInformation("VM '{Name}' added and saved to {Path}", name, _configPath);
-
-            Load();
-            ConfigReloaded?.Invoke(this, _config);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to save new VM '{Name}'", name);
-            throw;
-        }
-        finally
-        {
-            _watcher.EnableRaisingEvents = true;
-        }
+                LogLevel        = _config.LogLevel,
+            },
+            $"VM '{name}' added and saved to {_configPath}",
+            $"Failed to save new VM '{name}'");
     }
 
     /// <summary>
@@ -172,41 +130,47 @@ public sealed class ConfigManager : IDisposable
     /// </summary>
     public void RemoveVmFromConfig(string name)
     {
-        if (!_config.VirtualMachines.Any(v =>
-                v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+        if (!_config.VirtualMachines.Any(v => v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
         {
             _logger.LogInformation("RemoveVmFromConfig: '{Name}' not found in config — skipping.", name);
             return;
         }
 
-        _watcher.EnableRaisingEvents = false;
-        try
-        {
-            var updated = new AppConfig
+        SaveAndReload(
+            new AppConfig
             {
                 VirtualMachines = [.. _config.VirtualMachines.Where(v =>
                     !v.Name.Equals(name, StringComparison.OrdinalIgnoreCase))],
                 Rules           = _config.Rules,
                 Fallback        = _config.Fallback,
-            };
+                LogLevel        = _config.LogLevel,
+            },
+            $"VM '{name}' removed and saved to {_configPath}",
+            $"Failed to remove VM '{name}'");
+    }
 
-            var writeOptions = new JsonSerializerOptions
-            {
-                WriteIndented            = true,
-                PropertyNamingPolicy     = JsonNamingPolicy.CamelCase,
-                DefaultIgnoreCondition   = JsonIgnoreCondition.WhenWritingNull,
-                Converters               = { new JsonStringEnumConverter() }
-            };
-
-            File.WriteAllText(_configPath, JsonSerializer.Serialize(updated, writeOptions));
-            _logger.LogInformation("VM '{Name}' removed and saved to {Path}", name, _configPath);
+    /// <summary>
+    /// Serialises <paramref name="updated"/> to config.json, reloads, and raises
+    /// <see cref="ConfigReloaded"/> — with the watcher paused so the write itself doesn't trigger a
+    /// second, debounced reload.  On failure the error is logged and rethrown so the caller can
+    /// surface it.  Shared by every config-mutating method.
+    /// </summary>
+    /// <param name="successMessage">Message logged on success (already fully formatted).</param>
+    /// <param name="failureMessage">Message logged if the write throws.</param>
+    private void SaveAndReload(AppConfig updated, string successMessage, string failureMessage)
+    {
+        _watcher.EnableRaisingEvents = false;
+        try
+        {
+            File.WriteAllText(_configPath, JsonSerializer.Serialize(updated, WriteOptions));
+            _logger.LogInformation("{Message}", successMessage);
 
             Load();
             ConfigReloaded?.Invoke(this, _config);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to remove VM '{Name}'", name);
+            _logger.LogError(ex, "{Message}", failureMessage);
             throw;
         }
         finally
@@ -218,6 +182,22 @@ public sealed class ConfigManager : IDisposable
     /// <summary>Returns the expected config.json path: next to the executable.</summary>
     public static string GetConfigPath() =>
         Path.Combine(AppContext.BaseDirectory, "config.json");
+
+    /// <summary>
+    /// Reads just the <see cref="AppConfig.LogLevel"/> from config.json, for use at startup before
+    /// the logger (and hence a full <see cref="ConfigManager"/>) exists.  Falls back to
+    /// <see cref="LogLevel.Debug"/> if the file is missing or unreadable.
+    /// </summary>
+    public static LogLevel ReadLogLevel(string configPath)
+    {
+        try
+        {
+            if (!File.Exists(configPath)) return LogLevel.Debug;
+            var cfg = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(configPath), JsonOptions);
+            return cfg?.LogLevel ?? LogLevel.Debug;
+        }
+        catch { return LogLevel.Debug; }
+    }
 
     public void Dispose()
     {

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -34,6 +33,14 @@ public sealed partial class DashboardWindow : Window
     private readonly Dictionary<string, VmOperationProgress> _op = new(StringComparer.OrdinalIgnoreCase);
     private bool _metricsOn;   // true while subscribed to VmService metrics (dashboard shown)
     private bool _priming;     // true during the off-screen composition warm-up (see Prime)
+
+    /// <summary>
+    /// When false (the default), a close request (Alt+F4, etc.) is cancelled and the window is
+    /// hidden instead of destroyed — so the primed, already-composed window is reused on the next
+    /// open and never shows the Mica white-flash.  App sets this true at shutdown so the app can
+    /// actually exit.
+    /// </summary>
+    public bool AllowClose { get; set; }
 
     // ── Same-click detection ────────────────────────────────────────────────────
     // Clicking the tray icon while the popup is open first deactivates it (auto-hide),
@@ -74,13 +81,23 @@ public sealed partial class DashboardWindow : Window
         _vm.StatusesChanged   += OnVmStatusesChanged;
         _vm.OperationProgress += OnVmOperationProgress;
 
-        Activated += OnActivated;
+        Activated       += OnActivated;
+        AppWindow.Closing += OnAppWindowClosing;
         Closed    += (_, _) =>
         {
             UnsubscribeMetricsIfNeeded();
             _vm.StatusesChanged   -= OnVmStatusesChanged;
             _vm.OperationProgress -= OnVmOperationProgress;
         };
+    }
+
+    /// <summary>Hides (rather than destroys) the popup on a close request, unless <see cref="AllowClose"/>
+    /// is set — keeps the primed window alive so reopening never white-flashes.</summary>
+    private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
+    {
+        if (AllowClose) return;
+        args.Cancel = true;
+        HideWindow();
     }
 
     // ── Public surface ──────────────────────────────────────────────────────────
@@ -614,20 +631,7 @@ public sealed partial class DashboardWindow : Window
     {
         var sw = _monitor.LastApplied?.VirtualSwitch;
         if (!string.IsNullOrEmpty(sw)) await _hyperV.ApplySwitchAsync(vm.Name, vm.NicName, sw);
-
-        try
-        {
-            Process.Start(new ProcessStartInfo("vmconnect.exe", $"localhost \"{vm.Name}\"")
-            {
-                UseShellExecute = true,
-            });
-        }
-        catch
-        {
-            NativeMethods.Warn(
-                "Could not open VM Connection.\n\nEnsure Hyper-V Manager tools are installed.",
-                "Hyper-V Manager Tray");
-        }
+        Shell.OpenVmConnect(vm.Name);
     }
 
     private async Task StartAndConnectAsync(VmTarget vm)

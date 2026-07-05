@@ -1,4 +1,5 @@
 {
+  "logLevel": "Debug",
   "virtualMachines": [],
   "rules": [
     {
