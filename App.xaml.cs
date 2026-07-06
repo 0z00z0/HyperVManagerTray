@@ -36,21 +36,68 @@ public partial class App : Application
     private bool?  _bridged;  // null = icon not yet initialized; ensures first switch always updates
     private System.Drawing.Icon? _iconImage;
 
-    public App() => InitializeComponent();
+    // ── Silent-teardown self-heal ───────────────────────────────────────────────
+    // Confirmed 2026-07-05: a GPU driver fault during a power-source change (WER LiveKernelEvent
+    // Kernel_141) tore down the WinUI/Mica compositor and terminated the tray as a CLEAN exit —
+    // no exception, no WER app record, no crash.log, no minidump. These flags let OnProcessExit
+    // tell that silent teardown apart from the two legitimate exits (tray Exit, logoff/shutdown)
+    // so only the illegitimate one relaunches a fresh instance.
+    private static volatile bool _intentionalExit;
+    private static volatile bool _sessionEnding;
+    private static readonly DateTime _processStartUtc = DateTime.UtcNow;
+    private static Mutex? _singleInstanceMutex;
+    private const string SingleInstanceMutexName = @"Local\HyperVManagerTray.SingleInstance";
+    private const string AutoRelaunchArg = "--auto-relaunch";
 
-    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    public App()
     {
-        // Capture *every* unhandled exception to disk first thing — a WinUI tray app that
-        // throws on the dispatcher thread otherwise dies silently (stowed exception in
-        // CoreMessagingXP.dll) and the tray icon just vanishes with nothing in the log.
+        InitializeComponent();
+
+        // A tray app's lifetime is anchored to the tray icon (a Win32 construct), NOT to any XAML
+        // window. With the default OnLastWindowClose policy, a GPU/compositor reset that destroys
+        // all our windows from below tears the whole process down as a clean exit (the "vanished
+        // tray, zero trace" crash above). OnExplicitShutdown keeps the process alive through that;
+        // the dashboard recreates itself lazily on the next tray click (see ToggleDashboard).
+        DispatcherShutdownMode = DispatcherShutdownMode.OnExplicitShutdown;
+
+        AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
+    }
+
+    protected override async void OnLaunched(LaunchActivatedEventArgs args)
+    {
+        // Handlers FIRST, before anything that can throw: a WinUI tray app that throws on the
+        // dispatcher thread otherwise dies silently (stowed exception in CoreMessagingXP.dll) with
+        // nothing in the log. Registering first also lets a UI-thread startup exception be marked
+        // Handled — the process survives instead of dying and tripping the self-heal relaunch.
         RegisterGlobalExceptionHandlers();
+
+        // Single-instance next — before any window or tray icon. A self-heal relaunch can spawn
+        // the new instance while the old one is still milliseconds from terminating, and a
+        // resume-from-standby can double-launch via the logon task; two tray processes would both
+        // bind virtual switches and race. Held for the process lifetime; the OS releases it on
+        // termination (clean exit, crash, or kill).
+        if (!AcquireSingleInstanceLock())
+        {
+            _intentionalExit = true;   // a duplicate exit must NOT trigger the self-heal relaunch
+            Exit();
+            return;
+        }
+
+        // A logoff/shutdown ProcessExit is legitimate — don't let it trigger the self-heal relaunch.
+        Microsoft.Win32.SystemEvents.SessionEnding += (_, _) => _sessionEnding = true;
 
         // Opt native Win32 elements (tray context menu, etc.) into system dark mode.
         // Must run before any UI is created so the menu HWND inherits the setting.
         NativeMethods.EnableDarkModeForNativeUi();
 
+        // When resurrected after a GPU-reset teardown, the display subsystem may still be
+        // recovering — wait a beat before creating windows/the tray icon so the fresh instance
+        // doesn't die to the same reset it was born from.
+        if (Environment.GetCommandLineArgs().Contains(AutoRelaunchArg))
+            await Task.Delay(TimeSpan.FromSeconds(5));
+
         _ui         = DispatcherQueue.GetForCurrentThread();
-        _hostWindow = new MainWindow();   // never shown; keeps the app alive
+        _hostWindow = new MainWindow();   // never shown; a secondary keep-alive alongside OnExplicitShutdown
 
         try
         {
@@ -80,6 +127,7 @@ public partial class App : Application
                 NativeMethods.Error(
                     $"config.json not found at:\n{configPath}\n\nPlace config.json next to the executable and restart.",
                     AppInfo.Name);
+                _intentionalExit = true;   // deliberate give-up — relaunching would just fail again
                 Exit();
                 return;
             }
@@ -113,11 +161,12 @@ public partial class App : Application
 
             // Pre-create and prime the dashboard so its first real open has no white flash:
             // the Mica window's initial (white) composition frame happens now, off-screen.
-            CreateDashboard();
+            CreateDashboard(prime: true);
         }
         catch (Exception ex)
         {
             NativeMethods.Error($"Failed to start Hyper-V Manager Tray:\n\n{ex}", AppInfo.Name);
+            _intentionalExit = true;   // startup failed — relaunching would just fail again
             Exit();
         }
     }
@@ -171,6 +220,106 @@ public partial class App : Application
                 $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [CRASH] {source}: {ex}{Environment.NewLine}{Environment.NewLine}");
         }
         catch { /* never throw from the crash logger */ }
+    }
+
+    // ── Single-instance + self-heal relaunch ────────────────────────────────────
+
+    /// <summary>
+    /// Acquires the process-wide single-instance mutex, retrying briefly to ride out the window
+    /// where a self-heal relaunch overlaps the still-terminating old instance. Returns false only
+    /// if another instance genuinely holds it.
+    /// </summary>
+    private static bool AcquireSingleInstanceLock()
+    {
+        for (int attempt = 0; attempt < 15; attempt++)
+        {
+            _singleInstanceMutex = new Mutex(initiallyOwned: false, SingleInstanceMutexName);
+            try
+            {
+                if (_singleInstanceMutex.WaitOne(TimeSpan.Zero)) return true;
+            }
+            catch (AbandonedMutexException)
+            {
+                // Previous owner died abnormally (exactly our GPU-teardown crash) — we now hold it.
+                return true;
+            }
+            _singleInstanceMutex.Dispose();
+            _singleInstanceMutex = null;
+            Thread.Sleep(200);
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Fires on every CLEAN process teardown (NOT on a hard kill / taskkill, which is what we want —
+    /// a Task Manager kill should stay dead). If the exit was neither user-initiated (tray Exit) nor
+    /// a logoff/shutdown, it is the silent compositor-loss teardown — relaunch a fresh instance
+    /// (rate-limited so a persistent fault can't spin a relaunch loop). The dying process is already
+    /// elevated, so the child inherits elevation without a UAC prompt.
+    /// </summary>
+    private void OnProcessExit(object? sender, EventArgs e)
+    {
+        if (_intentionalExit || _sessionEnding) return;
+
+        var uptime = DateTime.UtcNow - _processStartUtc;
+        if (!TryRecordRelaunch())
+        {
+            AppendLifecycleLine($"Unexpected teardown after {uptime:hh\\:mm\\:ss}; 3 relaunches within 10 min — giving up.");
+            return;
+        }
+
+        AppendLifecycleLine($"Unexpected silent teardown after {uptime:hh\\:mm\\:ss} (likely GPU/compositor reset) — relaunching.");
+        try
+        {
+            if (Environment.ProcessPath is { } exe)
+                System.Diagnostics.Process.Start(
+                    new System.Diagnostics.ProcessStartInfo(exe, AutoRelaunchArg) { UseShellExecute = false });
+        }
+        catch (Exception ex)
+        {
+            AppendLifecycleLine($"Relaunch failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Sliding-window rate limiter for the self-heal relaunch: false once 3 relaunches have happened
+    /// in the last 10 minutes. Timestamps persist in a file because each check runs in a NEW process,
+    /// so in-memory state can't span the relaunch chain it is limiting.
+    /// </summary>
+    private static bool TryRecordRelaunch()
+    {
+        try
+        {
+            var path   = Path.Combine(AppInfo.DataDir, "relaunch-history.txt");
+            var cutoff = DateTimeOffset.UtcNow.AddMinutes(-10).ToUnixTimeMilliseconds();
+            var recent = new List<long>();
+            if (File.Exists(path))
+                foreach (var line in File.ReadAllLines(path))
+                    if (long.TryParse(line, out var ts) && ts >= cutoff) recent.Add(ts);
+
+            if (recent.Count >= 3) return false;
+
+            recent.Add(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            Directory.CreateDirectory(AppInfo.DataDir);
+            File.WriteAllLines(path, recent.Select(t => t.ToString()));
+            return true;
+        }
+        catch
+        {
+            return true;   // if the bookkeeping itself fails, err on the side of bringing the tray back
+        }
+    }
+
+    /// <summary>Appends a lifecycle line to crash.log directly (the DI logger may be torn down at ProcessExit). Never throws.</summary>
+    private static void AppendLifecycleLine(string msg)
+    {
+        try
+        {
+            Directory.CreateDirectory(AppInfo.DataDir);
+            File.AppendAllText(AppInfo.CrashLog,
+                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [LIFECYCLE] {msg}{Environment.NewLine}");
+        }
+        catch { /* never throw from the exit path */ }
     }
 
     // ── Tray icon ───────────────────────────────────────────────────────────────
@@ -327,37 +476,43 @@ public partial class App : Application
     // ── Dashboard ───────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Creates and primes the dashboard popup.  Kept alive for the app's lifetime — the window
-    /// cancels close requests and hides instead (see <see cref="DashboardWindow.AllowClose"/>), so
-    /// every open reuses the already-composed window and never shows the Mica white-flash.
+    /// Creates the dashboard popup. Normally kept alive for the app's lifetime — the window cancels
+    /// close requests and hides instead (see <see cref="DashboardWindow.AllowClose"/>), so every
+    /// open reuses the already-composed window and never shows the Mica white-flash. Priming does an
+    /// off-screen first-composition to kill the flash on the very first open; a lazy recreation
+    /// after a GPU-reset destroy skips priming (it's about to be shown anyway).
     /// </summary>
-    private void CreateDashboard()
+    private void CreateDashboard(bool prime)
     {
         _dashboard = new DashboardWindow(_config!, _monitor!, _hyperV!, _vm!);
         _dashboard.Closed += (_, _) => _dashboard = null;
-        _dashboard.Prime();
+        if (prime) _dashboard.Prime();
     }
 
     private void ToggleDashboard()
     {
-        // Created + primed in OnLaunched (which runs to completion on the UI thread before any tray
-        // click is dispatched) and kept alive thereafter, so this is effectively never null.
-        if (_dashboard is null) return;
+        // Normally a primed singleton; but a GPU/compositor reset can destroy its window out from
+        // under us (Closed → _dashboard = null). Recreate it so the tray click still works — the
+        // process itself survives via OnExplicitShutdown.
+        if (_dashboard is null) CreateDashboard(prime: false);
+        var dash = _dashboard!;   // CreateDashboard just assigned it
 
-        if (_dashboard.AppWindow.IsVisible)
-            _dashboard.HideWindow();
-        else if (!_dashboard.HiddenByThisClick)
+        if (dash.AppWindow.IsVisible)
+            dash.HideWindow();
+        else if (!dash.HiddenByThisClick)
             // HiddenByThisClick filters out exactly one case: the tray click that is itself
             // the deactivation that just auto-hid the popup (that click means "close", not
             // "reopen").  Any other click — including a quick dismiss-elsewhere-then-tray
             // sequence — shows the window.
-            _dashboard.ShowNearTray();
+            dash.ShowNearTray();
     }
 
     // ── Lifecycle ───────────────────────────────────────────────────────────────
 
     private void OnExit()
     {
+        // User-initiated exit is legitimate — OnProcessExit must NOT self-heal relaunch it.
+        _intentionalExit = true;
         // Let the persistent dashboard actually close now (it otherwise cancels close → hide).
         if (_dashboard is not null) _dashboard.AllowClose = true;
         _trayIcon?.Dispose();
