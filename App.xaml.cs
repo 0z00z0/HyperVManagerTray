@@ -27,7 +27,6 @@ public partial class App : Application
     private UpdateChecker?  _updateChecker;
 
     private DispatcherQueue  _ui = null!;
-    private Window?          _hostWindow;
     private TaskbarIcon?     _trayIcon;
     private DashboardWindow? _dashboard;
     private TrayMenu?        _menu;
@@ -36,19 +35,6 @@ public partial class App : Application
     private bool?  _bridged;  // null = icon not yet initialized; ensures first switch always updates
     private System.Drawing.Icon? _iconImage;
 
-    // ── Silent-teardown self-heal ───────────────────────────────────────────────
-    // Confirmed 2026-07-05: a GPU driver fault during a power-source change (WER LiveKernelEvent
-    // Kernel_141) tore down the WinUI/Mica compositor and terminated the tray as a CLEAN exit —
-    // no exception, no WER app record, no crash.log, no minidump. These flags let OnProcessExit
-    // tell that silent teardown apart from the two legitimate exits (tray Exit, logoff/shutdown)
-    // so only the illegitimate one relaunches a fresh instance.
-    private static volatile bool _intentionalExit;
-    private static volatile bool _sessionEnding;
-    private static readonly DateTime _processStartUtc = DateTime.UtcNow;
-    private static Mutex? _singleInstanceMutex;
-    private const string SingleInstanceMutexName = @"Local\HyperVManagerTray.SingleInstance";
-    private const string AutoRelaunchArg = "--auto-relaunch";
-
     public App()
     {
         InitializeComponent();
@@ -56,11 +42,11 @@ public partial class App : Application
         // A tray app's lifetime is anchored to the tray icon (a Win32 construct), NOT to any XAML
         // window. With the default OnLastWindowClose policy, a GPU/compositor reset that destroys
         // all our windows from below tears the whole process down as a clean exit (the "vanished
-        // tray, zero trace" crash above). OnExplicitShutdown keeps the process alive through that;
-        // the dashboard recreates itself lazily on the next tray click (see ToggleDashboard).
+        // tray, zero trace" crash — see Helpers/SelfHealWatchdog.cs). OnExplicitShutdown keeps the
+        // process alive through that; the dashboard recreates itself lazily on the next tray click
+        // (see ToggleDashboard). SelfHealWatchdog covers the case where the process dies anyway.
         DispatcherShutdownMode = DispatcherShutdownMode.OnExplicitShutdown;
-
-        AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
+        SelfHealWatchdog.Install();
     }
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
@@ -76,15 +62,11 @@ public partial class App : Application
         // resume-from-standby can double-launch via the logon task; two tray processes would both
         // bind virtual switches and race. Held for the process lifetime; the OS releases it on
         // termination (clean exit, crash, or kill).
-        if (!AcquireSingleInstanceLock())
+        if (!SelfHealWatchdog.AcquireLock())
         {
-            _intentionalExit = true;   // a duplicate exit must NOT trigger the self-heal relaunch
-            Exit();
+            ExitIntentionally();   // a duplicate exit must NOT trigger the self-heal relaunch
             return;
         }
-
-        // A logoff/shutdown ProcessExit is legitimate — don't let it trigger the self-heal relaunch.
-        Microsoft.Win32.SystemEvents.SessionEnding += (_, _) => _sessionEnding = true;
 
         // Opt native Win32 elements (tray context menu, etc.) into system dark mode.
         // Must run before any UI is created so the menu HWND inherits the setting.
@@ -93,11 +75,11 @@ public partial class App : Application
         // When resurrected after a GPU-reset teardown, the display subsystem may still be
         // recovering — wait a beat before creating windows/the tray icon so the fresh instance
         // doesn't die to the same reset it was born from.
-        if (Environment.GetCommandLineArgs().Contains(AutoRelaunchArg))
+        if (SelfHealWatchdog.IsAutoRelaunch)
             await Task.Delay(TimeSpan.FromSeconds(5));
 
-        _ui         = DispatcherQueue.GetForCurrentThread();
-        _hostWindow = new MainWindow();   // never shown; a secondary keep-alive alongside OnExplicitShutdown
+        _ui = DispatcherQueue.GetForCurrentThread();
+        _ = new MainWindow();   // never shown; keeps a XAML window around (OnExplicitShutdown owns the real keep-alive)
 
         try
         {
@@ -127,8 +109,7 @@ public partial class App : Application
                 NativeMethods.Error(
                     $"config.json not found at:\n{configPath}\n\nPlace config.json next to the executable and restart.",
                     AppInfo.Name);
-                _intentionalExit = true;   // deliberate give-up — relaunching would just fail again
-                Exit();
+                ExitIntentionally();   // deliberate give-up — relaunching would just fail again
                 return;
             }
 
@@ -166,9 +147,15 @@ public partial class App : Application
         catch (Exception ex)
         {
             NativeMethods.Error($"Failed to start Hyper-V Manager Tray:\n\n{ex}", AppInfo.Name);
-            _intentionalExit = true;   // startup failed — relaunching would just fail again
-            Exit();
+            ExitIntentionally();   // startup failed — relaunching would just fail again
         }
+    }
+
+    /// <summary>Exits after telling <see cref="SelfHealWatchdog"/> this teardown is deliberate, so it doesn't relaunch.</summary>
+    private void ExitIntentionally()
+    {
+        SelfHealWatchdog.MarkLegitimateExit();
+        Exit();
     }
 
     // ── Global crash logging ────────────────────────────────────────────────────
@@ -212,114 +199,7 @@ public partial class App : Application
     {
         try { _loggerFactory?.CreateLogger("Crash").LogError(ex, "Unhandled exception ({Source})", source); }
         catch { /* logging must never throw */ }
-        try
-        {
-            Directory.CreateDirectory(AppInfo.DataDir);
-            File.AppendAllText(
-                AppInfo.CrashLog,
-                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [CRASH] {source}: {ex}{Environment.NewLine}{Environment.NewLine}");
-        }
-        catch { /* never throw from the crash logger */ }
-    }
-
-    // ── Single-instance + self-heal relaunch ────────────────────────────────────
-
-    /// <summary>
-    /// Acquires the process-wide single-instance mutex, retrying briefly to ride out the window
-    /// where a self-heal relaunch overlaps the still-terminating old instance. Returns false only
-    /// if another instance genuinely holds it.
-    /// </summary>
-    private static bool AcquireSingleInstanceLock()
-    {
-        for (int attempt = 0; attempt < 15; attempt++)
-        {
-            _singleInstanceMutex = new Mutex(initiallyOwned: false, SingleInstanceMutexName);
-            try
-            {
-                if (_singleInstanceMutex.WaitOne(TimeSpan.Zero)) return true;
-            }
-            catch (AbandonedMutexException)
-            {
-                // Previous owner died abnormally (exactly our GPU-teardown crash) — we now hold it.
-                return true;
-            }
-            _singleInstanceMutex.Dispose();
-            _singleInstanceMutex = null;
-            Thread.Sleep(200);
-        }
-        return false;
-    }
-
-    /// <summary>
-    /// Fires on every CLEAN process teardown (NOT on a hard kill / taskkill, which is what we want —
-    /// a Task Manager kill should stay dead). If the exit was neither user-initiated (tray Exit) nor
-    /// a logoff/shutdown, it is the silent compositor-loss teardown — relaunch a fresh instance
-    /// (rate-limited so a persistent fault can't spin a relaunch loop). The dying process is already
-    /// elevated, so the child inherits elevation without a UAC prompt.
-    /// </summary>
-    private void OnProcessExit(object? sender, EventArgs e)
-    {
-        if (_intentionalExit || _sessionEnding) return;
-
-        var uptime = DateTime.UtcNow - _processStartUtc;
-        if (!TryRecordRelaunch())
-        {
-            AppendLifecycleLine($"Unexpected teardown after {uptime:hh\\:mm\\:ss}; 3 relaunches within 10 min — giving up.");
-            return;
-        }
-
-        AppendLifecycleLine($"Unexpected silent teardown after {uptime:hh\\:mm\\:ss} (likely GPU/compositor reset) — relaunching.");
-        try
-        {
-            if (Environment.ProcessPath is { } exe)
-                System.Diagnostics.Process.Start(
-                    new System.Diagnostics.ProcessStartInfo(exe, AutoRelaunchArg) { UseShellExecute = false });
-        }
-        catch (Exception ex)
-        {
-            AppendLifecycleLine($"Relaunch failed: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Sliding-window rate limiter for the self-heal relaunch: false once 3 relaunches have happened
-    /// in the last 10 minutes. Timestamps persist in a file because each check runs in a NEW process,
-    /// so in-memory state can't span the relaunch chain it is limiting.
-    /// </summary>
-    private static bool TryRecordRelaunch()
-    {
-        try
-        {
-            var path   = Path.Combine(AppInfo.DataDir, "relaunch-history.txt");
-            var cutoff = DateTimeOffset.UtcNow.AddMinutes(-10).ToUnixTimeMilliseconds();
-            var recent = new List<long>();
-            if (File.Exists(path))
-                foreach (var line in File.ReadAllLines(path))
-                    if (long.TryParse(line, out var ts) && ts >= cutoff) recent.Add(ts);
-
-            if (recent.Count >= 3) return false;
-
-            recent.Add(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-            Directory.CreateDirectory(AppInfo.DataDir);
-            File.WriteAllLines(path, recent.Select(t => t.ToString()));
-            return true;
-        }
-        catch
-        {
-            return true;   // if the bookkeeping itself fails, err on the side of bringing the tray back
-        }
-    }
-
-    /// <summary>Appends a lifecycle line to crash.log directly (the DI logger may be torn down at ProcessExit). Never throws.</summary>
-    private static void AppendLifecycleLine(string msg)
-    {
-        try
-        {
-            Directory.CreateDirectory(AppInfo.DataDir);
-            File.AppendAllText(AppInfo.CrashLog,
-                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [LIFECYCLE] {msg}{Environment.NewLine}");
-        }
-        catch { /* never throw from the exit path */ }
+        AppInfo.AppendCrashLogLine("CRASH", $"{source}: {ex}{Environment.NewLine}");
     }
 
     // ── Tray icon ───────────────────────────────────────────────────────────────
@@ -511,8 +391,8 @@ public partial class App : Application
 
     private void OnExit()
     {
-        // User-initiated exit is legitimate — OnProcessExit must NOT self-heal relaunch it.
-        _intentionalExit = true;
+        // User-initiated exit is legitimate — the self-heal watchdog must NOT relaunch it.
+        SelfHealWatchdog.MarkLegitimateExit();
         // Let the persistent dashboard actually close now (it otherwise cancels close → hide).
         if (_dashboard is not null) _dashboard.AllowClose = true;
         _trayIcon?.Dispose();
