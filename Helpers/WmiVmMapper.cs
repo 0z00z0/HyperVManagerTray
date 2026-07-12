@@ -16,7 +16,8 @@ public static class WmiVmMapper
     // CIM/Msvm EnabledState codes (see Msvm_ComputerSystem / Msvm_SummaryInformation).
     private const ushort Enabled   = 2;      // Running
     private const ushort Disabled  = 3;      // Off
-    private const ushort Paused    = 32768;
+    private const ushort Quiesce   = 9;      // user-initiated pause (see MapState)
+    private const ushort Paused    = 32768;  // host critical-pause (e.g. low disk)
     private const ushort Suspended = 32769;  // Saved
     private const ushort Starting  = 32770;
     private const ushort Snapshotting = 32771;
@@ -33,6 +34,10 @@ public static class WmiVmMapper
     {
         Enabled      => "Running",
         Disabled     => "Off",
+        // A user pause is driven by the CIM Quiesce request (9), and Hyper-V reports the paused VM
+        // back as EnabledState 9; the vendor 32768 is the host's own critical-pause. Both must read
+        // as "Paused" so the card shows the right label and the Resume/Save buttons (not "Unknown").
+        Quiesce      => "Paused",
         Paused       => "Paused",
         Suspended    => "Saved",
         Starting     => "Starting",

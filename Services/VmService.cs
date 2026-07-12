@@ -23,11 +23,23 @@ public sealed class VmService : IDisposable
 {
     private const string Namespace = @"root\virtualization\v2";
 
-    // RequestStateChange / EnabledState codes. FLAGGED: 32768=Paused, 32769=Saved(Suspended) — validate
-    // on a live host; if pause/save behave swapped, swap these two constants.
-    private const ushort ReqRunning = 2;       // start or resume
-    private const ushort ReqPaused  = 32768;
-    private const ushort ReqSaved   = 32769;
+    // Two DISTINCT Hyper-V WMI state enumerations that must not be conflated (doing so returned
+    // 32775 / 0x8007 "Invalid state for this operation" on Pause and Save):
+    //   • EnabledState   — the CURRENT power state read back from Msvm_ComputerSystem.
+    //   • RequestedState — the target code RequestStateChange ACCEPTS to drive a transition.
+    // Msvm_ComputerSystem.EnabledState (current state), used only for the already-in-state no-op guard:
+    private const ushort StateRunning = 2;
+    private const ushort StatePaused  = 32768;
+    private const ushort StateSaved   = 32769;   // "Suspended"
+    // Msvm_ComputerSystem.RequestStateChange RequestedState (target request). These are the STANDARD
+    // CIM values a V2 host accepts; the vendor codes the docs list for save/pause/resume (32773/32776/
+    // 32777) are "Hyper-V V1 only" and a V2 host rejects them with 32775 — which is why the earlier
+    // 32773/32779 Save guesses failed. Verified against Microsoft's fsharplu ManagementHypervisor.fs
+    // (Pause = Quiesce 9, Save = Offline 6); Pause 9 is confirmed working live on this host.
+    // https://learn.microsoft.com/windows/win32/hyperv_v2/requeststatechange-msvm-computersystem
+    private const ushort ReqEnabled = 2;   // Start / Resume → Running
+    private const ushort ReqQuiesce = 9;   // Pause          → Paused (EnabledState 9)
+    private const ushort ReqOffline = 6;   // Save           → Saved  (suspends to disk → EnabledState 32769)
 
     private static readonly TimeSpan MetricsInterval = TimeSpan.FromSeconds(2.5);
     private static readonly TimeSpan VhdInterval     = TimeSpan.FromSeconds(15);
@@ -427,20 +439,39 @@ public sealed class VmService : IDisposable
                 return;
             }
 
-            ushort requested = kind switch
+            // The no-op guard compares CURRENT state (EnabledState) against the target EnabledState —
+            // NOT against the RequestStateChange code, which is a different enumeration. Guards a second
+            // click after the first job outran TrackJob's deadline but still succeeded; re-issuing
+            // RequestStateChange for an already-satisfied state returns an error.
+            ushort targetState = kind switch
             {
-                VmOpKind.Pause => ReqPaused,
-                VmOpKind.Save  => ReqSaved,
-                _              => ReqRunning,   // Start / Resume
+                VmOpKind.Pause => StatePaused,
+                VmOpKind.Save  => StateSaved,
+                _              => StateRunning,   // Start / Resume
             };
+            if (Convert.ToUInt16(vm["EnabledState"]) == targetState)
+            {
+                Emit(vmName, kind, VmOpPhase.Succeeded, null, null);
+                return;
+            }
+
+            // The single documented V2 RequestStateChange code that drives the VM to the target state.
+            ushort requestCode = kind switch
+            {
+                VmOpKind.Pause => ReqQuiesce,   // 9
+                VmOpKind.Save  => ReqOffline,   // 6
+                _              => ReqEnabled,   // 2 — Start / Resume
+            };
+
             using var inParams = vm.GetMethodParameters("RequestStateChange");
-            inParams["RequestedState"] = requested;
+            inParams["RequestedState"] = requestCode;
             using var outParams = vm.InvokeMethod("RequestStateChange", inParams, null);
             uint ret = Convert.ToUInt32(outParams["ReturnValue"]);
 
-            if (ret == 0) { Emit(vmName, kind, VmOpPhase.Succeeded, null, null); }
-            else if (ret == 4096) { TrackJob(scope, (string)outParams["Job"], vmName, kind); }
-            else { Emit(vmName, kind, VmOpPhase.Failed, null, $"error 0x{ret:X}"); }
+            if (ret == 0)    { Emit(vmName, kind, VmOpPhase.Succeeded, null, null); return; }
+            if (ret == 4096) { TrackJob(scope, (string)outParams["Job"], vmName, kind); return; }
+
+            Emit(vmName, kind, VmOpPhase.Failed, null, $"error 0x{ret:X}");
         }
         catch (Exception ex)
         {
@@ -476,8 +507,13 @@ public sealed class VmService : IDisposable
 
     private void TrackJob(ManagementScope scope, string jobPath, string vmName, VmOpKind kind)
     {
-        var deadline = DateTime.UtcNow + (kind is VmOpKind.Save or VmOpKind.Shutdown
-            ? TimeSpan.FromMinutes(5) : TimeSpan.FromSeconds(30));
+        // Pause is near-instant (the VM stays memory-resident); everything else that reaches here
+        // (Start, Resume, Save) can legitimately take minutes — e.g. a cold-boot Start under host
+        // load, or a large-memory Save/Resume — so give them the same long budget as Save/Shutdown
+        // always had. A too-short deadline here previously reported "timed out" on a job that was
+        // still genuinely running and went on to succeed seconds later.
+        var deadline = DateTime.UtcNow + (kind == VmOpKind.Pause
+            ? TimeSpan.FromSeconds(30) : TimeSpan.FromMinutes(5));
         try
         {
             using var job = new ManagementObject(scope, new ManagementPath(jobPath), null);

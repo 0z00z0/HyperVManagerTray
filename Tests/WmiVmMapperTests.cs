@@ -9,7 +9,8 @@ public class WmiVmMapperTests
     [Theory]
     [InlineData((ushort)2, "Running")]
     [InlineData((ushort)3, "Off")]
-    [InlineData((ushort)32768, "Paused")]
+    [InlineData((ushort)9, "Paused")]       // Quiesce — a user-initiated pause reports EnabledState 9
+    [InlineData((ushort)32768, "Paused")]   // host critical-pause
     [InlineData((ushort)32769, "Saved")]
     [InlineData((ushort)32773, "Saving")]
     [InlineData((ushort)32770, "Starting")]

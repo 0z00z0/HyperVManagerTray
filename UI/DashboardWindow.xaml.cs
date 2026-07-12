@@ -31,6 +31,18 @@ public sealed partial class DashboardWindow : Window
     // In-flight/failed power-op message per VM, overlaid on the card's state label (optimistic
     // "Requesting start…", live "Saving (47%)…", or a sticky "Failed: not enough memory").
     private readonly Dictionary<string, VmOperationProgress> _op = new(StringComparer.OrdinalIgnoreCase);
+    // Last state we could actually name for each VM (Running/Off/Paused/Saved/…). Msvm_ComputerSystem
+    // .EnabledState goes briefly unpopulated or reports an unmapped transitional code for a few
+    // seconds after an operation settles (the window where MMC's State/Status columns also blank),
+    // which MapState surfaces as "Unknown"; the card falls back to this so the label never goes blank.
+    private readonly Dictionary<string, string> _lastKnownState = new(StringComparer.OrdinalIgnoreCase);
+    // The state a just-completed op is driving the VM to (Running/Paused/Saved/Off). EnabledState lags
+    // a few seconds behind an op settling; during that window a stale pre-op read from _latest would
+    // otherwise flip the label back to the old state (e.g. a completed Pause showing "Running" until
+    // the next tick). Hold the target until the live read confirms it — or a short grace expires, so a
+    // diverged reality (a shutdown cancelled in the guest) still wins. Makes the card jump straight to
+    // the achieved state on success.
+    private readonly Dictionary<string, (string Target, DateTime Until)> _pendingState = new(StringComparer.OrdinalIgnoreCase);
     private bool _metricsOn;   // true while subscribed to VmService metrics (dashboard shown)
     private bool _priming;     // true during the off-screen composition warm-up (see Prime)
 
@@ -260,7 +272,19 @@ public sealed partial class DashboardWindow : Window
     {
         DispatcherQueue.TryEnqueue(() =>
         {
-            if (progress.Phase == VmOpPhase.Succeeded) _op.Remove(progress.VmName);
+            if (progress.Phase == VmOpPhase.Succeeded)
+            {
+                _op.Remove(progress.VmName);
+                // Show the achieved state immediately: the real EnabledState can lag several seconds
+                // behind a completed op (blank/"Unknown", or still the pre-op state, in the meantime).
+                // Seed the last-known state AND hold it as the pending target so EffectiveStateName
+                // won't let a stale live read overwrite it before the WMI read catches up.
+                if (SettledState(progress.Kind) is { } settled)
+                {
+                    _lastKnownState[progress.VmName] = settled;
+                    _pendingState[progress.VmName]   = (settled, DateTime.UtcNow.AddSeconds(6));
+                }
+            }
             else _op[progress.VmName] = progress;
 
             // Update just the affected card in place — no need to wait for the next status tick.
@@ -368,21 +392,87 @@ public sealed partial class DashboardWindow : Window
 
     private void ApplyOverlay(VmCard card, VmStatus? s)
     {
-        card.State.Text       = DisplayState(card.VmName, s);
-        card.State.Foreground = DisplayStateBrush(card.VmName, s);
+        // An overlay can outlive its operation and needs the real, state-watcher-driven status to
+        // retire it once the VM reaches the operation's target state:
+        //   • a "Failed" that was really a false "timed out" (TrackJob's poll deadline elapsed while a
+        //     slow job was still running), which nothing else clears; and
+        //   • a graceful Shutdown, which only ever emits a "Shutting down…" Running phase (the guest
+        //     powers off asynchronously) and so never gets a Succeeded to clear it.
+        // Succeeded ops are already removed in OnVmOperationProgress, so this covers the stuck cases.
+        if (_op.TryGetValue(card.VmName, out var staleOp) && ReachedTarget(staleOp.Kind, s))
+            _op.Remove(card.VmName);
+
+        if (_op.TryGetValue(card.VmName, out var op) && op.Message is { Length: > 0 } msg)
+        {
+            card.State.Text       = Truncate(msg, 30);
+            card.State.Foreground = op.Phase == VmOpPhase.Failed ? AppColors.IndicatorRedBrush : AppColors.IndicatorOrangeBrush;
+        }
+        else
+        {
+            var state = EffectiveStateName(card.VmName, s);
+            card.State.Text       = s is not null && WmiVmMapper.PercentFromStatus(s.StatusDesc) is { } pct ? $"{state} ({pct}%)" : state;
+            card.State.Foreground = BrushForState(state);
+        }
+
         SetButtonsEnabled(card, !IsOpActive(card.VmName));
     }
 
+    /// <summary>
+    /// The state string to show for a VM — never empty and never the bare "Unknown" sentinel MapState
+    /// emits for an unpopulated/unmapped EnabledState. A recognised state is remembered as the
+    /// last-known-good; when the live read is null or "Unknown" (the post-operation settling window,
+    /// where MMC's own State/Status columns also go blank) the remembered value is shown instead, or
+    /// "Updating" if we've never yet seen a good state for this VM.
+    /// </summary>
+    private string EffectiveStateName(string vmName, VmStatus? s)
+    {
+        var live = s?.State is { Length: > 0 } st && !st.Equals("Unknown", StringComparison.OrdinalIgnoreCase) ? st : null;
+
+        // While an op is settling, hold the state it achieved so a stale pre-op read can't flip the
+        // label back; release once the live read catches up to the target, or after the short grace.
+        if (_pendingState.TryGetValue(vmName, out var pending))
+        {
+            if ((live is not null && live.Equals(pending.Target, StringComparison.OrdinalIgnoreCase))
+                || DateTime.UtcNow > pending.Until)
+                _pendingState.Remove(vmName);
+            else
+                return pending.Target;
+        }
+
+        if (live is not null)
+        {
+            _lastKnownState[vmName] = live;
+            return live;
+        }
+        return _lastKnownState.GetValueOrDefault(vmName, "Updating");
+    }
+
+    private static Brush BrushForState(string state) =>
+        state.Equals("Running", StringComparison.OrdinalIgnoreCase) ? AppColors.IndicatorGreenBrush
+      : state.Equals("Paused",  StringComparison.OrdinalIgnoreCase)
+        || state.Equals("Saved", StringComparison.OrdinalIgnoreCase) ? AppColors.IndicatorOrangeBrush
+      :                                                                 AppColors.IndicatorGreyBrush;
+
+    /// <summary>
+    /// The steady state a completed power action leaves the VM in — used both to clear an overlay once
+    /// the real status catches up (a stale "timed out" Failed, or Shutdown, which completes
+    /// asynchronously via the guest and only ever emits a "Shutting down…" Running phase, never
+    /// Succeeded), and to show the achieved state instantly on success while the WMI read lags.
+    /// </summary>
+    private static string? SettledState(VmOpKind kind) => kind switch
+    {
+        VmOpKind.Start or VmOpKind.Resume => "Running",
+        VmOpKind.Pause                     => "Paused",
+        VmOpKind.Save                      => "Saved",
+        VmOpKind.Shutdown                  => "Off",
+        _                                  => null,
+    };
+
+    private static bool ReachedTarget(VmOpKind kind, VmStatus? s) =>
+        SettledState(kind) is { } target && s?.State.Equals(target, StringComparison.OrdinalIgnoreCase) == true;
+
     private bool IsOpActive(string vmName) =>
         _op.TryGetValue(vmName, out var op) && op.Phase is VmOpPhase.Requested or VmOpPhase.Running;
-
-    private string DisplayState(string vmName, VmStatus? s) =>
-        _op.TryGetValue(vmName, out var op) && op.Message is { Length: > 0 } msg ? Truncate(msg, 30) : FormatState(s);
-
-    private Brush DisplayStateBrush(string vmName, VmStatus? s) =>
-        _op.TryGetValue(vmName, out var op)
-            ? op.Phase == VmOpPhase.Failed ? AppColors.IndicatorRedBrush : AppColors.IndicatorOrangeBrush
-            : StateBrush(s);
 
     private static void SetButtonsEnabled(VmCard card, bool enabled)
     {
@@ -643,31 +733,10 @@ public sealed partial class DashboardWindow : Window
         await ConnectAsync(vm);
     }
 
-    private static Brush StateBrush(VmStatus? s) => s switch
-    {
-        { IsRunning: true } => AppColors.IndicatorGreenBrush,
-        { IsPaused:  true } => AppColors.IndicatorOrangeBrush,
-        { IsSaved:   true } => AppColors.IndicatorOrangeBrush,
-        _                   => AppColors.IndicatorGreyBrush,
-    };
-
     /// <summary>
     /// Formats the VM uptime for display on the card header.
     /// Returns empty string when the VM is not running or the uptime string is unavailable.
     /// Examples: "47m", "3h 14m", "1d 3h".
     /// </summary>
     private static string FormatUptime(VmStatus? s) => UptimeFormatter.Format(s);
-
-    /// <summary>
-    /// Formats the VM state string, appending a save/resume percentage when available.
-    /// Hyper-V StatusDescriptions during transient states contains strings like "Saving, 47 %"
-    /// or "Restoring, 12 %" — <see cref="WmiVmMapper.PercentFromStatus"/> extracts the number,
-    /// and here it's appended to produce "Saving (47%)".
-    /// </summary>
-    private static string FormatState(VmStatus? s)
-    {
-        var state = s?.State ?? "Updating";
-        if (s is null) return state;
-        return WmiVmMapper.PercentFromStatus(s.StatusDesc) is { } pct ? $"{state} ({pct}%)" : state;
-    }
 }
