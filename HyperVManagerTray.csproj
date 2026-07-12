@@ -96,6 +96,22 @@
     <Page      Remove="Tests\**\*" />
   </ItemGroup>
 
+  <!-- In CI the ZeroZeroBrand branding repo is checked out into a workspace SUBfolder
+       (see the ci.yml/release.yml "Checkout ZeroZeroBrand" step + $(ZeroZeroBrandDir)). It then
+       sits under this project's directory, so the SDK's default globs would compile its sources
+       into THIS assembly on top of the ProjectReference — duplicate types and an ambiguous
+       NativeMethods. Exclude the subfolder from our own globs; it is consumed solely via the
+       ProjectReference. Matches nothing locally, where ZeroZeroBrand is an outside-the-tree
+       sibling (..\ZeroZeroBrand). -->
+  <ItemGroup>
+    <Compile               Remove="ZeroZeroBrand\**\*" />
+    <Content               Remove="ZeroZeroBrand\**\*" />
+    <None                  Remove="ZeroZeroBrand\**\*" />
+    <Page                  Remove="ZeroZeroBrand\**\*" />
+    <ApplicationDefinition Remove="ZeroZeroBrand\**\*" />
+    <EmbeddedResource      Remove="ZeroZeroBrand\**\*" />
+  </ItemGroup>
+
   <!-- Publish properties: ReadyToRun on Release; trimming OFF (WinUI + reflection-y bits are
        fragile to trim). JSON uses a source-generated context so config still works without it. -->
   <PropertyGroup>
