@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Window
+    x:Class="HyperVManagerTray.UI.TextPromptWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop Kind="BaseAlt" />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="Root">
+        <StackPanel Padding="16,14,16,14" Spacing="10">
+            <TextBlock x:Name="TitleText" FontSize="13" FontWeight="SemiBold"/>
+            <TextBlock x:Name="MessageText" FontSize="11" TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <TextBox x:Name="InputBox" FontSize="12"/>
+            <Grid ColumnSpacing="8" Margin="0,4,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Button x:Name="CancelBtn" Grid.Column="0"
+                        Content="Cancel" FontSize="11" HorizontalAlignment="Stretch"/>
+                <Button x:Name="OkBtn" Grid.Column="1"
+                        Content="OK" FontSize="11" HorizontalAlignment="Stretch"/>
+            </Grid>
+        </StackPanel>
+    </Grid>
+</Window>

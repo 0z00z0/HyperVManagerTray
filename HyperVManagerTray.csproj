@@ -25,7 +25,7 @@
     <Product>Hyper-V Manager Tray</Product>
     <Description>System-tray app that auto-connects a Hyper-V VM to the right virtual switch and controls VMs from a dashboard.</Description>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
-    <Version>2.2.1</Version>
+    <Version>2.3.0</Version>
     <Authors>ZeroZero Software</Authors>
     <Company>ZeroZero Software</Company>
     <Copyright>Copyright © 2026 ZeroZero Software</Copyright>
@@ -43,6 +43,23 @@
     <PackageReference Include="H.NotifyIcon.WinUI" Version="2.4.1" />
     <PackageReference Include="System.Drawing.Common" Version="10.0.8" />
     <PackageReference Include="System.Management" Version="10.0.8" />
+  </ItemGroup>
+
+  <!-- Shared ZeroZero Software branding: the About window now comes from here instead of a
+       hand-rolled UI/AboutWindow. Local dev resolves it as the sibling ..\ZeroZeroBrand folder;
+       CI (which only checks out this repo) overrides ZeroZeroBrandDir — set as an env var, which
+       MSBuild surfaces as this property — to point at its own checkout of the branding repo. -->
+  <PropertyGroup>
+    <ZeroZeroBrandDir Condition="'$(ZeroZeroBrandDir)' == ''">..\ZeroZeroBrand</ZeroZeroBrandDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- WindowsAppSDKSelfContained is a publish-time global property the app sets; MSBuild would
+         propagate it into this class-library reference, which errors ("should not be applied to a
+         class library"). Strip it for this reference only — the app aggregates the self-contained
+         Windows App SDK; the library just builds framework-dependent as normal. -->
+    <ProjectReference Include="$(ZeroZeroBrandDir)\src\ZeroZero.Brand.WinUI\ZeroZero.Brand.WinUI.csproj">
+      <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
+    </ProjectReference>
   </ItemGroup>
 
   <ItemGroup>

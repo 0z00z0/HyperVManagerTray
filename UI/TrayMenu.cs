@@ -1,8 +1,11 @@
 using System.Diagnostics;
+using System.Reflection;
 using Microsoft.UI.Xaml.Controls;
 using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Models;
 using HyperVManagerTray.Services;
+using ZeroZero.Brand.Core;
+using ZeroZero.Brand.WinUI;
 
 namespace HyperVManagerTray.UI;
 
@@ -28,6 +31,7 @@ internal sealed class TrayMenu
     private readonly ToggleMenuFlyoutItem _startupItem  = new() { Text = "Run on startup" };
 
     private MenuFlyoutItem? _updateBadge;
+    private BrandAboutWindow? _aboutWindow;
 
     /// <summary>UI dispatcher — captured on the UI thread in the constructor.</summary>
     private readonly Microsoft.UI.Dispatching.DispatcherQueue _ui;
@@ -67,7 +71,7 @@ internal sealed class TrayMenu
         vmNetworkMenu.Items.Add(new MenuFlyoutSeparator());
         vmNetworkMenu.Items.Add(_overrideMenu);
         vmNetworkMenu.Items.Add(new MenuFlyoutSeparator());
-        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Add current network as a bridged rule", Command = new RelayCommand(AddCurrentAsBridged) });
+        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Add current network as a bridged rule", Command = new RelayCommand(() => _ = AddCurrentAsBridged()) });
         Flyout.Items.Add(vmNetworkMenu);
         Flyout.Items.Add(new MenuFlyoutSeparator());
 
@@ -270,7 +274,7 @@ internal sealed class TrayMenu
 
     // ── Actions ─────────────────────────────────────────────────────────────────
 
-    private void AddCurrentAsBridged()
+    private async Task AddCurrentAsBridged()
     {
         var info = AdapterMatcher.GetCurrentNetworkInfo();
         if (info is null)
@@ -296,8 +300,20 @@ internal sealed class TrayMenu
             .OrderBy(s => s.Contains("bridge", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
             .FirstOrDefault() ?? "Bridged";
 
+        // Ask for a memorable name ("Home", "Office", "Coffee shop …") instead of silently using
+        // the raw adapter description (e.g. "Intel(R) Wi-Fi 6 AX201 160MHz") as the rule name —
+        // that says nothing about WHERE the network is. Pre-filled with the adapter description as
+        // a convenient starting point; Cancel here aborts the whole "add rule" flow.
+        var defaultName = info.AdapterDescription.Length > 40 ? info.AdapterDescription[..40].TrimEnd() : info.AdapterDescription;
+        var name = await TextPromptWindow.ShowAsync(
+            "Add Current Network as Bridged",
+            $"Name this network (adapter: {info.AdapterDescription}):",
+            defaultName);
+        if (name is null) return;
+
         if (!NativeMethods.Confirm(
                 $"Add the following rule to config.json?\n\n" +
+                $"  Name    :  {name}\n" +
                 $"  Adapter :  {info.AdapterDescription}\n" +
                 $"  MAC     :  {info.Mac}\n" +
                 $"  Network :  {info.IpCidr}\n" +
@@ -307,7 +323,7 @@ internal sealed class TrayMenu
 
         var rule = new NetworkRule
         {
-            Name          = info.AdapterDescription.Length > 40 ? info.AdapterDescription[..40].TrimEnd() : info.AdapterDescription,
+            Name          = name,
             Priority      = _config.Current.Rules.Count > 0 ? _config.Current.Rules.Max(r => r.Priority) + 10 : 10,
             Conditions    = new RuleConditions { AdapterMac = info.Mac, IpCidr = info.IpCidr },
             VirtualSwitch = bridgedSwitch,
@@ -372,13 +388,16 @@ internal sealed class TrayMenu
         }
     }
 
-    private Task CheckForUpdatesAsync()
+    private async Task<bool> CheckForUpdatesAsync()
     {
         // Capture the foreground HWND now (tray flyout is open) so the update dialog has a parent
         // even if the flyout is dismissed by the time the HTTP check completes. The shared flow
         // must stay on the UI thread (comctl32 v6 activation context for TaskDialogIndirect).
         var hwnd = NativeMethods.CaptureHwnd();
-        return UpdatePrompt.RunAsync(_updateChecker, hwnd);
+        await UpdatePrompt.RunAsync(_updateChecker, hwnd);
+        // The installer (Inno Setup, CloseApplications=yes) closes and relaunches the app itself, so
+        // the shared About window never needs to own the exit — always report "no self-exit required".
+        return false;
     }
 
     /// <summary>
@@ -443,8 +462,36 @@ internal sealed class TrayMenu
     {
         _ui.TryEnqueue(() =>
         {
-            var about = new AboutWindow(_updateChecker);
-            about.Activate();
+            // Reuse the one open About window rather than stacking duplicates on repeated clicks.
+            if (_aboutWindow is not null)
+            {
+                _aboutWindow.Activate();
+                return;
+            }
+
+            var options = new BrandAboutOptions
+            {
+                Info = new AboutInfo
+                {
+                    AppName     = AppName,
+                    Version     = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown",
+                    Description = "Automatically connects Hyper-V VMs to the right virtual switch when the host changes networks. Manage VM power and state directly from the system tray.",
+                    RepoUrl     = "https://github.com/0z00z0/HyperVManagerTray",
+                    ExternalLibraries =
+                    [
+                        new ExternalLibrary("H.NotifyIcon.WinUI", "Dmitry Kolchev (HavenDV)", "System-tray icon + native context menu for WinUI 3", "MIT", "https://github.com/HavenDV/H.NotifyIcon"),
+                    ],
+                },
+                // The shared window's "Check for Updates" reuses this class's own flow (which wraps
+                // UpdatePrompt.RunAsync via NativeMethods.CaptureHwnd()); it returns false because the
+                // Inno installer restarts the app itself, so no self-exit is needed. No update
+                // machinery moved into the shared library.
+                OnCheckForUpdates = CheckForUpdatesAsync,
+            };
+
+            _aboutWindow = new BrandAboutWindow(options);
+            _aboutWindow.Closed += (_, _) => _aboutWindow = null;
+            _aboutWindow.Activate();
         });
     }
 

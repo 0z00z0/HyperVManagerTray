@@ -26,6 +26,10 @@ jobs:
     env:
       CODE_SIGN_PFX: ${{ secrets.CODE_SIGN_PFX }}
       CODE_SIGN_PASSWORD: ${{ secrets.CODE_SIGN_PASSWORD }}
+      # ProjectReference to ZeroZero.Brand.WinUI defaults to the sibling ..\ZeroZeroBrand folder for
+      # local dev; CI only has this repo, so we check the branding repo out below and point the
+      # csproj's $(ZeroZeroBrandDir) property at it via this env var (MSBuild reads env as a property).
+      ZeroZeroBrandDir: ${{ github.workspace }}/ZeroZeroBrand
 
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -36,6 +40,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # Check out the ZeroZeroBrand sibling so the shared-About ProjectReference resolves (see the
+      # ZeroZeroBrandDir env var above). Placed in a workspace subfolder — not ..\ (outside workspace).
+      - name: Checkout ZeroZeroBrand (sibling dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: 0z00z0/ZeroZeroBrand
+          path: ZeroZeroBrand
 
       # ── 2. Resolve version string ────────────────────────────────────────────
       # Tag-triggered: strip the leading 'v'.

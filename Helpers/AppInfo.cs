@@ -4,7 +4,7 @@ namespace HyperVManagerTray.Helpers;
 /// Single source of truth for the app's display name and the per-user data locations under
 /// <c>%APPDATA%</c>.  Previously the folder name "HyperVManagerTray" and the display name
 /// "Hyper-V Manager Tray" were hard-coded in App, TrayMenu, StartupManager, UpdateChecker,
-/// AboutWindow, etc.; centralising them here keeps the log/crash paths consistent and makes a
+/// etc.; centralising them here keeps the log/crash paths consistent and makes a
 /// rename a one-line change.
 /// </summary>
 internal static class AppInfo
@@ -24,4 +24,20 @@ internal static class AppInfo
 
     /// <summary>Full path of the crash log written by the global exception handlers.</summary>
     public static string CrashLog => Path.Combine(DataDir, "crash.log");
+
+    /// <summary>
+    /// Appends a timestamped, tagged line to <see cref="CrashLog"/>. Never throws — a logging path
+    /// must not itself crash the caller (this is used from exit/teardown paths where the DI logger
+    /// may already be gone). Shared by App's managed-exception logging and the self-heal watchdog's
+    /// lifecycle notes so the two don't carry separate copies of the same append logic.
+    /// </summary>
+    public static void AppendCrashLogLine(string tag, string message)
+    {
+        try
+        {
+            Directory.CreateDirectory(DataDir);
+            File.AppendAllText(CrashLog, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{tag}] {message}{Environment.NewLine}");
+        }
+        catch { /* logging must never throw */ }
+    }
 }
