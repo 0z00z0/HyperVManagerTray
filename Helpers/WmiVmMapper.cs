@@ -133,20 +133,39 @@ public static class WmiVmMapper
     }
 
     /// <summary>
-    /// Parses the leading verb out of a WMI StatusDescriptions string like "Restoring, 72 %" (the
-    /// word <see cref="PercentFromStatus"/> discards). This is the only place the "Restoring" verb
-    /// exists: EnabledState 32770 ("Starting" per <see cref="MapState"/>) is apparently reported for
-    /// both a cold boot and a resume-from-Saved on some hosts, so StatusDescriptions is the sole
-    /// signal that distinguishes them. Returns null when the string is empty or doesn't look like
-    /// the "verb, detail" shape (no comma, or nothing before it), so callers can fall back cleanly to
-    /// the coarse EnabledState-derived state name.
+    /// Parses the transient operation verb (e.g. "Restoring") out of a WMI StatusDescriptions string.
+    /// This is the only place that verb exists: EnabledState 32770 ("Starting" per <see cref="MapState"/>)
+    /// is reported for both a cold boot and a resume-from-Saved on this host, so StatusDescriptions is
+    /// the sole signal that distinguishes them (issue #13).
+    ///
+    /// The verb always travels with a percentage during the transition (confirmed live: the percent is
+    /// present the whole time a resume-from-Saved runs), but the exact surrounding shape varies by
+    /// host/version and by how <see cref="Services.VmService.ReadSummaries"/> joins a multi-element
+    /// StatusDescriptions array. All of these must yield "Restoring":
+    ///   • "Restoring, 72 %"                    (comma + spaces)
+    ///   • "Restoring 72%"                       (no comma — the shape the earlier comma-only parse
+    ///                                            returned null for, leaving the coarse "Starting")
+    ///   • "Operating normally Restoring 72%"    (health element [0] joined before the operation verb)
+    /// So the verb is anchored on the '%' — it is the word immediately before the percent number —
+    /// rather than on a comma that isn't always present. Returns null when there is no percentage
+    /// (e.g. a plain "Operating normally"), so callers fall back cleanly to the coarse
+    /// EnabledState-derived state name.
     /// </summary>
     public static string? LeadingVerbFromStatus(string? statusDescription)
     {
         if (string.IsNullOrEmpty(statusDescription)) return null;
-        int comma = statusDescription.IndexOf(',');
-        if (comma <= 0) return null;
-        var verb = statusDescription[..comma].Trim();
+
+        int pct = statusDescription.IndexOf('%');
+        if (pct <= 0) return null;   // no percentage → not a transient "verb N %" status
+
+        // Walk left from '%' over its spaces, digits and an optional comma to the end of the verb word,
+        // then over the verb's own letters to its start.
+        int i = pct - 1;
+        while (i >= 0 && (char.IsDigit(statusDescription[i]) || statusDescription[i] is ' ' or ',')) i--;
+        int end = i + 1;
+        while (i >= 0 && !char.IsWhiteSpace(statusDescription[i])) i--;
+
+        var verb = statusDescription[(i + 1)..end].Trim();
         return verb.Length > 0 ? verb : null;
     }
 }
