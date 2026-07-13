@@ -281,13 +281,18 @@ System.Management replica of `ReadSummaries`, cross-checked against `Get-VM`):**
   `SafeInt`/`SafeLong`/`SafeULong` defaults are correct for them.
 - ~~`MemoryUsage` in MB / `Uptime` in ms~~ — **VALIDATED 2026-07-03** via the probe (values
   matched `Get-VM` exactly). `WmiVmMapper.BuildStatus` conversions are correct as written.
-- **`RequestStateChange` codes — confirmed via docs, not yet live-tested.** `32768`=Pause,
-  `32769`=Save (Suspended) is independently confirmed by Microsoft's `Msvm_ComputerSystem`
-  reference (learn.microsoft.com/en-us/windows/win32/hyperv_v2/msvm-computersystem, fetched
-  2026-07-02): "when disk space is critically low... EnabledState is set to 32768 (Paused)" and
-  "If the virtual machine is suspended or paused, EnabledState will have a value of 32769
-  (Suspended) or 32768 (Paused)." `RequestedState` and `EnabledState` share the same value space
-  in this WMI model, so this is very likely right, but still worth a live Pause/Save click test.
+- **`RequestStateChange` codes — FIXED, partly live-tested (2026-07-13).** The earlier assumption
+  below — that `RequestedState` and `EnabledState` "share the same value space" — was WRONG and
+  caused a bug: passing EnabledState codes (32768 Pause / 32769 Save) as the `RequestedState`
+  returned **32775 / 0x8007 "Invalid state for this operation"**. `RequestedState` is a DISTINCT
+  enum. The docs' `Saving` (32773) / `Pausing` (32776) / `Resuming` (32777) are marked **"Hyper-V V1
+  only"** and a V2 host (`root\virtualization\v2`) rejects them (32773 and 32779/FastSaved both
+  failed on the live host). The RequestedState values a V2 host ACCEPTS (verified against Microsoft's
+  own `fsharplu` `ManagementHypervisor.fs`): **Start/Resume = Enabled (2), Pause = Quiesce (9),
+  Save = Offline (6)** — Save then leaves the VM at EnabledState 32769 (Suspended). Pause and
+  Shutdown are confirmed live; Save (6) still needs a live click test. NOTE the read side is
+  separate and unchanged: a VM's CURRENT `EnabledState` is 32768 (host critical-pause) / **9**
+  (user pause / Quiesce) / 32769 (Saved) — `WmiVmMapper.MapState` maps both 9 and 32768 → "Paused".
 - Every child-settings class (memory, storage, network port, guest IP) is matched back to its
   owning VM by checking whether the setting's `InstanceID` *contains* the VM's
   `Msvm_ComputerSystem.Name` GUID (`VmService.MatchVm`). If a VM's memory/VHD/switch/IP field
