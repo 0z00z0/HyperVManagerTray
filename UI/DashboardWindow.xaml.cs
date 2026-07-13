@@ -22,6 +22,10 @@ public sealed partial class DashboardWindow : Window
     private const double ContentWidth = 320;
     private const int    EdgeMargin   = 12;
 
+    // Cold boot under host load can legitimately take a while; long enough to cover that without
+    // hanging the "Start & Connect" button indefinitely if the VM is unusually slow to report in.
+    private static readonly TimeSpan StartAndConnectTimeout = TimeSpan.FromSeconds(45);
+
     private readonly ConfigManager  _config;
     private readonly NetworkMonitor _monitor;
     private readonly HyperVManager  _hyperV;   // Connect-VM-NIC / switch (PowerShell, Phase 1)
@@ -727,10 +731,12 @@ public sealed partial class DashboardWindow : Window
 
     private async Task StartAndConnectAsync(VmTarget vm)
     {
-        // BeginPowerAction is fire-and-forget (see PowerBtn); the flat delay is the same heuristic
-        // the old PowerShell path used to give the VM time to boot before vmconnect can attach.
+        // BeginPowerAction is fire-and-forget (see PowerBtn); WaitUntilRunningAsync replaces the old
+        // flat 2.5s guess with an actual readiness wait (event-driven off VmService.StatusesChanged —
+        // see its doc comment). On timeout it proceeds anyway rather than hanging the button — vmconnect
+        // itself tolerates attaching to a VM that's still finishing boot.
         _vm.BeginPowerAction(vm.Name, VmOpKind.Start);
-        await Task.Delay(2500);
+        await _vm.WaitUntilRunningAsync(vm.Name, StartAndConnectTimeout);
         await ConnectAsync(vm);
     }
 

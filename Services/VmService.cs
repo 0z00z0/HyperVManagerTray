@@ -117,6 +117,53 @@ public sealed class VmService : IDisposable
     /// <summary>One-shot refresh (e.g. startup pre-warm), regardless of subscription. Never throws.</summary>
     public Task RefreshOnceAsync() => Task.Run(RefreshCore);
 
+    /// <summary>
+    /// Waits until <paramref name="vmName"/> reports the "Running" state (mapped via
+    /// <see cref="WmiVmMapper.MapState"/>), or <paramref name="timeout"/> elapses — whichever comes
+    /// first. Event-driven, not a new polling loop: <see cref="SubscribeMetrics"/> (ref-counted, safe
+    /// to call even when the dashboard already has its own subscription active) guarantees the WMI
+    /// event watcher and metrics timer are actively pushing <see cref="StatusesChanged"/> updates for
+    /// the duration of the wait, so a real state change is picked up near-instantly. Subscribing our
+    /// handler first and then forcing one <see cref="RefreshOnceAsync"/> means a VM that's already
+    /// Running by the time this is called resolves immediately, instead of waiting on a change event
+    /// that might never come. Never throws; returns <c>false</c> on timeout so callers (e.g. Start
+    /// &amp; Connect) can proceed anyway — vmconnect.exe tolerates attaching to a VM that's still
+    /// finishing boot. Genuinely async (no blocking waits) — safe to await from the UI thread.
+    /// </summary>
+    public async Task<bool> WaitUntilRunningAsync(string vmName, TimeSpan timeout)
+    {
+        SubscribeMetrics();
+        try
+        {
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            void OnStatuses(IReadOnlyList<VmStatus> statuses)
+            {
+                var s = statuses.FirstOrDefault(x => x.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase));
+                if (s?.IsRunning == true) tcs.TrySetResult(true);
+            }
+
+            StatusesChanged += OnStatuses;
+            try
+            {
+                // Forces one immediate push through OnStatuses above, so an already-Running VM
+                // resolves the TCS right away rather than waiting for a future change event.
+                await RefreshOnceAsync().ConfigureAwait(false);
+
+                var winner = await Task.WhenAny(tcs.Task, Task.Delay(timeout)).ConfigureAwait(false);
+                return winner == tcs.Task;
+            }
+            finally
+            {
+                StatusesChanged -= OnStatuses;
+            }
+        }
+        finally
+        {
+            UnsubscribeMetrics();
+        }
+    }
+
     private async Task MetricsLoopAsync(CancellationToken ct)
     {
         try
