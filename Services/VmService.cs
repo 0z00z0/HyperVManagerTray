@@ -42,7 +42,12 @@ public sealed class VmService : IDisposable
 
     private static readonly TimeSpan MetricsInterval = TimeSpan.FromSeconds(2.5);
     private static readonly TimeSpan VhdInterval     = TimeSpan.FromSeconds(15);
-    private static readonly TimeSpan SwitchInterval  = TimeSpan.FromSeconds(10);
+    // Switch binding is now invalidated by events (the state watcher marks it dirty on a VM
+    // start/stop, and App.OnSwitchApplied calls InvalidateSwitchCache when the app itself rebinds a
+    // switch — see RefreshCore / conversion #3 in issue #16), so this is only the self-healing
+    // fallback for the rare change no event covered. It was a 10 s wall-clock TTL that re-read the
+    // switch map on every tick; a longer fallback is safe now that real changes push a re-read.
+    private static readonly TimeSpan SwitchFallbackInterval = TimeSpan.FromSeconds(60);
 
     /// <summary>Identity of a VM as seen through <c>Msvm_ComputerSystem</c>: its live power state and
     /// the GUID used to correlate it against every other Msvm_* class (settings, storage, network).</summary>
@@ -60,8 +65,17 @@ public sealed class VmService : IDisposable
     // periodic tick or a manual RefreshOnceAsync running at the same time.
     private readonly object _refreshLock = new();
 
-    // Metrics loop (only runs while the dashboard is subscribed).
-    private int _subscribers;
+    // Two independent, ref-counted subscription kinds, both guarded by _subLock so a subscribe/
+    // unsubscribe and the watcher start/stop it implies happen atomically:
+    //   • metrics  — the dashboard: runs the state watcher AND the 2.5 s GetSummaryInformation loop.
+    //   • watcher  — the tray tooltip: runs ONLY the state watcher (no metrics poll), held for the
+    //     app's whole life. This is what lets the tooltip react to VM state changes while the
+    //     dashboard is closed WITHOUT paying the permanent 2.5 s metrics-poll cost the naive
+    //     "just call SubscribeMetrics forever" approach would (see issue #16, conversion #2).
+    // The single ManagementEventWatcher lives as long as EITHER count is > 0.
+    private readonly object _subLock = new();
+    private int _metricsSubs;
+    private int _watcherSubs;
     private CancellationTokenSource? _metricsCts;
     private int _refreshing;   // 0/1 coalescing guard (Interlocked)
 
@@ -73,6 +87,10 @@ public sealed class VmService : IDisposable
     private readonly Dictionary<string, (long Bytes, DateTime At)> _vhd = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _switchByVm = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _switchCacheAt = DateTime.MinValue;
+    // Set by the state watcher (VM start/stop) and by InvalidateSwitchCache (app rebind) so the next
+    // RefreshCore re-reads the VM→switch map instead of waiting on SwitchFallbackInterval. Volatile:
+    // written on the watcher/UI threads, read+cleared under _refreshLock on the refresh thread.
+    private volatile bool _switchCacheDirty;
 
     // Debounce flags so a persistently degraded WMI read warns once, not once per ~2.5s tick.
     private bool _summariesDegradedWarned;
@@ -98,21 +116,76 @@ public sealed class VmService : IDisposable
     /// <summary>Call when the dashboard opens. Starts event push + the metrics loop (ref-counted).</summary>
     public void SubscribeMetrics()
     {
-        if (Interlocked.Increment(ref _subscribers) != 1) return;
-        StartWatcher();
-        _metricsCts = new CancellationTokenSource();
-        _ = MetricsLoopAsync(_metricsCts.Token);
-        TriggerRefresh();   // immediate first tick
+        bool first;
+        lock (_subLock)
+        {
+            first = _metricsSubs == 0;
+            _metricsSubs++;
+            EnsureWatcher();
+            if (first)
+            {
+                _metricsCts = new CancellationTokenSource();
+                _ = MetricsLoopAsync(_metricsCts.Token);
+            }
+        }
+        if (first) TriggerRefresh();   // immediate first tick
     }
 
-    /// <summary>Call when the dashboard hides. Stops the metrics loop + watcher when no subscribers remain.</summary>
+    /// <summary>Call when the dashboard hides. Stops the metrics loop when no metrics subscribers
+    /// remain; the watcher keeps running if a tooltip <see cref="SubscribeStateWatcher"/> holds it.</summary>
     public void UnsubscribeMetrics()
     {
-        if (Interlocked.Decrement(ref _subscribers) > 0) return;
-        try { _metricsCts?.Cancel(); _metricsCts?.Dispose(); } catch { }
-        _metricsCts = null;
-        StopWatcher();
+        lock (_subLock)
+        {
+            if (_metricsSubs == 0) return;   // defensive: never underflow
+            if (--_metricsSubs == 0)
+            {
+                try { _metricsCts?.Cancel(); _metricsCts?.Dispose(); } catch { }
+                _metricsCts = null;
+            }
+            StopWatcherIfIdle();
+        }
     }
+
+    /// <summary>
+    /// Lightweight always-on subscription for the tray tooltip: runs ONLY the state-change event
+    /// watcher, never the 2.5 s metrics loop. Held for the app's lifetime so a VM state change
+    /// pushes <see cref="StatusesChanged"/> (and refreshes the tooltip) even while the dashboard is
+    /// closed, without the permanent WMI polling a full <see cref="SubscribeMetrics"/> would incur.
+    /// The watcher is filtered to real EnabledState transitions (see <see cref="StartWatcher"/>), so
+    /// while nothing changes this does zero in-process WMI work — RefreshCore runs only on an actual
+    /// state change. Ref-counted and idempotent.
+    /// </summary>
+    public void SubscribeStateWatcher()
+    {
+        bool first;
+        lock (_subLock)
+        {
+            first = _watcherSubs == 0;
+            _watcherSubs++;
+            EnsureWatcher();
+        }
+        if (first) TriggerRefresh();   // prime the tooltip with an initial push
+    }
+
+    /// <summary>Releases a <see cref="SubscribeStateWatcher"/> hold; stops the watcher if nothing else needs it.</summary>
+    public void UnsubscribeStateWatcher()
+    {
+        lock (_subLock)
+        {
+            if (_watcherSubs == 0) return;   // defensive: never underflow
+            _watcherSubs--;
+            StopWatcherIfIdle();
+        }
+    }
+
+    /// <summary>
+    /// Marks the cached VM→switch map stale so the next refresh re-reads it. Call when the app itself
+    /// rebinds a virtual switch (App.OnSwitchApplied) — the one switch-change signal the
+    /// Msvm_ComputerSystem state watcher can't see, since a switch rebind changes port-allocation
+    /// data, not a VM's EnabledState.
+    /// </summary>
+    public void InvalidateSwitchCache() => _switchCacheDirty = true;
 
     /// <summary>One-shot refresh (e.g. startup pre-warm), regardless of subscription. Never throws.</summary>
     public Task RefreshOnceAsync() => Task.Run(RefreshCore);
@@ -178,15 +251,42 @@ public sealed class VmService : IDisposable
 
     // ── Event watcher (instant state changes) ────────────────────────────────────
 
+    /// <summary>Starts the shared state watcher if it isn't already running. Caller holds <see cref="_subLock"/>.</summary>
+    private void EnsureWatcher()
+    {
+        if (_watcher is null) StartWatcher();
+    }
+
+    /// <summary>Stops the shared watcher once no metrics AND no tooltip subscriber needs it. Caller holds <see cref="_subLock"/>.</summary>
+    private void StopWatcherIfIdle()
+    {
+        if (_metricsSubs == 0 && _watcherSubs == 0) StopWatcher();
+    }
+
     private void StartWatcher()
     {
         try
         {
             EnsureScope();
+            // Filter to ACTUAL EnabledState transitions. Without the "<> PreviousInstance" clause a
+            // running VM fires a modification event roughly every WITHIN period anyway (its
+            // OnTimeInMilliseconds keeps ticking), which would drive a full RefreshCore every ~2 s for
+            // the whole lifetime of the always-on tooltip watcher — the idle-cost regression issue #16
+            // warns about. With the clause the watcher (and thus RefreshCore) fires only on a real
+            // start/stop/pause/save/resume. The WMI service still evaluates the WITHIN 2 poll host-side
+            // — the same mechanism Hyper-V Manager uses — but our process does no WMI until a real
+            // transition. The dashboard's live metrics/IPs keep flowing from the 2.5 s metrics loop.
             _watcher = new ManagementEventWatcher(_scope,
                 new EventQuery("SELECT * FROM __InstanceModificationEvent WITHIN 2 " +
-                               "WHERE TargetInstance ISA 'Msvm_ComputerSystem'"));
-            _watcher.EventArrived += (_, _) => TriggerRefresh();
+                               "WHERE TargetInstance ISA 'Msvm_ComputerSystem' " +
+                               "AND TargetInstance.EnabledState <> PreviousInstance.EnabledState"));
+            _watcher.EventArrived += (_, _) =>
+            {
+                // A VM whose power state changed may also have gained/lost a switch binding (e.g. it
+                // just started), so re-read the switch map on the next refresh — conversion #3.
+                _switchCacheDirty = true;
+                TriggerRefresh();
+            };
             _watcher.Start();
         }
         catch (Exception ex) { _logger.LogWarning(ex, "Could not start VM state watcher (metrics timer still covers it)"); }
@@ -230,8 +330,11 @@ public sealed class VmService : IDisposable
                 // cadence to avoid paying their extra WMI round-trips on every metrics tick.
                 if (_vhd.Count == 0 || (DateTime.UtcNow - _vhd.Values.Max(v => v.At)) > VhdInterval)
                     RefreshVhd(scope, vms);
-                if (DateTime.UtcNow - _switchCacheAt > SwitchInterval)
+                // Re-read the VM→switch map when an event marked it dirty (state change or app
+                // rebind), else only on the slow self-healing fallback — not every tick (conversion #3).
+                if (_switchCacheDirty || DateTime.UtcNow - _switchCacheAt > SwitchFallbackInterval)
                 {
+                    _switchCacheDirty = false;
                     foreach (var (name, sw) in ReadSwitchNames(scope, vms)) _switchByVm[name] = sw;
                     _switchCacheAt = DateTime.UtcNow;
                 }
@@ -559,32 +662,91 @@ public sealed class VmService : IDisposable
         // (Start, Resume, Save) can legitimately take minutes — e.g. a cold-boot Start under host
         // load, or a large-memory Save/Resume — so give them the same long budget as Save/Shutdown
         // always had. A too-short deadline here previously reported "timed out" on a job that was
-        // still genuinely running and went on to succeed seconds later.
-        var deadline = DateTime.UtcNow + (kind == VmOpKind.Pause
-            ? TimeSpan.FromSeconds(30) : TimeSpan.FromMinutes(5));
+        // still genuinely running and went on to succeed seconds later. The deadline is now a
+        // fallback only: progress/completion is pushed by a WMI event watcher (no 400 ms busy-wait),
+        // and the timeout just covers the rare case where no terminal event ever arrives.
+        var timeout = kind == VmOpKind.Pause ? TimeSpan.FromSeconds(30) : TimeSpan.FromMinutes(5);
+
+        ManagementObject?      job     = null;
+        ManagementEventWatcher? watcher = null;
+        var done = new ManualResetEventSlim(false);
+        int completed = 0;   // 0/1 Interlocked guard — exactly one terminal Emit, even across threads
+
+        // Reads a Msvm_ConcreteJob snapshot (a fresh Get, or an event's TargetInstance), emits the
+        // matching phase, and returns true once terminal (signalling 'done'). Safe to call from both
+        // this thread (initial Get) and the watcher thread (events): the guard ensures only the first
+        // terminal result is emitted, and short-circuits any stray event that arrives during teardown.
+        bool Consume(ManagementBaseObject snap)
+        {
+            if (Volatile.Read(ref completed) != 0) return true;
+            ushort jobState = Convert.ToUInt16(snap["JobState"]);
+            if (jobState == 7)   // Completed
+            {
+                if (Interlocked.Exchange(ref completed, 1) == 0)
+                { Emit(vmName, kind, VmOpPhase.Succeeded, null, null); done.Set(); }
+                return true;
+            }
+            if (jobState >= 8)   // Terminated / Killed / Exception
+            {
+                if (Interlocked.Exchange(ref completed, 1) == 0)
+                { Emit(vmName, kind, VmOpPhase.Failed, null, snap["ErrorDescription"] as string); done.Set(); }
+                return true;
+            }
+            Emit(vmName, kind, VmOpPhase.Running, SafeInt(snap["PercentComplete"]), null);
+            return false;
+        }
+
         try
         {
-            using var job = new ManagementObject(scope, new ManagementPath(jobPath), null);
-            while (DateTime.UtcNow < deadline)
+            job = new ManagementObject(scope, new ManagementPath(jobPath), null);
+
+            // Class-scoped job-modification watcher, filtered in the handler to THIS job by InstanceID
+            // (an __InstanceModificationEvent can't bind a specific object path in its WQL, and the
+            // embedded TargetInstance's own path isn't reliably populated). WITHIN 1 for snappy
+            // progress. Same construction/disposal/threading as the state watcher above.
+            watcher = new ManagementEventWatcher(scope,
+                new EventQuery("SELECT * FROM __InstanceModificationEvent WITHIN 1 " +
+                               "WHERE TargetInstance ISA 'Msvm_ConcreteJob'"));
+            string? trackedId = null;
+            watcher.EventArrived += (_, e) =>
             {
-                job.Get();
-                ushort jobState = Convert.ToUInt16(job["JobState"]);
-                int pct = SafeInt(job["PercentComplete"]);
-                if (jobState == 7) { Emit(vmName, kind, VmOpPhase.Succeeded, null, null); return; }   // Completed
-                if (jobState >= 8)                                                                    // Terminated/Killed/Exception
+                try
                 {
-                    Emit(vmName, kind, VmOpPhase.Failed, null, job["ErrorDescription"] as string);
-                    return;
+                    using var ev = e.NewEvent;
+                    if (ev["TargetInstance"] is not ManagementBaseObject ti) return;
+                    using (ti)
+                    {
+                        // Ignore other jobs' events (and any event before we know our own id).
+                        if (trackedId is null || (ti["InstanceID"] as string) != trackedId) return;
+                        Consume(ti);
+                    }
                 }
-                Emit(vmName, kind, VmOpPhase.Running, pct, null);
-                Thread.Sleep(400);
-            }
-            Emit(vmName, kind, VmOpPhase.Failed, null, "timed out");
+                catch (Exception ex) { _logger.LogWarning(ex, "Job event handling failed for {Vm}", vmName); }
+            };
+            watcher.Start();
+
+            // Read the job once AFTER arming the watcher: this both captures our InstanceID (for the
+            // handler's filter) and catches a job that already reached a terminal state before/while
+            // the watcher armed — that transition's event is in the past and won't be re-delivered.
+            job.Get();
+            trackedId = job["InstanceID"] as string;
+            if (Consume(job)) return;
+
+            // Block on the event (not a poll loop) until terminal or the fallback timeout.
+            if (!done.Wait(timeout) && Interlocked.Exchange(ref completed, 1) == 0)
+                Emit(vmName, kind, VmOpPhase.Failed, null, "timed out");
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Job tracking failed for {Vm}", vmName);
-            Emit(vmName, kind, VmOpPhase.Failed, null, ex.Message);
+            if (Interlocked.Exchange(ref completed, 1) == 0)
+                Emit(vmName, kind, VmOpPhase.Failed, null, ex.Message);
+        }
+        finally
+        {
+            try { watcher?.Stop(); watcher?.Dispose(); } catch { }
+            job?.Dispose();
+            done.Dispose();
         }
     }
 
