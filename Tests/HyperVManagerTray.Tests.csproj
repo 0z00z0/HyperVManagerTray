@@ -13,6 +13,7 @@
        App SDK runtime) while still exercising the real production code. -->
   <ItemGroup>
     <Compile Include="..\Services\AdapterMatcher.cs"  Link="Linked\AdapterMatcher.cs" />
+    <Compile Include="..\Services\SwitchWmiHelpers.cs" Link="Linked\SwitchWmiHelpers.cs" />
     <Compile Include="..\Services\ConfigManager.cs"   Link="Linked\ConfigManager.cs" />
     <Compile Include="..\Helpers\UptimeFormatter.cs"  Link="Linked\UptimeFormatter.cs" />
     <Compile Include="..\Helpers\WmiVmMapper.cs"      Link="Linked\WmiVmMapper.cs" />

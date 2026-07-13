@@ -22,7 +22,8 @@ _Last updated: 2026-06-29 (VM status/metrics/power/guest-IPs migrated from Power
 6. **Switch binding + host-vNIC repair still talk to Hyper-V via `powershell.exe -EncodedCommand`,**
    not the PowerShell SDK (`HyperVManager`). **VM status/metrics/power/guest IPs use native WMI**
    instead (`VmService`, `root\virtualization\v2`) — see the dedicated section below before
-   touching either.
+   touching either. **(Prototype exception: branch `wip/wmi-switch-binding` / issue #17 rewrites
+   `HyperVManager` to native WMI too — UNVALIDATED, never run live; see the Phase 2 section below.)**
 
 ---
 
@@ -301,6 +302,31 @@ System.Management replica of `ReadSummaries`, cross-checked against `Get-VM`):**
 
 If any of the above turns out wrong, the fix is confined to `WmiVmMapper` (pure, unit-tested) or
 the one `VmService` read method involved — nothing downstream needs to change.
+
+---
+
+## Phase 2 — switch binding on native WMI (issue #17, branch `wip/wmi-switch-binding`) — ⚠️ UNVALIDATED PROTOTYPE
+
+**Never executed against a live host.** This is the deliberately-deferred, safety-critical rewrite
+of `HyperVManager`'s last three PowerShell operations to native WMI (`Msvm_VirtualEthernetSwitchManagementService`
+/ `Msvm_VirtualSystemManagementService` under `root\virtualization\v2`), eliminating the
+`powershell.exe` worker + Base64 protocol entirely. Public contract unchanged
+(`ApplySwitchAsync`/`UpdateSwitchBindingAsync`/`RepairHostVNicAsync`, `HostVNicState`, SKIP/bound/
+repaired/reshared semantics), so the rest of the app is untouched.
+
+- **How the atomic-bind invariant (#3/#4 above) is preserved:** the re-home does a **single
+  `ModifyResourceSettings`** on the switch's *external* port allocation (`HostResource` → new
+  `Msvm_ExternalEthernetPort`) and **never removes or disables the internal/management-OS port
+  allocation**, so there is no window in which a mid-sequence failure strands the host — the same
+  guarantee the single atomic `Set-VMSwitch -NetAdapterName … -AllowManagementOS $true` gave.
+- **How the duplicate-vNIC repair (#3) maps to WMI:** count of internal EPASDs (`HostResource` →
+  `Msvm_ComputerSystem`) is the host-vNIC count; the repair removes the EXTRAS (keeping one) rather
+  than the PowerShell drop-all-then-recreate-one, so it never dips to zero host vNICs.
+- **Before this can replace the PowerShell path or merge:** it must pass every scenario in
+  `docs/wmi-switch-binding-test-protocol.md` on a disposable host, and the open uncertainties U1–U7
+  there (in-place `HostResource` modify, `GetText` format, device-vs-EPASD duplicate mapping, host
+  `Msvm_ComputerSystem` selection, adapter→external-port mapping) must be resolved live. The
+  port-classification logic is extracted to the pure, unit-tested `SwitchWmiHelpers`.
 
 ---
 
