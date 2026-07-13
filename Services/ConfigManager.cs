@@ -89,6 +89,7 @@ public sealed class ConfigManager : IDisposable
             VirtualMachines = _config.VirtualMachines,
             Rules           = [.. _config.Rules, rule],
             Fallback        = _config.Fallback,
+            AdapterNames    = _config.AdapterNames,
             LogLevel        = _config.LogLevel,
         },
         $"Rule '{rule.Name}' added and saved to {_configPath}",
@@ -118,6 +119,7 @@ public sealed class ConfigManager : IDisposable
                 VirtualMachines = [.. _config.VirtualMachines, newVm],
                 Rules           = _config.Rules,
                 Fallback        = _config.Fallback,
+                AdapterNames    = _config.AdapterNames,
                 LogLevel        = _config.LogLevel,
             },
             $"VM '{name}' added and saved to {_configPath}",
@@ -143,10 +145,35 @@ public sealed class ConfigManager : IDisposable
                     !v.Name.Equals(name, StringComparison.OrdinalIgnoreCase))],
                 Rules           = _config.Rules,
                 Fallback        = _config.Fallback,
+                AdapterNames    = _config.AdapterNames,
                 LogLevel        = _config.LogLevel,
             },
             $"VM '{name}' removed and saved to {_configPath}",
             $"Failed to remove VM '{name}'");
+    }
+
+    /// <summary>
+    /// Inserts or updates the saved-original-name record for a renamed adapter (issue #15), keyed by
+    /// <see cref="AdapterNameOverride.DeviceInstanceId"/>, then saves and reloads.  Any existing record
+    /// for the same device is replaced (so a re-rename updates <c>CurrentFriendlyName</c> without
+    /// losing the true original).
+    /// </summary>
+    public void UpsertAdapterName(AdapterNameOverride entry)
+    {
+        var others = _config.AdapterNames
+            .Where(a => !a.DeviceInstanceId.Equals(entry.DeviceInstanceId, StringComparison.OrdinalIgnoreCase));
+
+        SaveAndReload(
+            new AppConfig
+            {
+                VirtualMachines = _config.VirtualMachines,
+                Rules           = _config.Rules,
+                Fallback        = _config.Fallback,
+                AdapterNames    = [.. others, entry],
+                LogLevel        = _config.LogLevel,
+            },
+            $"Adapter-name record for '{entry.DeviceInstanceId}' saved to {_configPath}",
+            $"Failed to save adapter-name record for '{entry.DeviceInstanceId}'");
     }
 
     /// <summary>
