@@ -3,6 +3,8 @@ using H.NotifyIcon;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Services;
 using HyperVManagerTray.UI;
@@ -240,9 +242,18 @@ public partial class App : Application
         _ = UpdateTooltipAsync();
     }
 
+    // Segoe Fluent Icons glyphs (verified against Microsoft's published codepoint table at
+    // https://learn.microsoft.com/en-us/windows/apps/design/iconography/segoe-fluent-icons-font —
+    // do not change these without re-checking that table; a wrong codepoint renders as a blank box).
+    private const string GlyphAppInfo       = ""; // "Info"            — app identity / version row
+    private const string GlyphNetworkSwitch = ""; // "NetworkAdapter"  — active virtual switch row
+    private const string GlyphVm            = ""; // "Devices2"        — per-VM name/IP row
+
     /// <summary>
-    /// Builds a multi-line tooltip showing the active virtual switch and each VM's first IPv4
-    /// address, then posts it to the UI thread.  Never throws.
+    /// Builds the tray hover tooltip showing app name+version, the active virtual switch, and each
+    /// VM's first IPv4 address, then posts it to the UI thread. Sets both the plain-text
+    /// <see cref="TaskbarIcon.ToolTipText"/> (127-char Win32 limit; also what screen readers read)
+    /// and the rich icon-annotated <see cref="TaskbarIcon.TrayToolTip"/> content. Never throws.
     /// </summary>
     private async Task UpdateTooltipAsync()
     {
@@ -255,24 +266,33 @@ public partial class App : Application
             // Refresh the WMI caches once (background), then read the per-VM IPs synchronously.
             await _vm.RefreshOnceAsync().ConfigureAwait(false);
 
-            var lines = new System.Collections.Generic.List<string>
-            {
-                AppInfo.Name,
-                TruncateLine($"Switch: {switchName}", 63),
-            };
-
+            var vmRows = new System.Collections.Generic.List<(string Name, string Ip)>();
             foreach (var name in vmNames)
             {
                 if (_vm.GetCachedVmIp(name) is { } ip)
-                    lines.Add(TruncateLine($"{name}: {ip}", 63));
+                    vmRows.Add((name, ip));
             }
+
+            var appLine = $"{AppInfo.Name} v{AppInfo.Version}";
+
+            var lines = new System.Collections.Generic.List<string>
+            {
+                appLine,
+                TruncateLine($"Switch: {switchName}", 63),
+            };
+            foreach (var (name, ip) in vmRows)
+                lines.Add(TruncateLine($"{name}: {ip}", 63));
 
             var tooltip = string.Join("\n", lines);
             // Win32 balloon-tip tooltip hard limit is 127 chars total.
             if (tooltip.Length > 127)
                 tooltip = tooltip[..126] + "…";
 
-            _ui.TryEnqueue(() => _trayIcon.ToolTipText = tooltip);
+            _ui.TryEnqueue(() =>
+            {
+                _trayIcon.ToolTipText = tooltip;
+                _trayIcon.TrayToolTip = BuildRichTooltip(appLine, switchName, vmRows);
+            });
         }
         catch (Exception ex)
         {
@@ -280,6 +300,55 @@ public partial class App : Application
             try { _ui.TryEnqueue(() => _trayIcon.ToolTipText = AppInfo.Name); } catch { }
             _ = ex; // suppress unused-variable warning
         }
+    }
+
+    /// <summary>
+    /// Builds the icon-annotated content for <see cref="TaskbarIcon.TrayToolTip"/>: an app+version
+    /// row, the active virtual switch row, and one row per VM with a known IP — mirroring
+    /// <see cref="UpdateTooltipAsync"/>'s plain-text content, styled to match the dashboard's
+    /// existing Mica-card look (<see cref="AppColors"/> / theme brushes, imperative construction —
+    /// see <c>DashboardWindow.BuildCard</c>).
+    /// </summary>
+    private static UIElement BuildRichTooltip(
+        string appLine, string switchName, System.Collections.Generic.IReadOnlyList<(string Name, string Ip)> vmRows)
+    {
+        var panel = new StackPanel { Spacing = 6, Padding = new Thickness(12, 10, 12, 10), MaxWidth = 280 };
+
+        panel.Children.Add(BuildTooltipRow(GlyphAppInfo, appLine, emphasize: true));
+        panel.Children.Add(BuildTooltipRow(GlyphNetworkSwitch, TruncateLine($"Switch: {switchName}", 80)));
+        foreach (var (name, ip) in vmRows)
+            panel.Children.Add(BuildTooltipRow(GlyphVm, TruncateLine($"{name}: {ip}", 80)));
+
+        return panel;
+    }
+
+    /// <summary>Builds a single "glyph + text" tooltip row (Segoe Fluent Icons FontIcon + TextBlock).</summary>
+    private static StackPanel BuildTooltipRow(string glyph, string text, bool emphasize = false)
+    {
+        var icon = new FontIcon
+        {
+            FontFamily        = new FontFamily("Segoe Fluent Icons"),
+            Glyph             = glyph,
+            FontSize          = 14,
+            Width             = 18,
+            Foreground        = AppColors.IndicatorGreyBrush,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        var label = new TextBlock
+        {
+            Text              = text,
+            FontSize          = 12,
+            FontWeight        = emphasize ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal,
+            Foreground        = (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"],
+            TextTrimming      = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        row.Children.Add(icon);
+        row.Children.Add(label);
+        return row;
     }
 
     /// <summary>

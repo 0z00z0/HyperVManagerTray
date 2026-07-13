@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Reflection;
 using Microsoft.UI.Xaml.Controls;
 using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Models;
@@ -474,7 +473,7 @@ internal sealed class TrayMenu
                 Info = new AboutInfo
                 {
                     AppName     = AppName,
-                    Version     = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown",
+                    Version     = AppInfo.Version,
                     Description = "Automatically connects Hyper-V VMs to the right virtual switch when the host changes networks. Manage VM power and state directly from the system tray.",
                     RepoUrl     = "https://github.com/0z00z0/HyperVManagerTray",
                     ExternalLibraries =

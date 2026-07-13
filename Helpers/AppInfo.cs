@@ -1,3 +1,5 @@
+using System.Reflection;
+
 namespace HyperVManagerTray.Helpers;
 
 /// <summary>
@@ -14,6 +16,20 @@ internal static class AppInfo
 
     /// <summary>Identifier used for the %APPDATA% folder, scheduled task, and HTTP user-agent.</summary>
     public const string Id = "HyperVManagerTray";
+
+    /// <summary>
+    /// Running assembly's version as a 3-component string (e.g. "2.3.0"), for display in the
+    /// About window and the tray hover tooltip. Single source of truth — previously computed
+    /// inline in TrayMenu's About-box builder only.
+    /// </summary>
+    public static string Version => FormatVersion(Assembly.GetExecutingAssembly().GetName().Version);
+
+    /// <summary>
+    /// Pure formatting helper, extracted so it can be unit-tested without a WinUI runtime:
+    /// a 3-component version string (e.g. "2.3.0"), or "unknown" when version metadata is
+    /// unavailable (e.g. a build with no informational version set).
+    /// </summary>
+    internal static string FormatVersion(Version? version) => version?.ToString(3) ?? "unknown";
 
     /// <summary>Per-user data directory (<c>%APPDATA%\HyperVManagerTray</c>). Not created by this getter.</summary>
     public static string DataDir => Path.Combine(
