@@ -24,6 +24,17 @@ public sealed record CurrentNetworkInfo(
     string IpCidr);      // e.g. "10.0.0.0/23"
 
 /// <summary>
+/// A physical NIC as offered in the "Rename network adapter" submenu (issue #15): its connection
+/// alias, its raw device description (the FriendlyName-derived string being renamed, e.g.
+/// "Realtek USB GbE Family Controller #2"), the InterfaceGuid used to resolve the PnP device, and MAC.
+/// </summary>
+public sealed record PhysicalAdapterInfo(
+    string InterfaceAlias,   // NetworkInterface.Name, e.g. "Ethernet 5"
+    string Description,      // NetworkInterface.Description (the string the rename changes)
+    string InterfaceGuid,    // NetworkInterface.Id, e.g. "{BECDE8F3-...}"
+    string Mac);             // colon-separated, or "—"
+
+/// <summary>
 /// Core rule-evaluation logic: inspects the host's live network adapters and decides which
 /// virtual switch the VMs should use.  Handles the Hyper-V bridging quirk where an external
 /// switch with AllowManagementOS=true moves the physical NIC's IP onto a virtual NIC, and
@@ -98,6 +109,31 @@ public static class AdapterMatcher
 
         return BuildResult("Fallback", config.Fallback.VirtualSwitch, config.Fallback.TargetVms,
                            PrimaryAdapter(physical, virtual_), virtual_);
+    }
+
+    /// <summary>
+    /// Returns the physical (non-Hyper-V-virtual, non-filter) NICs currently Up, for the
+    /// "Rename network adapter" submenu.  Reuses the same <see cref="SplitAdapters"/> filtering the
+    /// rule engine uses, so WFP/NDIS filter adapters and Hyper-V management vNICs are excluded and the
+    /// menu only lists real devices whose description is worth renaming.
+    /// </summary>
+    public static IReadOnlyList<PhysicalAdapterInfo> GetPhysicalAdapters()
+    {
+        var (physical, _) = SplitAdapters();
+
+        var list = new List<PhysicalAdapterInfo>(physical.Count);
+        foreach (var nic in physical)
+        {
+            string mac;
+            try   { mac = FormatMac(nic.GetPhysicalAddress().ToString()); }
+            catch { mac = "—"; }
+
+            // Raw Description (not FriendlyAdapterName) — SplitAdapters already excluded the filter
+            // adapters whose suffix FriendlyAdapterName strips, so this is the real device string and
+            // exactly what the rename mutates.
+            list.Add(new PhysicalAdapterInfo(nic.Name, nic.Description, nic.Id, mac));
+        }
+        return list;
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────

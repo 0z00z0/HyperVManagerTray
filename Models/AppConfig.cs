@@ -16,6 +16,38 @@ public sealed class FallbackAction
 }
 
 /// <summary>
+/// Remembers the original <c>FriendlyName</c> of a physical network adapter before the user first
+/// renamed its description (issue #15), so the rename dialog's "Reset" can restore it.  Keyed by the
+/// PnP <c>DeviceInstanceID</c> (stable across reboots and dock re-plugs).  Reset always *writes* the
+/// saved value back — it never deletes the FriendlyName, which on a multi-instance device would let
+/// the description fall back to the un-numbered base name and produce two identical descriptions
+/// (investigation §5.4).
+/// </summary>
+public sealed class AdapterNameOverride
+{
+    /// <summary>PnP device instance id, e.g. <c>USB\VID_0BDA&amp;PID_8153\000002000000</c>.</summary>
+    public string DeviceInstanceId { get; set; } = string.Empty;
+
+    /// <summary>The FriendlyName the device had before the first rename (empty when it had none).</summary>
+    public string OriginalFriendlyName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// True when the device had no explicit FriendlyName before the first rename.  In that case Reset
+    /// is not offered (there is nothing to restore, and deleting is disallowed — see the type summary).
+    /// </summary>
+    public bool OriginalWasAbsent { get; set; }
+
+    /// <summary>Adapter MAC (colon-separated) at rename time — a human-friendly cross-check only.</summary>
+    public string Mac { get; set; } = string.Empty;
+
+    /// <summary>Date of the first rename (<c>yyyy-MM-dd</c>).</summary>
+    public string RenamedOn { get; set; } = string.Empty;
+
+    /// <summary>The name the app last applied — lets a future driver-update revert be detected.</summary>
+    public string CurrentFriendlyName { get; set; } = string.Empty;
+}
+
+/// <summary>
 /// Root configuration object deserialised from <c>config.json</c>: the managed VMs,
 /// the priority-ordered match rules, and the fallback action.
 /// </summary>
@@ -29,6 +61,12 @@ public sealed class AppConfig
 
     /// <summary>Action applied when no rule matches the current host network.</summary>
     public FallbackAction Fallback { get; set; } = new();
+
+    /// <summary>
+    /// Saved original adapter descriptions, one per adapter the user has renamed (issue #15).
+    /// Used to power the rename dialog's "Reset".  Empty for a fresh install.
+    /// </summary>
+    public List<AdapterNameOverride> AdapterNames { get; set; } = [];
 
     /// <summary>
     /// Minimum severity written to <c>switcher.log</c>.  One of <c>Trace</c>, <c>Debug</c>,

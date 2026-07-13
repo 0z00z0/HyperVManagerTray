@@ -20,6 +20,9 @@
     <Compile Include="..\Helpers\IconGenerator.cs"    Link="Linked\IconGenerator.cs" />
     <Compile Include="..\Helpers\NativeMethods.cs"    Link="Linked\NativeMethods.cs" />
     <Compile Include="..\Helpers\AppInfo.cs"          Link="Linked\AppInfo.cs" />
+    <!-- Pure adapter-rename rules (validation, uniqueness, GUID→device resolution). No Win32 deps,
+         so it links cleanly; the device-mutating AdapterRenamer.cs is deliberately NOT linked. -->
+    <Compile Include="..\Helpers\AdapterNameRules.cs" Link="Linked\AdapterNameRules.cs" />
     <Compile Include="..\Services\FileLogger.cs"      Link="Linked\FileLogger.cs" />
     <Compile Include="..\Models\AppConfig.cs"         Link="Linked\AppConfig.cs" />
     <Compile Include="..\Models\NetworkRule.cs"       Link="Linked\NetworkRule.cs" />
