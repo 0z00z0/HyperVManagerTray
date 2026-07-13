@@ -519,7 +519,7 @@ public sealed partial class DashboardWindow : Window
         // truth for the state label, shared with UpdateCard and OnVmOperationProgress).
         var stateLabel = new TextBlock
         {
-            FontSize             = 11,
+            FontSize             = 12,   // matches the dashboard's unified right-column value size
             VerticalAlignment    = VerticalAlignment.Center,
             HorizontalAlignment  = HorizontalAlignment.Right,
         };
@@ -535,9 +535,9 @@ public sealed partial class DashboardWindow : Window
             uptimeLbl = new TextBlock
             {
                 Text                = uptimeText,
-                FontSize            = 10,
+                FontSize            = 12,   // matches the dashboard's unified right-column value size
                 HorizontalAlignment = HorizontalAlignment.Right,
-                Foreground          = AppColors.IndicatorGreyBrush,
+                Foreground          = (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"],
             };
             Grid.SetColumn(uptimeLbl, 1);
             Grid.SetRow(uptimeLbl, 1);
@@ -565,8 +565,8 @@ public sealed partial class DashboardWindow : Window
         var ipLabel = new TextBlock
         {
             Text                = _vm.GetCachedVmIp(vm.Name) ?? "",
-            FontSize            = 10,
-            Foreground          = tertiary,
+            FontSize            = 12,   // matches the dashboard's unified right-column value size
+            Foreground          = (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"],
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment   = VerticalAlignment.Center,
             Margin              = new Thickness(8, 0, 0, 0),
@@ -632,7 +632,7 @@ public sealed partial class DashboardWindow : Window
         var lbl = new TextBlock
         {
             Text              = label,
-            FontSize          = 10,
+            FontSize          = 11,   // matches the dashboard's larger grey left-column label size
             FontWeight        = Microsoft.UI.Text.FontWeights.SemiBold,
             Foreground        = AppColors.IndicatorGreyBrush,
             VerticalAlignment = VerticalAlignment.Center,
@@ -656,7 +656,7 @@ public sealed partial class DashboardWindow : Window
             g.Children.Add(bar);
         }
 
-        var val = new TextBlock { Text = value, FontSize = 11, Foreground = (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"], VerticalAlignment = VerticalAlignment.Center };
+        var val = new TextBlock { Text = value, FontSize = 12, Foreground = (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"], VerticalAlignment = VerticalAlignment.Center };
         Grid.SetColumn(val, 2);
         g.Children.Add(val);
 
