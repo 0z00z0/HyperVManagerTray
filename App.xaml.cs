@@ -273,12 +273,14 @@ public partial class App : Application
 
             var lines = new System.Collections.Generic.List<string>
             {
-                // Desktop-computer + app + version. Bracketed per Espen's request; matches
+                // 🖥 Desktop-computer + app + version. Bracketed per Espen's request; matches
                 // ChargeKeeper's two-space gap before the version marker.
                 TruncateLine($"\U0001F5A5 {AppInfo.Name}  [{AppInfo.Version}]", 63),
-                // Globe + active virtual switch. Avoid dark/low-contrast emoji (e.g. a plug) on the
-                // dark Win11 tooltip background — see ChargeKeeper's App.xaml.cs UpdateTooltip note.
-                TruncateLine($"\U0001F310 Switch: {switchName}", 63),
+                // 🔀 twisted arrows (a network "switch" routing traffic) + the active virtual switch.
+                // Chosen over the globe so it doesn't read as a generic computer icon and conveys
+                // switching/spread. Avoid dark/low-contrast emoji (e.g. a plug) on the dark Win11
+                // tooltip background — see ChargeKeeper's App.xaml.cs UpdateTooltip note.
+                TruncateLine($"\U0001F500 Switch: {switchName}", 63),
             };
 
             int vmsWithIp = 0;
@@ -286,7 +288,7 @@ public partial class App : Application
             {
                 if (_vm.GetCachedVmIp(name) is { } ip)
                 {
-                    lines.Add(TruncateLine($"\U0001F4BB {name}: {ip}", 63));   // laptop — one row per VM with a known IP
+                    lines.Add(TruncateLine($"\U0001F4E6 {name}: {ip}", 63));   // 📦 box (VM) — distinct from the 🖥 app row; one row per VM with a known IP
                     vmsWithIp++;
                 }
             }
