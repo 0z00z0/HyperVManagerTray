@@ -37,14 +37,14 @@ jobs:
     steps:
       # ── 1. Checkout (full history so tags resolve) ──────────────────────────
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       # Check out the 0z0-shared sibling so the shared-About ProjectReference resolves (see the
       # ZeroZeroSharedDir env var above). Placed in a workspace subfolder — not ..\ (outside workspace).
       - name: Checkout 0z0-shared (sibling dependency)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: 0z00z0/0z0-shared
           path: 0z0-shared
