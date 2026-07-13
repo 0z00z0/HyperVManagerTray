@@ -114,6 +114,34 @@ public class AdapterRenameTests
     public void IsNameUnique_TrueAgainstEmptyList()
         => Assert.True(AdapterNameRules.IsNameUnique("Anything", System.Array.Empty<string>()));
 
+    // ── FriendlyNameApplied (write read-back verdict, issue #15) ─────────────────
+
+    [Fact]
+    public void FriendlyNameApplied_TrueWhenPresentAndExactMatch()
+        => Assert.True(AdapterNameRules.FriendlyNameApplied(true, "Dell docking (Petterhaugen)", "Dell docking (Petterhaugen)"));
+
+    [Fact]
+    public void FriendlyNameApplied_FalseWhenAbsent()
+        => Assert.False(AdapterNameRules.FriendlyNameApplied(false, null, "Dell docking (Petterhaugen)"));
+
+    [Fact]
+    public void FriendlyNameApplied_FalseWhenValueDiffers()
+        => Assert.False(AdapterNameRules.FriendlyNameApplied(true, "Realtek USB GbE Family Controller #2", "Dell docking (Petterhaugen)"));
+
+    [Fact]
+    public void FriendlyNameApplied_FalseWhenPresentButNull()
+        => Assert.False(AdapterNameRules.FriendlyNameApplied(true, null, "Dell docking"));
+
+    [Fact]
+    public void FriendlyNameApplied_IsCaseSensitiveOrdinal()
+        => Assert.False(AdapterNameRules.FriendlyNameApplied(true, "dell docking", "Dell docking"));
+
+    [Fact]
+    public void FriendlyNameApplied_FalseWhenTruncatedToSingleChar()
+        // The exact ANSI-marshaling corruption the fix guards against: a UTF-16 buffer fed to the
+        // ANSI SetupAPI entry point would land as the first character only ("D"). Read-back rejects it.
+        => Assert.False(AdapterNameRules.FriendlyNameApplied(true, "D", "Dell docking (Petterhaugen)"));
+
     // ── ResolveDeviceInstanceId ──────────────────────────────────────────────────
 
     private static AdapterNameRules.ClassAdapterEntry Entry(string guid, string dev)

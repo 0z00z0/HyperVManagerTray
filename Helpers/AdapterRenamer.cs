@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Text;
 using Microsoft.Win32;
 
 namespace HyperVManagerTray.Helpers;
@@ -12,11 +11,20 @@ namespace HyperVManagerTray.Helpers;
 /// and restarts the device so the change propagates.
 ///
 /// <para><b>SAFETY.</b> <see cref="WriteFriendlyName"/> and <see cref="RestartDevice"/> mutate a real
-/// network device. Both go through parameterized SetupAPI calls — <b>never</b> a shell/PowerShell
+/// network device. The write is a parameterized <see cref="Microsoft.Win32.Registry"/> <c>REG_SZ</c>
+/// set and the restart goes through parameterized SetupAPI calls — <b>never</b> a shell/PowerShell
 /// command string — so a crafted name cannot inject code into this elevated process (investigation
-/// §3, §5.3). The write targets exactly one value (<c>SPDRP_FRIENDLYNAME</c>) on one resolved device;
-/// it never touches <c>DeviceDesc</c> or anything under the Class key. Callers MUST gate both mutating
-/// methods behind explicit user consent. The resolution/read members are read-only.</para>
+/// §3, §5.3). The write targets exactly one value (<c>FriendlyName</c>) on one resolved device's Enum
+/// key; it never touches <c>DeviceDesc</c> or anything under the Class key. Callers MUST gate both
+/// mutating methods behind explicit user consent. The resolution/read members are read-only.</para>
+///
+/// <para><b>#15 revert fix.</b> The original write used
+/// <c>SetupDiSetDeviceRegistryProperty(SPDRP_FRIENDLYNAME)</c> declared without
+/// <c>CharSet.Unicode</c>, so the P/Invoke bound to the <b>ANSI</b> entry point
+/// (<c>…PropertyA</c>) while being fed a UTF-16 byte buffer — the value never landed correctly, yet
+/// the API returned success and the app reported success. The write is now a direct, verified
+/// registry set: it re-reads the value from disk and throws unless it matches, so a silent no-op can
+/// never again be reported as success.</para>
 /// </summary>
 internal static class AdapterRenamer
 {
@@ -79,35 +87,41 @@ internal static class AdapterRenamer
     // ── Device-mutating operations (gate behind explicit consent) ────────────────
 
     /// <summary>
-    /// ★ DEVICE-MUTATING ★ Writes <c>SPDRP_FRIENDLYNAME</c> on the resolved device via SetupAPI.
-    /// This is the single value that changes the adapter description system-wide. Throws on failure.
-    /// Must never be called without explicit user consent.
+    /// ★ DEVICE-MUTATING ★ Writes the <c>FriendlyName</c> <c>REG_SZ</c> on the resolved device's Enum
+    /// key — the single value that changes the adapter description system-wide. This is a direct,
+    /// parameterized <see cref="Microsoft.Win32.Registry"/> write (Administrators have FullControl on
+    /// this key and the app is elevated — investigation §2); it builds no shell string, so a crafted
+    /// name cannot inject code. After writing it <b>re-reads the value from disk and throws unless it
+    /// matches</b>, so the #15 "silent no-op reported as success" failure can never recur. Throws on
+    /// any failure. Must never be called without explicit user consent.
     /// </summary>
     internal static void WriteFriendlyName(string deviceInstanceId, string friendlyName)
     {
-        var classGuid = NetClassGuid; // cannot pass a readonly field by ref
-        var set = SetupDiCreateDeviceInfoList(ref classGuid, IntPtr.Zero);
-        if (set == InvalidHandle)
-            throw new InvalidOperationException(
-                $"SetupDiCreateDeviceInfoList failed (0x{Marshal.GetLastWin32Error():X8}).");
+        var keyPath = EnumKeyPrefix + deviceInstanceId;
 
-        try
+        // OpenSubKey(writable:true) throws SecurityException/UnauthorizedAccessException if the ACL
+        // denies write, and returns null if the device key is missing — both surface as a visible
+        // error to the caller rather than a false success.
+        using (var key = Registry.LocalMachine.OpenSubKey(keyPath, writable: true))
         {
-            var devInfo = new SP_DEVINFO_DATA { cbSize = (uint)Marshal.SizeOf<SP_DEVINFO_DATA>() };
-            if (!SetupDiOpenDeviceInfo(set, deviceInstanceId, IntPtr.Zero, 0, ref devInfo))
+            if (key is null)
                 throw new InvalidOperationException(
-                    $"Device \"{deviceInstanceId}\" could not be opened (0x{Marshal.GetLastWin32Error():X8}).");
+                    $"The device's registry key was not found (device not present?):\r\nHKLM\\{keyPath}");
 
-            // REG_SZ payload: UTF-16, NUL-terminated.
-            var buffer = Encoding.Unicode.GetBytes(friendlyName + '\0');
-            if (!SetupDiSetDeviceRegistryProperty(set, ref devInfo, SPDRP_FRIENDLYNAME, buffer, (uint)buffer.Length))
-                throw new InvalidOperationException(
-                    $"Failed to set the adapter's FriendlyName (0x{Marshal.GetLastWin32Error():X8}).");
-
-            AppInfo.AppendCrashLogLine("AdapterRename",
-                $"Set FriendlyName of {deviceInstanceId} to \"{friendlyName}\".");
+            key.SetValue("FriendlyName", friendlyName, RegistryValueKind.String);
+            key.Flush();
         }
-        finally { SetupDiDestroyDeviceInfoList(set); }
+
+        // Read-back verification: the write only counts as a success if the value is actually on disk.
+        var (present, written) = ReadFriendlyName(deviceInstanceId);
+        if (!AdapterNameRules.FriendlyNameApplied(present, written, friendlyName))
+            throw new InvalidOperationException(
+                "The new adapter name did not persist to the registry. On disk the FriendlyName is " +
+                (present ? $"\"{written}\"" : "still absent") +
+                $" but \"{friendlyName}\" was expected. No change was applied.");
+
+        AppInfo.AppendCrashLogLine("AdapterRename",
+            $"Set FriendlyName of {deviceInstanceId} to \"{friendlyName}\" (verified on disk).");
     }
 
     /// <summary>
@@ -165,7 +179,6 @@ internal static class AdapterRenamer
 
     private static readonly IntPtr InvalidHandle = new(-1);
 
-    private const uint SPDRP_FRIENDLYNAME = 0x0000000C;
     private const uint DIF_PROPERTYCHANGE = 0x00000012;
     private const uint DICS_ENABLE        = 0x00000001;
     private const uint DICS_DISABLE       = 0x00000002;
@@ -203,11 +216,6 @@ internal static class AdapterRenamer
     private static extern bool SetupDiOpenDeviceInfo(
         IntPtr DeviceInfoSet, string DeviceInstanceId, IntPtr hwndParent, uint Flags,
         ref SP_DEVINFO_DATA DeviceInfoData);
-
-    [DllImport("setupapi.dll", SetLastError = true)]
-    private static extern bool SetupDiSetDeviceRegistryProperty(
-        IntPtr DeviceInfoSet, ref SP_DEVINFO_DATA DeviceInfoData, uint Property,
-        byte[] PropertyBuffer, uint PropertyBufferSize);
 
     [DllImport("setupapi.dll", SetLastError = true)]
     private static extern bool SetupDiSetClassInstallParams(

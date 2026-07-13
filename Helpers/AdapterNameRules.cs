@@ -59,6 +59,20 @@ public static class AdapterNameRules
     }
 
     /// <summary>
+    /// Read-back verdict for the device write (issue #15): a <c>FriendlyName</c> write only counts as
+    /// applied when the value is now <b>present</b> on disk and <b>exactly</b> equal (ordinal) to what
+    /// was written. Pure so the guard in <see cref="AdapterRenamer.WriteFriendlyName"/> — which turns
+    /// the old "silent no-op reported as success" into a visible failure — is unit-testable without
+    /// touching a device. The write value is already trimmed/validated by <see cref="ValidateName"/>,
+    /// so an ordinal exact match is the correct persisted-vs-intended test.
+    /// </summary>
+    /// <param name="present">Whether a FriendlyName value exists on disk after the write.</param>
+    /// <param name="onDisk">The value read back (null when absent).</param>
+    /// <param name="intended">The value the caller wrote.</param>
+    public static bool FriendlyNameApplied(bool present, string? onDisk, string intended)
+        => present && string.Equals(onDisk, intended, StringComparison.Ordinal);
+
+    /// <summary>
     /// True when <paramref name="candidate"/> does not collide (case-insensitively, ignoring
     /// surrounding whitespace) with any name in <paramref name="existingNames"/>. Windows does not
     /// enforce unique adapter descriptions, so the app must (investigation §5.5). The caller is
