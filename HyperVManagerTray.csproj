@@ -46,18 +46,18 @@
   </ItemGroup>
 
   <!-- Shared ZeroZero Software branding: the About window now comes from here instead of a
-       hand-rolled UI/AboutWindow. Local dev resolves it as the sibling ..\ZeroZeroBrand folder;
-       CI (which only checks out this repo) overrides ZeroZeroBrandDir — set as an env var, which
-       MSBuild surfaces as this property — to point at its own checkout of the branding repo. -->
+       hand-rolled UI/AboutWindow. Local dev resolves it as the sibling ..\0z0-shared folder;
+       CI (which only checks out this repo) overrides ZeroZeroSharedDir — set as an env var, which
+       MSBuild surfaces as this property — to point at its own checkout of the 0z0-shared repo. -->
   <PropertyGroup>
-    <ZeroZeroBrandDir Condition="'$(ZeroZeroBrandDir)' == ''">..\ZeroZeroBrand</ZeroZeroBrandDir>
+    <ZeroZeroSharedDir Condition="'$(ZeroZeroSharedDir)' == ''">..\0z0-shared</ZeroZeroSharedDir>
   </PropertyGroup>
   <ItemGroup>
     <!-- WindowsAppSDKSelfContained is a publish-time global property the app sets; MSBuild would
          propagate it into this class-library reference, which errors ("should not be applied to a
          class library"). Strip it for this reference only — the app aggregates the self-contained
          Windows App SDK; the library just builds framework-dependent as normal. -->
-    <ProjectReference Include="$(ZeroZeroBrandDir)\src\ZeroZero.Brand.WinUI\ZeroZero.Brand.WinUI.csproj">
+    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Brand.WinUI\ZeroZero.Brand.WinUI.csproj">
       <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
     </ProjectReference>
   </ItemGroup>
@@ -96,20 +96,20 @@
     <Page      Remove="Tests\**\*" />
   </ItemGroup>
 
-  <!-- In CI the ZeroZeroBrand branding repo is checked out into a workspace SUBfolder
-       (see the ci.yml/release.yml "Checkout ZeroZeroBrand" step + $(ZeroZeroBrandDir)). It then
+  <!-- In CI the 0z0-shared branding repo is checked out into a workspace SUBfolder
+       (see the ci.yml/release.yml "Checkout 0z0-shared" step + $(ZeroZeroSharedDir)). It then
        sits under this project's directory, so the SDK's default globs would compile its sources
        into THIS assembly on top of the ProjectReference — duplicate types and an ambiguous
        NativeMethods. Exclude the subfolder from our own globs; it is consumed solely via the
-       ProjectReference. Matches nothing locally, where ZeroZeroBrand is an outside-the-tree
-       sibling (..\ZeroZeroBrand). -->
+       ProjectReference. Matches nothing locally, where 0z0-shared is an outside-the-tree
+       sibling (..\0z0-shared). -->
   <ItemGroup>
-    <Compile               Remove="ZeroZeroBrand\**\*" />
-    <Content               Remove="ZeroZeroBrand\**\*" />
-    <None                  Remove="ZeroZeroBrand\**\*" />
-    <Page                  Remove="ZeroZeroBrand\**\*" />
-    <ApplicationDefinition Remove="ZeroZeroBrand\**\*" />
-    <EmbeddedResource      Remove="ZeroZeroBrand\**\*" />
+    <Compile               Remove="0z0-shared\**\*" />
+    <Content               Remove="0z0-shared\**\*" />
+    <None                  Remove="0z0-shared\**\*" />
+    <Page                  Remove="0z0-shared\**\*" />
+    <ApplicationDefinition Remove="0z0-shared\**\*" />
+    <EmbeddedResource      Remove="0z0-shared\**\*" />
   </ItemGroup>
 
   <!-- Publish properties: ReadyToRun on Release; trimming OFF (WinUI + reflection-y bits are

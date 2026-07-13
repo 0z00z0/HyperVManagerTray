@@ -20,19 +20,19 @@ jobs:
   build-test:
     runs-on: windows-latest
     env:
-      # The ProjectReference to ZeroZero.Brand.WinUI defaults to the sibling ..\ZeroZeroBrand folder
-      # for local dev; CI only has this repo, so we check the branding repo out below and point the
-      # csproj's $(ZeroZeroBrandDir) property at it via this env var (MSBuild reads env as a property).
-      ZeroZeroBrandDir: ${{ github.workspace }}/ZeroZeroBrand
+      # The ProjectReference to ZeroZero.Brand.WinUI defaults to the sibling ..\0z0-shared folder
+      # for local dev; CI only has this repo, so we check the 0z0-shared repo out below and point the
+      # csproj's $(ZeroZeroSharedDir) property at it via this env var (MSBuild reads env as a property).
+      ZeroZeroSharedDir: ${{ github.workspace }}/0z0-shared
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Checkout ZeroZeroBrand (sibling dependency)
+      - name: Checkout 0z0-shared (sibling dependency)
         uses: actions/checkout@v4
         with:
-          repository: 0z00z0/ZeroZeroBrand
-          path: ZeroZeroBrand
+          repository: 0z00z0/0z0-shared
+          path: 0z0-shared
 
       - name: Set up .NET 10
         uses: actions/setup-dotnet@v4
