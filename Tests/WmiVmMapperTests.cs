@@ -62,4 +62,14 @@ public class WmiVmMapperTests
     [InlineData("", null)]
     public void PercentFromStatus_ExtractsPercent(string desc, int? expected)
         => Assert.Equal(expected, WmiVmMapper.PercentFromStatus(desc));
+
+    [Theory]
+    [InlineData("Restoring, 72 %", "Restoring")]
+    [InlineData("Saving, 5 %", "Saving")]
+    [InlineData("Operating normally", null)]   // no comma — doesn't look like the "verb, detail" shape
+    [InlineData(",missing verb", null)]        // nothing before the comma
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    public void LeadingVerbFromStatus_ExtractsLeadingVerb(string? desc, string? expected)
+        => Assert.Equal(expected, WmiVmMapper.LeadingVerbFromStatus(desc));
 }

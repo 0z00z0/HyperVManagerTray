@@ -131,4 +131,22 @@ public static class WmiVmMapper
         var num = statusDescription[i..pct].Trim();
         return int.TryParse(num, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : null;
     }
+
+    /// <summary>
+    /// Parses the leading verb out of a WMI StatusDescriptions string like "Restoring, 72 %" (the
+    /// word <see cref="PercentFromStatus"/> discards). This is the only place the "Restoring" verb
+    /// exists: EnabledState 32770 ("Starting" per <see cref="MapState"/>) is apparently reported for
+    /// both a cold boot and a resume-from-Saved on some hosts, so StatusDescriptions is the sole
+    /// signal that distinguishes them. Returns null when the string is empty or doesn't look like
+    /// the "verb, detail" shape (no comma, or nothing before it), so callers can fall back cleanly to
+    /// the coarse EnabledState-derived state name.
+    /// </summary>
+    public static string? LeadingVerbFromStatus(string? statusDescription)
+    {
+        if (string.IsNullOrEmpty(statusDescription)) return null;
+        int comma = statusDescription.IndexOf(',');
+        if (comma <= 0) return null;
+        var verb = statusDescription[..comma].Trim();
+        return verb.Length > 0 ? verb : null;
+    }
 }
