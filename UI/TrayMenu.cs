@@ -487,8 +487,20 @@ internal sealed class TrayMenu
             {
                 // ★ DEVICE-MUTATING ★ Disable + enable to force NDIS to re-read the description.
                 AdapterRenamer.RestartDevice(deviceInstanceId);
-                _ui.TryEnqueue(() => NativeMethods.Info(
-                    "Adapter restarted. The new name should now appear everywhere.", AppName));
+
+                // Confirm the name is still on disk after the cycle before claiming success — a PnP
+                // re-enumeration could, in principle, have regenerated it (issue #15: never report a
+                // success we haven't verified).
+                var (present, current) = AdapterRenamer.ReadFriendlyName(deviceInstanceId);
+                if (AdapterNameRules.FriendlyNameApplied(present, current, appliedName))
+                    _ui.TryEnqueue(() => NativeMethods.Info(
+                        "Adapter restarted. The new name should now appear everywhere.", AppName));
+                else
+                    _ui.TryEnqueue(() => NativeMethods.Warn(
+                        "The adapter was restarted, but the name on disk is now " +
+                        (present ? $"\"{current}\"" : "absent") +
+                        $" instead of \"{appliedName}\" — Windows may have reset it. Try renaming again " +
+                        "or reboot to re-apply.", AppName));
             }
             catch (Exception ex)
             {
