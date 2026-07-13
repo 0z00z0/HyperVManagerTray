@@ -25,3 +25,6 @@ CodeDocumentation*
 
 # Machine-specific config backups
 *-config.json
+
+# Local task tracking — not for the repo. See TODO-HANDLING.md.
+TODO.md
