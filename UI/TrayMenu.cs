@@ -236,12 +236,20 @@ internal sealed class TrayMenu
         sub.Items.Add(PowerItem("Save",        vmName, VmOpKind.Save));
     }
 
+    // Cold boot under host load can legitimately take a while; long enough to cover that without
+    // hanging the tray menu's "Start && Connect" item indefinitely if the VM is unusually slow to
+    // report in. Same value as DashboardWindow.StartAndConnectTimeout — kept local since VmService is
+    // the actual shared logic (see WaitUntilRunningAsync) and a shared constant here would be
+    // over-engineering for a single TimeSpan literal.
+    private static readonly TimeSpan StartAndConnectTimeout = TimeSpan.FromSeconds(45);
+
     private async Task StartAndConnect(string vmName, string nicName)
     {
-        // BeginPowerAction is fire-and-forget; the flat delay is the same heuristic the old
-        // PowerShell path used to give the VM time to boot before vmconnect can attach.
+        // BeginPowerAction is fire-and-forget; WaitUntilRunningAsync replaces the old flat 2.5s guess
+        // with an actual readiness wait (event-driven off VmService.StatusesChanged — see its doc
+        // comment). On timeout it proceeds anyway rather than silently doing nothing.
         _vm.BeginPowerAction(vmName, VmOpKind.Start);
-        await Task.Delay(2500);
+        await _vm.WaitUntilRunningAsync(vmName, StartAndConnectTimeout);
         var sw = _monitor.LastApplied?.VirtualSwitch;
         if (!string.IsNullOrEmpty(sw)) await _hyperV.ApplySwitchAsync(vmName, nicName, sw);
     }
