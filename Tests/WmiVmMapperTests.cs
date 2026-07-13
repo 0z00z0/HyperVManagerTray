@@ -64,10 +64,15 @@ public class WmiVmMapperTests
         => Assert.Equal(expected, WmiVmMapper.PercentFromStatus(desc));
 
     [Theory]
-    [InlineData("Restoring, 72 %", "Restoring")]
+    [InlineData("Restoring, 72 %", "Restoring")]   // comma + spaces
     [InlineData("Saving, 5 %", "Saving")]
-    [InlineData("Operating normally", null)]   // no comma — doesn't look like the "verb, detail" shape
-    [InlineData(",missing verb", null)]        // nothing before the comma
+    [InlineData("Restoring 72%", "Restoring")]     // issue #13: comma-less shape the old parse missed
+    [InlineData("Saving 47%", "Saving")]
+    // Health element [0] joined before the operation verb by ReadSummaries — verb still resolves.
+    [InlineData("Operating normally Restoring 72%", "Restoring")]
+    [InlineData("Operating normally Saving, 5 %", "Saving")]
+    [InlineData("Operating normally", null)]       // no percentage → fall back to coarse state
+    [InlineData(",missing verb", null)]            // no percentage
     [InlineData("", null)]
     [InlineData(null, null)]
     public void LeadingVerbFromStatus_ExtractsLeadingVerb(string? desc, string? expected)
