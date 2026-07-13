@@ -25,12 +25,11 @@ public sealed class VmService : IDisposable
 
     // Two DISTINCT Hyper-V WMI state enumerations that must not be conflated (doing so returned
     // 32775 / 0x8007 "Invalid state for this operation" on Pause and Save):
-    //   • EnabledState   — the CURRENT power state read back from Msvm_ComputerSystem.
+    //   • EnabledState   — the CURRENT power state read back from Msvm_ComputerSystem. The
+    //     already-in-state no-op guard maps it to a friendly name via WmiVmMapper.MapState (the
+    //     single source of truth), so BOTH the user-pause code 9 and the vendor 32768 count as
+    //     "Paused" — comparing raw codes here would miss the 9 case and re-issue a spurious Pause.
     //   • RequestedState — the target code RequestStateChange ACCEPTS to drive a transition.
-    // Msvm_ComputerSystem.EnabledState (current state), used only for the already-in-state no-op guard:
-    private const ushort StateRunning = 2;
-    private const ushort StatePaused  = 32768;
-    private const ushort StateSaved   = 32769;   // "Suspended"
     // Msvm_ComputerSystem.RequestStateChange RequestedState (target request). These are the STANDARD
     // CIM values a V2 host accepts; the vendor codes the docs list for save/pause/resume (32773/32776/
     // 32777) are "Hyper-V V1 only" and a V2 host rejects them with 32775 — which is why the earlier
@@ -439,17 +438,19 @@ public sealed class VmService : IDisposable
                 return;
             }
 
-            // The no-op guard compares CURRENT state (EnabledState) against the target EnabledState —
-            // NOT against the RequestStateChange code, which is a different enumeration. Guards a second
-            // click after the first job outran TrackJob's deadline but still succeeded; re-issuing
-            // RequestStateChange for an already-satisfied state returns an error.
-            ushort targetState = kind switch
+            // Already-in-target-state no-op guard. Compare the MAPPED state NAME (via WmiVmMapper, the
+            // single source of truth) rather than a raw EnabledState code, so a user pause — which
+            // reports EnabledState 9 (Quiesce), not the vendor 32768 — still counts as "already
+            // Paused". Guards a second click (e.g. from the tray VM-power submenu, which offers Pause
+            // unconditionally) after a prior job outran TrackJob's deadline but still succeeded;
+            // re-issuing RequestStateChange for an already-satisfied state returns 0x8007.
+            string targetStateName = kind switch
             {
-                VmOpKind.Pause => StatePaused,
-                VmOpKind.Save  => StateSaved,
-                _              => StateRunning,   // Start / Resume
+                VmOpKind.Pause => "Paused",
+                VmOpKind.Save  => "Saved",
+                _              => "Running",   // Start / Resume
             };
-            if (Convert.ToUInt16(vm["EnabledState"]) == targetState)
+            if (WmiVmMapper.MapState(Convert.ToUInt16(vm["EnabledState"])) == targetStateName)
             {
                 Emit(vmName, kind, VmOpPhase.Succeeded, null, null);
                 return;
