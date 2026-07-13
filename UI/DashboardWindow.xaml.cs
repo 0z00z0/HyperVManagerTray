@@ -401,12 +401,18 @@ public sealed partial class DashboardWindow : Window
         {
             card.State.Text       = Truncate(msg, 30);
             card.State.Foreground = op.Phase == VmOpPhase.Failed ? AppColors.IndicatorRedBrush : AppColors.IndicatorOrangeBrush;
+            // The status text is truncated to keep the card compact (e.g. a WMI failure message can
+            // run far longer than the "Failed: 'name' failed to…" that fits) — surface the full
+            // message on hover so it isn't lost. Only set when actually truncated, so a short message
+            // doesn't get a redundant tooltip.
+            ToolTipService.SetToolTip(card.State, msg.Length > 30 ? msg : null);
         }
         else
         {
             var state = EffectiveStateName(card.VmName, s);
             card.State.Text       = s is not null && WmiVmMapper.PercentFromStatus(s.StatusDesc) is { } pct ? $"{state} ({pct}%)" : state;
             card.State.Foreground = BrushForState(state);
+            ToolTipService.SetToolTip(card.State, null);   // clear any tooltip left by a prior overlay message
         }
 
         SetButtonsEnabled(card, !IsOpActive(card.VmName));
