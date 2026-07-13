@@ -35,6 +35,11 @@ public partial class App : Application
     private bool?  _bridged;  // null = icon not yet initialized; ensures first switch always updates
     private System.Drawing.Icon? _iconImage;
 
+    // Last tooltip text actually posted, so event-driven rebuilds only touch the UI on a real change
+    // (VmService raises StatusesChanged on every refresh, incl. the dashboard's 2.5 s metrics loop).
+    private string? _lastTooltip;
+    private readonly object _tooltipLock = new();
+
     public App()
     {
         InitializeComponent();
@@ -124,15 +129,22 @@ public partial class App : Application
             _monitor.SwitchApplied += OnSwitchApplied;
             _monitor.Start();
 
-            // Populate the tooltip immediately — before the first SwitchApplied fires.
-            _ = UpdateTooltipAsync();
+            // Drive the tray tooltip off VmService's push channel (issue #16, conversion #2):
+            //   • OnVmStatuses rebuilds the tooltip from VmService's caches whenever a refresh raises
+            //     StatusesChanged, so it reacts to real changes instead of a fixed poll.
+            //   • SubscribeStateWatcher keeps a lightweight, always-on state-change watcher running
+            //     (NO 2.5 s metrics loop — that stays dashboard-gated), so a VM state change pushes
+            //     the tooltip even while the dashboard is closed, without a permanent metrics poll.
+            _vm.StatusesChanged += OnVmStatuses;
+            _vm.SubscribeStateWatcher();
 
-            // Keep the tooltip's VM-IP rows current on their own: OnSwitchApplied only fires on a
-            // network/switch change, so a VM that boots (or gets a fresh DHCP lease) without any
-            // switch re-evaluation happening would otherwise leave the tooltip frozen on stale
-            // content indefinitely — reported as "VM IP does not show even when the VM is running".
-            // A light periodic nudge, independent of the dashboard's own (subscription-gated) metrics
-            // loop, closes that gap. 60 s keeps the extra WMI cost proportionate for an idle tray app.
+            // Show something immediately (caches may still be warming — PreWarmVmCacheAsync fills them).
+            PostTooltipFromCaches();
+
+            // Safety net for the ONE tooltip input the state watcher can't push: a guest DHCP IP that
+            // appears/changes with no VM state transition (Msvm_ComputerSystem raises no event for it).
+            // A slow periodic refresh catches that drift; state changes no longer depend on it. Kept at
+            // 60 s to preserve the previous worst-case IP-appearance latency — see TooltipRefreshLoopAsync.
             _ = TooltipRefreshLoopAsync();
 
             // Pre-warm the VM discovery cache so the right-click menu never blocks the UI
@@ -244,76 +256,42 @@ public partial class App : Application
             catch (Exception ex) { LogCrash("OnSwitchApplied UI update", ex); }
         });
 
-        // Update tooltip with the new switch + fresh VM IPs (runs on thread-pool; posts to UI when done).
-        _ = UpdateTooltipAsync();
+        // The app just (re)bound a virtual switch — the one switch-change the state watcher can't see —
+        // so invalidate VmService's switch cache, show the new switch name at once, and kick a refresh
+        // for fresh VM IPs (which lands back on the tooltip via OnVmStatuses → StatusesChanged).
+        _vm?.InvalidateSwitchCache();
+        PostTooltipFromCaches();
+        _ = _vm?.RefreshOnceAsync();
     }
 
     /// <summary>
-    /// Builds the tray hover tooltip showing app name+version, the active virtual switch, and each
-    /// VM's first IPv4 address, then posts it to the UI thread. Never throws.
-    ///
-    /// A tray hover tooltip is plain Win32 text — <see cref="TaskbarIcon.TrayToolTip"/>'s rich
-    /// WinUI-content mechanism does not reliably render on unpackaged WinUI 3 apps (confirmed via
-    /// HavenDV/H.NotifyIcon issues #43/#91/#94 — the tooltip silently falls back to plain
-    /// <see cref="TaskbarIcon.ToolTipText"/>, which is exactly what shipped in the first pass at this
-    /// feature). Colour emoji, not FontIcon glyphs, are how ChargeKeeper (this app's sibling,
-    /// confirmed working) puts icons in its tray tooltip: the OS tooltip control renders emoji via
-    /// the Segoe UI Emoji font fallback even inside a plain string. Same approach here.
+    /// <summary>
+    /// <see cref="VmService.StatusesChanged"/> handler — the tooltip's event source. Fires on a
+    /// background thread after a refresh has already updated VmService's caches, so it just rebuilds
+    /// the tooltip from those caches (no WMI) and posts it. Together with the always-on
+    /// <see cref="VmService.SubscribeStateWatcher"/> this makes the tooltip track VM state changes
+    /// even while the dashboard is closed (issue #16, conversion #2).
     /// </summary>
-    private async Task UpdateTooltipAsync()
+    private void OnVmStatuses(IReadOnlyList<Models.VmStatus> statuses) => PostTooltipFromCaches();
+
+    /// <summary>
+    /// Rebuilds the tray tooltip from VmService's already-populated caches (no WMI call of its own)
+    /// and posts it to the UI thread — but only when the visible text actually changed, since the
+    /// dashboard's 2.5 s metrics loop also raises <see cref="VmService.StatusesChanged"/> and the
+    /// tooltip content (switch + per-VM IPs) rarely moves. Never throws.
+    /// </summary>
+    private void PostTooltipFromCaches()
     {
         if (_vm is null || _config is null || _trayIcon is null) return;
 
         try
         {
-            var switchName = _monitor?.LastApplied?.VirtualSwitch ?? "No switch";
-            var vmNames    = _config.Current.VirtualMachines.Select(v => v.Name).ToList();
-            // Refresh the WMI caches once (background), then read the per-VM IPs synchronously.
-            await _vm.RefreshOnceAsync().ConfigureAwait(false);
-
-            var lines = new System.Collections.Generic.List<string>
+            var tooltip = BuildTooltipText();
+            lock (_tooltipLock)
             {
-                // 🖥 Desktop-computer + app + version. Bracketed per Espen's request; matches
-                // ChargeKeeper's two-space gap before the version marker.
-                TruncateLine($"\U0001F5A5 {AppInfo.Name}  [{AppInfo.Version}]", 63),
-                // 🔀 twisted arrows (a network "switch" routing traffic) + the active virtual switch.
-                // Chosen over the globe so it doesn't read as a generic computer icon and conveys
-                // switching/spread. Avoid dark/low-contrast emoji (e.g. a plug) on the dark Win11
-                // tooltip background — see ChargeKeeper's App.xaml.cs UpdateTooltip note.
-                TruncateLine($"\U0001F500 Switch: {switchName}", 63),
-            };
-
-            int vmsWithIp = 0;
-            foreach (var name in vmNames)
-            {
-                if (_vm.GetCachedVmIp(name) is { } ip)
-                {
-                    lines.Add(TruncateLine($"\U0001F4E6 {name}: {ip}", 63));   // 📦 box (VM) — distinct from the 🖥 app row; one row per VM with a known IP
-                    vmsWithIp++;
-                }
+                if (tooltip == _lastTooltip) return;   // unchanged — skip the redundant UI post
+                _lastTooltip = tooltip;
             }
-            // Diagnostic breadcrumb: a configured VM with no cached IP is silently omitted from the
-            // tooltip above (by design — there's no "IP unknown" placeholder), which makes a report
-            // like "the VM is running but its IP never shows" otherwise unfalsifiable from the log
-            // alone. This line gives a next occurrence something concrete to compare against
-            // VmService's own state/summary logging.
-            if (vmNames.Count > 0 && vmsWithIp < vmNames.Count)
-                _loggerFactory?.CreateLogger("App").LogDebug(
-                    "Tooltip: {WithIp}/{Total} configured VM(s) have a cached guest IP (switch: {Switch})",
-                    vmsWithIp, vmNames.Count, switchName);
-
-            var tooltip = string.Join("\n", lines);
-            // Win32 balloon-tip tooltip hard limit is 127 UTF-16 chars. Don't split a surrogate pair
-            // (the emoji above are 2 UTF-16 code units each) — a bare index-cut can sever one and
-            // corrupt the tail glyph.
-            const int maxTipLength = 127;
-            if (tooltip.Length > maxTipLength)
-            {
-                int cut = maxTipLength - 1;   // leave room for the ellipsis
-                if (char.IsHighSurrogate(tooltip[cut - 1])) cut--;
-                tooltip = string.Concat(tooltip.AsSpan(0, cut), "…");
-            }
-
             _ui.TryEnqueue(() => _trayIcon.ToolTipText = tooltip);
         }
         catch (Exception ex)
@@ -325,16 +303,83 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Refreshes the tray tooltip on a fixed cadence for the app's whole lifetime, independent of
-    /// <see cref="OnSwitchApplied"/> and of the dashboard's own subscription-gated metrics loop — see
-    /// the call site in <see cref="OnLaunched"/> for why this is needed. Runs until the process exits;
-    /// never throws (<see cref="UpdateTooltipAsync"/> already swallows its own failures).
+    /// Assembles the tray hover tooltip (app name+version, the active virtual switch, each VM's first
+    /// cached IPv4) from VmService's caches. Pure read — no WMI, no UI marshalling.
+    ///
+    /// A tray hover tooltip is plain Win32 text — <see cref="TaskbarIcon.TrayToolTip"/>'s rich
+    /// WinUI-content mechanism does not reliably render on unpackaged WinUI 3 apps (confirmed via
+    /// HavenDV/H.NotifyIcon issues #43/#91/#94 — it silently falls back to plain
+    /// <see cref="TaskbarIcon.ToolTipText"/>). Colour emoji, not FontIcon glyphs, are how ChargeKeeper
+    /// (this app's sibling) puts icons in its tray tooltip: the OS tooltip control renders emoji via
+    /// the Segoe UI Emoji font fallback even inside a plain string. Same approach here.
+    /// </summary>
+    private string BuildTooltipText()
+    {
+        var switchName = _monitor?.LastApplied?.VirtualSwitch ?? "No switch";
+        var vmNames    = _config!.Current.VirtualMachines.Select(v => v.Name).ToList();
+
+        var lines = new System.Collections.Generic.List<string>
+        {
+            // 🖥 Desktop-computer + app + version. Bracketed per Espen's request; matches
+            // ChargeKeeper's two-space gap before the version marker.
+            TruncateLine($"\U0001F5A5 {AppInfo.Name}  [{AppInfo.Version}]", 63),
+            // 🔀 twisted arrows (a network "switch" routing traffic) + the active virtual switch.
+            // Chosen over the globe so it doesn't read as a generic computer icon and conveys
+            // switching/spread. Avoid dark/low-contrast emoji (e.g. a plug) on the dark Win11
+            // tooltip background — see ChargeKeeper's App.xaml.cs UpdateTooltip note.
+            TruncateLine($"\U0001F500 Switch: {switchName}", 63),
+        };
+
+        int vmsWithIp = 0;
+        foreach (var name in vmNames)
+        {
+            if (_vm!.GetCachedVmIp(name) is { } ip)
+            {
+                lines.Add(TruncateLine($"\U0001F4E6 {name}: {ip}", 63));   // 📦 box (VM) — distinct from the 🖥 app row; one row per VM with a known IP
+                vmsWithIp++;
+            }
+        }
+        // Diagnostic breadcrumb: a configured VM with no cached IP is silently omitted from the
+        // tooltip above (by design — there's no "IP unknown" placeholder), which makes a report
+        // like "the VM is running but its IP never shows" otherwise unfalsifiable from the log
+        // alone. This line gives a next occurrence something concrete to compare against
+        // VmService's own state/summary logging.
+        if (vmNames.Count > 0 && vmsWithIp < vmNames.Count)
+            _loggerFactory?.CreateLogger("App").LogDebug(
+                "Tooltip: {WithIp}/{Total} configured VM(s) have a cached guest IP (switch: {Switch})",
+                vmsWithIp, vmNames.Count, switchName);
+
+        return ClampTooltip(string.Join("\n", lines));
+    }
+
+    /// <summary>
+    /// Enforces the Win32 balloon-tip 127-UTF-16-char hard limit without severing a surrogate pair
+    /// (the emoji rows are 2 UTF-16 code units each) — a bare index-cut can corrupt the tail glyph.
+    /// </summary>
+    private static string ClampTooltip(string tooltip)
+    {
+        const int maxTipLength = 127;
+        if (tooltip.Length <= maxTipLength) return tooltip;
+        int cut = maxTipLength - 1;   // leave room for the ellipsis
+        if (char.IsHighSurrogate(tooltip[cut - 1])) cut--;
+        return string.Concat(tooltip.AsSpan(0, cut), "…");
+    }
+
+    /// <summary>
+    /// Slow safety-net refresh, retained after issue #16's move to an event-driven tooltip. VM state
+    /// changes are now pushed by <see cref="VmService.SubscribeStateWatcher"/>; this loop exists only
+    /// for the input no cheap Hyper-V event can push — a guest DHCP <b>IP</b> that appears or changes
+    /// with no VM state transition (Msvm_ComputerSystem raises no event for it). Each tick just
+    /// refreshes VmService's caches; the resulting <see cref="VmService.StatusesChanged"/> re-posts
+    /// the tooltip via <see cref="OnVmStatuses"/>. Kept at 60 s so IP-appearance latency is no worse
+    /// than before; it could be lengthened to trim idle cost at the price of slower IP appearance.
+    /// Runs until the process exits; never throws (RefreshOnceAsync swallows its own failures).
     /// </summary>
     private async Task TooltipRefreshLoopAsync()
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(60));
         while (await timer.WaitForNextTickAsync())
-            await UpdateTooltipAsync();
+            if (_vm is not null) await _vm.RefreshOnceAsync();
     }
 
     /// <summary>
