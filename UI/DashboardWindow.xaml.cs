@@ -31,18 +31,16 @@ public sealed partial class DashboardWindow : Window
     // In-flight/failed power-op message per VM, overlaid on the card's state label (optimistic
     // "Requesting start…", live "Saving (47%)…", or a sticky "Failed: not enough memory").
     private readonly Dictionary<string, VmOperationProgress> _op = new(StringComparer.OrdinalIgnoreCase);
-    // Last state we could actually name for each VM (Running/Off/Paused/Saved/…). Msvm_ComputerSystem
-    // .EnabledState goes briefly unpopulated or reports an unmapped transitional code for a few
-    // seconds after an operation settles (the window where MMC's State/Status columns also blank),
-    // which MapState surfaces as "Unknown"; the card falls back to this so the label never goes blank.
-    private readonly Dictionary<string, string> _lastKnownState = new(StringComparer.OrdinalIgnoreCase);
-    // The state a just-completed op is driving the VM to (Running/Paused/Saved/Off). EnabledState lags
-    // a few seconds behind an op settling; during that window a stale pre-op read from _latest would
-    // otherwise flip the label back to the old state (e.g. a completed Pause showing "Running" until
-    // the next tick). Hold the target until the live read confirms it — or a short grace expires, so a
-    // diverged reality (a shutdown cancelled in the guest) still wins. Makes the card jump straight to
-    // the achieved state on success.
-    private readonly Dictionary<string, (string Target, DateTime Until)> _pendingState = new(StringComparer.OrdinalIgnoreCase);
+    // Per-VM display state that bridges the gaps in the live WMI read. Each entry is (Name, HoldUntil):
+    //   • HoldUntil in the FUTURE → an op just succeeded and we HOLD Name (its achieved state) until the
+    //     lagging EnabledState catches up or the short grace expires, so a stale pre-op read can't flip
+    //     the label back (e.g. a completed Pause briefly showing "Running"). A diverged reality (a
+    //     shutdown cancelled in the guest) wins once the grace lapses. Makes the card jump straight to
+    //     the achieved state on success.
+    //   • HoldUntil in the PAST → Name is just the last state we could actually name, shown as a
+    //     fallback while EnabledState is briefly unpopulated/"Unknown" after an op settles (the window
+    //     where MMC's own State/Status columns also blank), so the label never goes blank.
+    private readonly Dictionary<string, (string Name, DateTime HoldUntil)> _effectiveState = new(StringComparer.OrdinalIgnoreCase);
     private bool _metricsOn;   // true while subscribed to VmService metrics (dashboard shown)
     private bool _priming;     // true during the off-screen composition warm-up (see Prime)
 
@@ -277,13 +275,10 @@ public sealed partial class DashboardWindow : Window
                 _op.Remove(progress.VmName);
                 // Show the achieved state immediately: the real EnabledState can lag several seconds
                 // behind a completed op (blank/"Unknown", or still the pre-op state, in the meantime).
-                // Seed the last-known state AND hold it as the pending target so EffectiveStateName
-                // won't let a stale live read overwrite it before the WMI read catches up.
+                // Hold the achieved state (future HoldUntil) so EffectiveStateName won't let a stale
+                // live read overwrite it before the WMI read catches up.
                 if (SettledState(progress.Kind) is { } settled)
-                {
-                    _lastKnownState[progress.VmName] = settled;
-                    _pendingState[progress.VmName]   = (settled, DateTime.UtcNow.AddSeconds(6));
-                }
+                    _effectiveState[progress.VmName] = (settled, DateTime.UtcNow.AddSeconds(6));
             }
             else _op[progress.VmName] = progress;
 
@@ -427,24 +422,24 @@ public sealed partial class DashboardWindow : Window
     private string EffectiveStateName(string vmName, VmStatus? s)
     {
         var live = s?.State is { Length: > 0 } st && !st.Equals("Unknown", StringComparison.OrdinalIgnoreCase) ? st : null;
+        bool remembered = _effectiveState.TryGetValue(vmName, out var entry);
 
-        // While an op is settling, hold the state it achieved so a stale pre-op read can't flip the
-        // label back; release once the live read catches up to the target, or after the short grace.
-        if (_pendingState.TryGetValue(vmName, out var pending))
-        {
-            if ((live is not null && live.Equals(pending.Target, StringComparison.OrdinalIgnoreCase))
-                || DateTime.UtcNow > pending.Until)
-                _pendingState.Remove(vmName);
-            else
-                return pending.Target;
-        }
+        // A just-succeeded op holds its achieved state (HoldUntil in the future): keep showing it so a
+        // stale pre-op read can't flip the label back — until the live read confirms it (they agree) or
+        // the grace lapses.
+        if (remembered && entry.HoldUntil > DateTime.UtcNow
+            && !string.Equals(live, entry.Name, StringComparison.OrdinalIgnoreCase))
+            return entry.Name;
 
+        // Otherwise a recognised live read wins and becomes the fallback (past HoldUntil); an
+        // unrecognised one ("Unknown"/blank in the post-op settling window) falls back to what we last
+        // named, or "Updating" if we've never seen a good state for this VM.
         if (live is not null)
         {
-            _lastKnownState[vmName] = live;
+            _effectiveState[vmName] = (live, DateTime.MinValue);
             return live;
         }
-        return _lastKnownState.GetValueOrDefault(vmName, "Updating");
+        return remembered ? entry.Name : "Updating";
     }
 
     private static Brush BrushForState(string state) =>
