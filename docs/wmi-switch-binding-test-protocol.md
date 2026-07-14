@@ -137,7 +137,7 @@ host-networking scenarios.
 ## Scenario C — Re-home the external switch to a *different* physical NIC (`UpdateSwitchBindingAsync`, the risky one)
 
 This is the exact operation that historically orphaned host vNICs. **This is the scenario to trust
-least — see Uncertainties U1/U2.**
+least — see Uncertainty U1 (the in-place `ModifyResourceSettings` question).**
 
 1. Start from Scenario B's end state (switch External, bound to **NIC-1**, one host vNIC). Record the
    host vNIC's MAC.
@@ -254,44 +254,72 @@ disposable host, reverting to the pre-test checkpoint is always acceptable.
 
 ---
 
-## 8. Open uncertainties to resolve during testing (be honest — this code is unproven)
+## 8. Uncertainties: resolved-from-docs vs. must-verify-live
 
-These are the specific places the implementation is a best-effort reading of the WMI model rather than
-a validated fact. Each **must** be confirmed or corrected during the run:
+These were the specific places the implementation is a best-effort reading of the WMI model rather than
+a validated fact. Four (U2, U4, U6, U7) are answerable from Microsoft's Hyper-V WMI documentation and are
+now **resolved in code** (they no longer need a host to settle — but a live run should still not *contradict*
+them). Three (U1, U3, U5) genuinely depend on live provider behaviour and **remain gated on the run.**
 
-- **U1 — Can `ModifyResourceSettings` change an external allocation's `HostResource` in place?**
-  Scenario C re-homes by editing the existing external EPASD's `HostResource` and calling
-  `ModifyResourceSettings`. It is *possible* the provider rejects an in-place endpoint change and
-  requires **remove-then-add** of the external port instead. If C fails at the modify, switch to:
-  `RemoveResourceSettings(old external EPASD)` then `AddResourceSettings(new external EPASD)` — but
-  note that remove-then-add of the *external* port has a brief no-egress window (the internal/management
-  vNIC still exists, so the host keeps an IP; it just loses uplink until the add lands). The internal
-  port must still never be touched.
-- **U2 — `GetText` format for the embedded instances.** Add/Modify pass
-  `settingData.GetText(TextFormat.WmiDtd20)`. The Microsoft VM-NIC-connect blog used WmiDtd20 (`2`) and
-  it worked; some samples use `CimDtd20`. If Add/Modify returns an "invalid parameter"/parse error,
-  try `TextFormat.CimDtd20`.
+> **Honesty note:** "resolved from documentation" means the code now matches the documented contract and
+> the reasoning is written down — it does **not** mean the sequence has been executed. The whole branch is
+> still **unvalidated** until the scenarios above pass on a disposable host.
+
+### Still MUST be verified live (do not merge until confirmed)
+
+- **U1 — Can `ModifyResourceSettings` change an external allocation's `HostResource` in place?**  *(the
+  central risk — Scenario C.)* The re-home edits the existing external EPASD's `HostResource` and calls
+  `ModifyResourceSettings`. Microsoft's documented pattern for *changing* a resource is indeed
+  Modify-in-place, and `Set-VMSwitch -NetAdapterName` is understood to do the equivalent — but whether
+  this specific provider accepts an in-place change of the external *endpoint* (vs. requiring
+  remove-then-add) is **not something the docs pin down.** **Validator, check exactly this:** run
+  Scenario C and watch for the modify returning a non-zero/`0x8007…` `ReturnValue` or a job that
+  terminates. **Safest check:** do the *first* C re-home with a VM you don't care about and the host on
+  the out-of-band console; if the modify errors, the fallback is `RemoveResourceSettings(old external
+  EPASD)` → `AddResourceSettings(new external EPASD)` (brief no-egress window; internal/management port
+  still never touched). That fallback is **deliberately not coded yet** — it must not be added
+  speculatively, only once C proves it's needed. This is the one uncertainty that can knock the host off
+  the network, so treat a modify error as "stop, revert to PowerShell," not "quickly try the fallback live."
 - **U3 — Does a device-level duplicate host vNIC map to a second *internal EPASD*?** The repair counts
-  and removes internal EPASDs (`HostResource` → `Msvm_ComputerSystem`). If a dock-induced duplicate
-  shows as two host vNIC **devices** but only **one** EPASD, `RepairHostVNicCore` will report `Ok` and
-  not fix it. If Scenario D shows the duplicate persisting after a repair, fall back to the PowerShell
-  recipe's semantics: remove **all** internal EPASDs then add exactly one back (accepting the brief
-  zero-vNIC window, mitigated by doing it fast and under the lock). Decide based on live evidence.
-- **U4 — Host `Msvm_ComputerSystem` selection.** `AddInternalPort` targets the host as the single
-  `Msvm_ComputerSystem` whose `Caption <> 'Virtual Machine'`. Confirm exactly one such instance exists
-  on the test host and it's the right one (it should be the host itself). If ambiguous, filter by
-  `Caption='Hosting Computer System'` or `Name = <host NetBIOS>`.
-- **U5 — External adapter → `Msvm_ExternalEthernetPort` mapping.** We match by MAC
-  (`PermanentAddress`), then adapter description (`ElementName`). Verify the target adapter actually
-  appears as an `Msvm_ExternalEthernetPort` with a matching `PermanentAddress`; teamed/USB/Wi-Fi
-  adapters can differ. Wi-Fi surfaces as `Msvm_WiFiPort` (classified external) — confirm if a Wi-Fi
-  rule is in scope.
-- **U6 — `Msvm_SettingsDefineState` returns the realized (not a snapshot) settings.** `FindVmSettings`
-  and `SwitchSettings` take the first related settings via `Msvm_SettingsDefineState`. Confirm on a VM
-  that *has checkpoints* that the connect still targets the active configuration.
-- **U7 — `AddResourceSettings` `AffectedConfiguration` as a path string.** We pass
-  `settings.Path.Path` for the reference parameter. If the provider rejects it, pass the
-  `ManagementObject` / a `__PATH` reference form instead.
+  and removes internal EPASDs (`HostResource` → `Msvm_ComputerSystem`). If a dock-induced duplicate shows
+  as two host vNIC **devices** but only **one** EPASD, `RepairHostVNicCore` returns `Ok` and does not fix
+  it. **Validator, check exactly this (read-only, safe):** when you reproduce the duplicate in Scenario D,
+  before repairing, run `Show-SwitchPortsWmi <switch>` and count how many `host=Msvm_ComputerSystem`
+  allocations appear vs. how many `vEthernet (<switch>)` **devices** `Get-VMNetworkAdapter -ManagementOS`
+  reports. **If devices > EPASDs, U3 is confirmed** and the pure-WMI collapse is insufficient — fall back
+  to the §7 device-level recipe (`Set-VMSwitch $false` + `pnputil /remove-device` per leftover vNIC +
+  `Set-VMSwitch $true`). Decide from that count *before* trusting a `Repaired` result.
+- **U5 — External adapter → external-port class mapping.** We match by MAC (`PermanentAddress`), then
+  description (`ElementName`), over `Msvm_ExternalEthernetPort` **only**. **Now documented in code**
+  (`FindExternalPort`): a **Wi-Fi** adapter surfaces as `Msvm_WiFiPort`, *not* `Msvm_ExternalEthernetPort`,
+  so this path **cannot bind a switch onto Wi-Fi** — out of scope for the docked-Ethernet use case, but
+  the validator must **confirm no in-scope rule targets a wireless NIC.** Still verify live that the wired
+  target adapter appears as an `Msvm_ExternalEthernetPort` with a `PermanentAddress` matching the OS MAC
+  (teamed/USB dongles can differ); `Show-SwitchPortsWmi` + `gwmi -ns root\virtualization\v2
+  Msvm_ExternalEthernetPort | ft ElementName,PermanentAddress` is the read-only check.
 
-Only once **every** scenario passes and **U1–U7** are resolved should this branch be considered for
-merge. Until then it stays a prototype: **unvalidated, never run live.**
+### Resolved from Microsoft WMI documentation (code updated; do not need a host to settle)
+
+- **U2 — `GetText` format for embedded instances → `WmiDtd20`.** Every Microsoft Hyper-V WMI sample and
+  the VM-NIC-connect reference use `GetText(TextFormat.WmiDtd20)` for the
+  `Msvm_VirtualSystem/EthernetSwitchManagementService` Add/Modify methods. Kept as-is and commented in
+  `HyperVManager.AddVmResource`/`AddSwitchResource`. *(If — against the docs — a run returns a parse/
+  "invalid parameter" error here, `TextFormat.CimDtd20` is the only alternative to try; but this is
+  documented, so a failure almost certainly means a different problem.)*
+- **U4 — Host `Msvm_ComputerSystem` selection → `Caption='Hosting Computer System'`.** The host partition
+  is documented to carry `Caption = 'Hosting Computer System'` (VMs carry `'Virtual Machine'`), unique per
+  host. `FindHostComputerSystem` now filters on that **positively**, with the old `Caption<>'Virtual
+  Machine'` kept only as a single-instance fallback, and refuses an ambiguous (zero/multiple) match so
+  `AddInternalPort` fails loudly rather than pointing a host vNIC at the wrong system.
+- **U6 — `Msvm_SettingsDefineState` returns the realized (active), not a snapshot, settings.** Documented:
+  checkpoint settings hang off `Msvm_SnapshotOfVirtualSystem`/`Msvm_MostCurrentSnapshotInBranch`, while
+  `Msvm_SettingsDefineState` yields the single realized configuration. So `FindVmSettings`/`SwitchSettings`
+  target the running config even on a checkpointed VM. Commented in `FindVmSettings`. *(A checkpointed-VM
+  connect is still a cheap, safe sanity check to run — Scenario A — but no longer an open unknown.)*
+- **U7 — `AddResourceSettings.AffectedConfiguration` passed as a path string.** The parameter is a
+  `CIM_VirtualSystemSettingData REF`; `System.Management` marshals a REF in-parameter as the target's full
+  object-path string, so `settings.Path.Path` is the correct and standard form (used by every sample).
+  Commented at the call sites.
+
+Only once **every scenario passes** and the live-gated **U1, U3, U5** are confirmed should this branch be
+considered for merge. Until then it stays a prototype: **unvalidated, never run live.**

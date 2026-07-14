@@ -83,10 +83,10 @@ public sealed class HyperVManager : IDisposable
 
             using var connection = FindNicConnection(scope, nic);
 
-            // SKIP guard: the NIC's existing connection already points at this switch.
-            if (connection is not null && switchId.Length > 0 &&
-                connection["HostResource"] is string[] hr && hr.Length > 0 &&
-                hr[0].Contains(switchId, StringComparison.OrdinalIgnoreCase))
+            // SKIP guard: the NIC's existing connection already points at this switch (re-applying an
+            // unchanged connection briefly bounces the guest's network, so it must be a true no-op).
+            if (connection is not null &&
+                SwitchWmiHelpers.ConnectionTargetsSwitch(connection["HostResource"] as string[], switchId))
             {
                 _logger.LogInformation("VM {Vm} already on '{Switch}' — no reconnect", vmName, switchName);
                 return;
@@ -246,20 +246,24 @@ public sealed class HyperVManager : IDisposable
                 var hostPorts   = ports.Where(p => p.Kind == SwitchWmiHelpers.PortKind.Internal).ToList();
                 bool isExternal = ports.Any(p => p.Kind == SwitchWmiHelpers.PortKind.External);
 
-                if (hostPorts.Count > 1)
+                switch (SwitchWmiHelpers.DecideHostVNicRepair(hostPorts.Count, isExternal))
                 {
-                    foreach (var extra in hostPorts.Skip(1))
-                        RemoveSwitchResource(scope, extra.Epasd!);
-                    _logger.LogWarning("Collapsed duplicate host vNIC(s) on switch '{Switch}' to one (was {Count})", switchName, hostPorts.Count);
-                    return HostVNicState.Repaired;
+                    case SwitchWmiHelpers.HostVNicRepair.RemoveExtraInternalPorts:
+                        // Remove down to exactly one — never to zero, so the host keeps a management vNIC
+                        // (and therefore an IP) throughout the collapse.
+                        foreach (var extra in hostPorts.Skip(1))
+                            RemoveSwitchResource(scope, extra.Epasd!);
+                        _logger.LogWarning("Collapsed duplicate host vNIC(s) on switch '{Switch}' to one (was {Count})", switchName, hostPorts.Count);
+                        return HostVNicState.Repaired;
+
+                    case SwitchWmiHelpers.HostVNicRepair.AddInternalPort:
+                        AddInternalPort(scope, settings);
+                        _logger.LogInformation("Restored host sharing on switch '{Switch}'", switchName);
+                        return HostVNicState.Reshared;
+
+                    default:
+                        return HostVNicState.Ok;   // already healthy
                 }
-                if (isExternal && hostPorts.Count == 0)
-                {
-                    AddInternalPort(scope, settings);
-                    _logger.LogInformation("Restored host sharing on switch '{Switch}'", switchName);
-                    return HostVNicState.Reshared;
-                }
-                return HostVNicState.Ok;   // already healthy
             }
             finally { DisposePorts(ports); }
         }
@@ -288,7 +292,10 @@ public sealed class HyperVManager : IDisposable
     {
         using var vm = FindVm(scope, vmName);
         if (vm is null) return null;
-        // Msvm_SettingsDefineState associates a computer system to its single REALIZED settings.
+        // Msvm_SettingsDefineState associates a computer system to its single REALIZED (active) settings —
+        // NOT any checkpoint's snapshot settings (those hang off Msvm_SnapshotOfVirtualSystem /
+        // Msvm_MostCurrentSnapshotInBranch). So on a VM with checkpoints this still targets the running
+        // config (U6, resolved from documentation).
         foreach (ManagementObject vssd in vm.GetRelated("Msvm_VirtualSystemSettingData",
                      "Msvm_SettingsDefineState", null, null, null, null, false, null))
             return vssd;
@@ -401,17 +408,24 @@ public sealed class HyperVManager : IDisposable
     }
 
     /// <summary>Finds the <c>Msvm_ExternalEthernetPort</c> for a physical adapter, preferring a MAC
-    /// (<c>PermanentAddress</c>) match and falling back to the adapter description (<c>ElementName</c>).</summary>
+    /// (<c>PermanentAddress</c>) match and falling back to the adapter description (<c>ElementName</c>).
+    ///
+    /// <para><b>Wi-Fi caveat (U5):</b> this queries only <c>Msvm_ExternalEthernetPort</c>. A wireless
+    /// adapter surfaces as <c>Msvm_WiFiPort</c> instead and would not be found here — binding a switch onto
+    /// Wi-Fi is out of scope for this path (and unusual for this app's docked-Ethernet use case).</para></summary>
     private static ManagementObject? FindExternalPort(ManagementScope scope, string mac, string? desc)
     {
         var candidates = Query(scope, "SELECT * FROM Msvm_ExternalEthernetPort").ToList();
         ManagementObject? byMac = null, byDesc = null;
         foreach (var p in candidates)
         {
-            if (byMac is null && AdapterMatcher.NormalizeMac(p["PermanentAddress"] as string ?? "") == mac)
+            var portMac  = p["PermanentAddress"] as string;
+            var portDesc = p["ElementName"] as string;
+            // A MAC hit is authoritative; only accept a description hit if it's NOT also a MAC mismatch we
+            // could distinguish — but MAC always wins, so track the two independently and prefer byMac.
+            if (byMac is null && SwitchWmiHelpers.ExternalPortMatchesAdapter(portMac, null, mac, null))
                 byMac = p;
-            else if (byDesc is null && desc is not null &&
-                     string.Equals(p["ElementName"] as string, desc, StringComparison.OrdinalIgnoreCase))
+            else if (byDesc is null && SwitchWmiHelpers.ExternalPortMatchesAdapter(null, portDesc, null, desc))
                 byDesc = p;
         }
         var chosen = byMac ?? byDesc;
@@ -420,16 +434,18 @@ public sealed class HyperVManager : IDisposable
     }
 
     /// <summary>True when an external port allocation currently points at the given adapter (MAC or
-    /// description).</summary>
+    /// description). Dereferences the allocation's <c>HostResource</c> path to the live
+    /// <c>Msvm_ExternalEthernetPort</c> and compares; a broken/stale path reads as "no match".</summary>
     private static bool ExternalPortMatches(ManagementScope scope, ManagementObject externalEpasd, string mac, string? desc)
     {
-        if (externalEpasd["HostResource"] is not string[] hr || hr.Length == 0) return false;
+        if (externalEpasd["HostResource"] is not string[] hr || hr.Length == 0 || string.IsNullOrEmpty(hr[0]))
+            return false;
         try
         {
             using var port = new ManagementObject(scope, new ManagementPath(hr[0]), null);
             port.Get();
-            if (AdapterMatcher.NormalizeMac(port["PermanentAddress"] as string ?? "") == mac) return true;
-            return desc is not null && string.Equals(port["ElementName"] as string, desc, StringComparison.OrdinalIgnoreCase);
+            return SwitchWmiHelpers.ExternalPortMatchesAdapter(
+                port["PermanentAddress"] as string, port["ElementName"] as string, mac, desc);
         }
         catch { return false; }
     }
@@ -486,15 +502,39 @@ public sealed class HyperVManager : IDisposable
         return found;
     }
 
-    /// <summary>The host's own <c>Msvm_ComputerSystem</c> (the one that is NOT a Virtual Machine).</summary>
+    /// <summary>
+    /// The host partition's own <c>Msvm_ComputerSystem</c> — the endpoint a management-OS (internal) port
+    /// allocation must reference (U4).
+    ///
+    /// <para>The host is documented to carry <c>Caption = 'Hosting Computer System'</c> (VMs carry
+    /// <c>'Virtual Machine'</c>), and exactly one such instance exists per host, so we match on that
+    /// positively. As a defensive fallback (older/localised providers), we accept the single non-VM
+    /// instance. Returns null only if neither yields a unique host, so <see cref="AddInternalPort"/> fails
+    /// loudly rather than pointing a host vNIC at the wrong computer system.</para></summary>
     private static ManagementObject? FindHostComputerSystem(ManagementScope scope)
     {
-        ManagementObject? found = null;
-        foreach (ManagementObject cs in Query(scope, "SELECT * FROM Msvm_ComputerSystem WHERE Caption<>'Virtual Machine'"))
+        // Primary: the documented positive filter.
+        var host = SingleOrNone(Query(scope, "SELECT * FROM Msvm_ComputerSystem WHERE Caption='Hosting Computer System'"));
+        if (host is not null) return host;
+
+        // Fallback: the single computer system that is not a Virtual Machine.
+        return SingleOrNone(Query(scope, "SELECT * FROM Msvm_ComputerSystem WHERE Caption<>'Virtual Machine'"));
+    }
+
+    /// <summary>Returns the sole object of a query (disposing any others), or null if there are zero or more
+    /// than one — an ambiguous host match must not be silently used.</summary>
+    private static ManagementObject? SingleOrNone(IEnumerable<ManagementObject> objects)
+    {
+        ManagementObject? only = null;
+        int count = 0;
+        foreach (var o in objects)
         {
-            if (found is null) found = cs; else cs.Dispose();
+            count++;
+            if (only is null) only = o; else o.Dispose();
         }
-        return found;
+        if (count == 1) return only;
+        only?.Dispose();
+        return null;
     }
 
     /// <summary>Returns the default (primordial-pool) <c>Msvm_EthernetPortAllocationSettingData</c>
@@ -523,12 +563,18 @@ public sealed class HyperVManager : IDisposable
     }
 
     // Add/Modify on the VM management service (VM-owned port allocations).
+    //
+    // WMI contract (per Msvm_VirtualSystemManagementService docs, resolved from documentation):
+    //  • AffectedConfiguration is a `CIM_VirtualSystemSettingData REF` — System.Management passes a REF
+    //    parameter as the target's full object-path string, so `settings.Path.Path` is correct (U7).
+    //  • ResourceSettings is a string[] of embedded instances rendered with WMI DTD 2.0; every Microsoft
+    //    Hyper-V WMI sample uses `GetText(TextFormat.WmiDtd20)` for this provider (U2).
     private void AddVmResource(ManagementScope scope, ManagementObject vmSettings, ManagementObject settingData)
     {
         using var svc = VmSystemService(scope);
         using var inp = svc.GetMethodParameters("AddResourceSettings");
-        inp["AffectedConfiguration"] = vmSettings.Path.Path;
-        inp["ResourceSettings"]      = new[] { settingData.GetText(TextFormat.WmiDtd20) };
+        inp["AffectedConfiguration"] = vmSettings.Path.Path;   // REF parameter → object-path string (U7)
+        inp["ResourceSettings"]      = new[] { settingData.GetText(TextFormat.WmiDtd20) };  // U2
         using var outp = svc.InvokeMethod("AddResourceSettings", inp, null);
         CheckJob(scope, outp);
     }
