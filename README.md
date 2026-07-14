@@ -249,24 +249,68 @@ the app talks to Hyper-V or the host network.
 - **Language / UI:** C# on **.NET 10**, **WinUI 3 / Windows App SDK** (`net10.0-windows10.0.26100.0`, unpackaged, Mica backdrop)
 - **OS integration:** Win32 P/Invoke (`iphlpapi.dll` `GetBestInterface`, `user32.dll`/`Shcore.dll` for popup positioning + message boxes); VM status/metrics/power/guest IPs via native WMI (`root\virtualization\v2`, `System.Management`) — event-driven, no polling; switch binding + host-vNIC repair still via the Windows-bundled `powershell.exe`; `schtasks.exe` for the auto-start task
 
-### External libraries
+## External libraries
 
-| Package | Version | Author | Purpose | License |
+Every third-party package the app references (`HyperVManagerTray.csproj`):
+
+| Name | Version | Author / Publisher | Purpose | License |
 |---|---|---|---|---|
-| [Microsoft.WindowsAppSDK](https://www.nuget.org/packages/Microsoft.WindowsAppSDK) | 2.1.3 | Microsoft | WinUI 3 framework (windowing, XAML, Mica) | MIT |
-| [Microsoft.Windows.SDK.BuildTools](https://www.nuget.org/packages/Microsoft.Windows.SDK.BuildTools) | 10.0.28000.1839 | Microsoft | Windows SDK build tooling for the App SDK | MIT |
-| [H.NotifyIcon.WinUI](https://github.com/HavenDV/H.NotifyIcon) | 2.4.1 | Dmitry Kolchev (HavenDV) | System-tray icon + native context menu for WinUI 3 | MIT |
+| [Microsoft.WindowsAppSDK](https://www.nuget.org/packages/Microsoft.WindowsAppSDK) | 2.1.3 | Microsoft | WinUI 3 framework (windowing, XAML, Mica) | MS-EULA¹ |
+| [Microsoft.Windows.SDK.BuildTools](https://www.nuget.org/packages/Microsoft.Windows.SDK.BuildTools) | 10.0.28000.1839 | Microsoft | Windows SDK build tooling for the App SDK | MS-EULA¹ |
+| [H.NotifyIcon.WinUI](https://github.com/HavenDV/H.NotifyIcon) | 2.4.1 | HavenDV | System-tray icon + native context menu for WinUI 3 | MIT |
 | [System.Drawing.Common](https://www.nuget.org/packages/System.Drawing.Common) | 10.0.8 | Microsoft | Renders the tray `.ico` at runtime | MIT |
 | [Microsoft.Extensions.Logging](https://www.nuget.org/packages/Microsoft.Extensions.Logging) | 10.0.8 | Microsoft | Logging abstraction; output goes to a small custom file sink | MIT |
 | [System.Management](https://www.nuget.org/packages/System.Management) | 10.0.8 | Microsoft | WMI access (`root\virtualization\v2`) for VM status/power — replaces PowerShell polling | MIT |
 
-All are MIT-licensed. The only non-Microsoft dependency is **H.NotifyIcon.WinUI** (used for the tray icon, the same way the sibling LenovoTray app does).
+¹ The NuGet packages ship under the Microsoft Software License Terms; the Windows App SDK
+*source* is MIT on [GitHub](https://github.com/microsoft/WindowsAppSDK).
+
+The only **non-Microsoft** runtime dependency is **H.NotifyIcon.WinUI** (the tray icon — used the
+same way as in the sibling ChargeKeeper app).
+
+The test project ([`Tests/HyperVManagerTray.Tests.csproj`](Tests/HyperVManagerTray.Tests.csproj))
+additionally uses, at **test time only** (nothing ships in the app):
+
+| Name | Version | Author / Publisher | Purpose | License |
+|---|---|---|---|---|
+| [xunit](https://github.com/xunit/xunit) | 2.9.2 | .NET Foundation & contributors | Unit-test framework | Apache-2.0 |
+| [xunit.runner.visualstudio](https://github.com/xunit/visualstudio.xunit) | 2.8.2 | .NET Foundation & contributors | VSTest adapter so `dotnet test` discovers xUnit tests | Apache-2.0 |
+| [Microsoft.NET.Test.Sdk](https://github.com/microsoft/vstest) | 17.11.1 | Microsoft | .NET test host / VSTest platform | MIT |
+
+## Shared components
+
+The **About** window comes from [0z0-shared](https://github.com/0z00z0/0z0-shared)
+(`ZeroZero.Brand.WinUI.BrandAboutWindow`, MIT) — the shared components library used across
+ZeroZero Software apps, referenced as a sibling-folder `ProjectReference` (no NuGet package yet).
+Local builds resolve it as the sibling `..\0z0-shared` folder; CI checks the repo out into a
+workspace subfolder and points the `ZeroZeroSharedDir` MSBuild property at it (see
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+
+## Credits & acknowledgements
+
+- **[H.NotifyIcon](https://github.com/HavenDV/H.NotifyIcon)** by **HavenDV** (MIT) — the WinUI 3
+  tray-icon support this whole app hangs off. It continues the earlier
+  [Hardcodet NotifyIcon for WPF](https://github.com/hardcodet/wpf-notifyicon) by Philipp Sumi.
+- **[0z0-shared](https://github.com/0z00z0/0z0-shared)** (MIT) — ZeroZero Software's shared
+  branding/components library provides the About window (see [Shared components](#shared-components)).
+- **[fsharplu](https://github.com/microsoft/fsharplu)** (Microsoft, MIT) — its
+  `ManagementHypervisor.fs` was the reference used to pin down the `RequestedState` values a
+  Hyper-V **V2** WMI host actually accepts for `RequestStateChange` (Start/Resume = 2,
+  Pause = 9, Save = 6), where the official docs list V1-only codes that a V2 host rejects.
+  See [`DEVELOPMENT_NOTES.md`](DEVELOPMENT_NOTES.md). No code was copied — used as documentation.
+- **Hyper-V Manager (MMC)** — the event-driven WMI model in `VmService` (push events + async
+  `Msvm_ConcreteJob` tracking instead of polling) deliberately mirrors how Microsoft's own
+  Hyper-V Manager behaves.
+
+**Tooling:** the installer is built with **[Inno Setup](https://jrsoftware.org/isinfo.php)** by
+Jordan Russell & Martijn Laan (free, with attribution under its license), and distributed via
+**[winget](https://github.com/microsoft/winget-cli)** (Microsoft, MIT).
 
 ---
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+[MIT](LICENSE) © ZeroZero Software — see [`LICENSE`](LICENSE) for the full text.
 
 ---
 

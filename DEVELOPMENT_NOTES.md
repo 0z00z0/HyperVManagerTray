@@ -163,7 +163,7 @@ synchronously. Under WinUI this is gone — the dashboard refreshes itself befor
 ## WinUI 3 migration (v2.0 — the app moved off WinForms)
 
 The UI was rewritten in **WinUI 3 / Windows App SDK** (unpackaged, `WindowsPackageType=None`) to
-match the sibling LenovoTray app: Mica dashboard, tray icon via **H.NotifyIcon.WinUI**, per-VM
+match the sibling LenovoTray app (since renamed **ChargeKeeper**): Mica dashboard, tray icon via **H.NotifyIcon.WinUI**, per-VM
 control cards. The network/Hyper-V core (`NetworkMonitor`, `AdapterMatcher`, `HyperVManager`,
 `ConfigManager`, `ProcessRunner`, `StartupManager`) ported **unchanged** — it was already UI-agnostic.
 
