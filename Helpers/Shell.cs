@@ -22,6 +22,16 @@ internal static class Shell
     }
 
     /// <summary>
+    /// Opens a path in its default handler; if that fails, reveals it in Explorer (<c>/select</c>).
+    /// Centralises the "open, else reveal" pattern that was inlined in the Settings window.
+    /// </summary>
+    public static void OpenOrReveal(string path)
+    {
+        if (Open(path)) return;
+        try { Process.Start("explorer.exe", $"/select,\"{path}\""); } catch { /* best-effort */ }
+    }
+
+    /// <summary>
     /// Opens Hyper-V's VM Connection (<c>vmconnect.exe</c>) for the given VM on the local host,
     /// warning the user (once) if the Hyper-V tools aren't installed.
     /// </summary>

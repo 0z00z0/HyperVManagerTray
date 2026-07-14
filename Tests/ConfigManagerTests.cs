@@ -280,6 +280,46 @@ public class ConfigManagerTests : IDisposable
         Assert.Null(vm.OnBridgeLostAction);
     }
 
+    [Fact]
+    public void SetVmBridgeLostAction_NegativeDelay_ClampedToDefault()
+    {
+        var path = WriteTempConfig(new AppConfig { VirtualMachines = [ new VmTarget { Name = "Alpha" } ] });
+        using var mgr = MakeManager(path);
+
+        mgr.SetVmBridgeLostAction("Alpha", "pause", -5);   // hand-edited nonsense → default 30
+
+        Assert.Equal(30, ReadConfig(path).VirtualMachines[0].OnBridgeLostDelaySeconds);
+    }
+
+    [Fact]
+    public void SetVmBridgeLostAction_HugeDelay_CappedToDayMax()
+    {
+        var path = WriteTempConfig(new AppConfig { VirtualMachines = [ new VmTarget { Name = "Alpha" } ] });
+        using var mgr = MakeManager(path);
+
+        mgr.SetVmBridgeLostAction("Alpha", "pause", 999_999);   // capped to a sane [0, 86400]
+
+        Assert.Equal(86_400, ReadConfig(path).VirtualMachines[0].OnBridgeLostDelaySeconds);
+    }
+
+    [Fact]
+    public void SetVmBridgeLostAction_DoesNotMutateLiveVmOnUnchangedNoOp()
+    {
+        // The live VmTarget must never be mutated in place: a no-op call leaves Current's instance
+        // exactly as loaded (a failed write elsewhere can't arm a stale destructive action).
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [ new VmTarget { Name = "Alpha", OnBridgeLostAction = "pause", OnBridgeLostDelaySeconds = 30 } ],
+        });
+        using var mgr = MakeManager(path);
+        var before = mgr.Current.VirtualMachines[0];
+
+        mgr.SetVmBridgeLostAction("Alpha", "pause", 30);   // identical to stored → no-op
+
+        Assert.Same(before, mgr.Current.VirtualMachines[0]);   // no reload, same instance
+        Assert.Equal("pause", before.OnBridgeLostAction);
+    }
+
     // ── Round-trip ────────────────────────────────────────────────────────────
 
     [Fact]

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Models;
 using Microsoft.Extensions.Logging;
 
@@ -182,8 +183,14 @@ public sealed class ConfigManager : IDisposable
     /// Updates the "when the bridged network is lost" action and delay for a managed VM (issue #18 —
     /// surfaced in the Settings window; previously config.json-only).  <paramref name="action"/> is the
     /// canonical string (null = do nothing); <paramref name="delaySeconds"/> is clamped to a sane range.
-    /// Does nothing if no VM with that name is present.
+    /// Does nothing if no VM with that name is present, or if the value is already what's stored.
     /// </summary>
+    /// <remarks>
+    /// The live <see cref="VmTarget"/> is NOT mutated: a fresh copy carrying the new values replaces the
+    /// target in a new list which is only swapped in via <see cref="Load"/> after a successful write —
+    /// so a failed save (e.g. an OneDrive/AV file lock) can't leave <c>_config</c> diverged from disk
+    /// with a possibly-destructive action armed (the NetworkMonitor reads these values live).
+    /// </remarks>
     public void SetVmBridgeLostAction(string vmName, string? action, int delaySeconds)
     {
         var vm = _config.VirtualMachines.FirstOrDefault(v =>
@@ -194,19 +201,39 @@ public sealed class ConfigManager : IDisposable
             return;
         }
 
-        vm.OnBridgeLostAction        = action;
-        vm.OnBridgeLostDelaySeconds  = delaySeconds;
+        // Honour the XML-doc's promise: canonicalise the action and clamp the delay before persisting.
+        var normalizedAction = SettingsOptions.NormalizeBridgeLostAction(action);
+        var normalizedDelay  = SettingsOptions.NormalizeDelaySeconds(delaySeconds);
+
+        if (vm.OnBridgeLostAction == normalizedAction && vm.OnBridgeLostDelaySeconds == normalizedDelay)
+        {
+            _logger.LogInformation("SetVmBridgeLostAction: '{Name}' already {Action} ({Delay}s) — skipping.",
+                vmName, normalizedAction ?? "none", normalizedDelay);
+            return;
+        }
 
         SaveAndReload(
             new AppConfig
             {
-                VirtualMachines = _config.VirtualMachines,
+                VirtualMachines =
+                [
+                    .. _config.VirtualMachines.Select(v =>
+                        v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase)
+                            ? new VmTarget
+                              {
+                                  Name                     = v.Name,
+                                  NicName                  = v.NicName,
+                                  OnBridgeLostAction       = normalizedAction,
+                                  OnBridgeLostDelaySeconds = normalizedDelay,
+                              }
+                            : v)
+                ],
                 Rules           = _config.Rules,
                 Fallback        = _config.Fallback,
                 AdapterNames    = _config.AdapterNames,
                 LogLevel        = _config.LogLevel,
             },
-            $"Bridge-lost action for VM '{vmName}' set to {action ?? "none"} ({delaySeconds}s) and saved to {_configPath}",
+            $"Bridge-lost action for VM '{vmName}' set to {normalizedAction ?? "none"} ({normalizedDelay}s) and saved to {_configPath}",
             $"Failed to save bridge-lost action for VM '{vmName}'");
     }
 

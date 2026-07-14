@@ -40,13 +40,8 @@ public static class SettingsOptions
     }
 
     /// <summary>Index into <see cref="BridgeLostActions"/> for a stored action (0 = "Do nothing" for anything unrecognised).</summary>
-    public static int BridgeLostActionToIndex(string? action)
-    {
-        var norm = NormalizeBridgeLostAction(action);
-        for (int i = 0; i < BridgeLostActions.Count; i++)
-            if (BridgeLostActions[i].Value == norm) return i;
-        return 0;
-    }
+    public static int BridgeLostActionToIndex(string? action) =>
+        IndexOfValue(BridgeLostActions, NormalizeBridgeLostAction(action), fallback: 0);
 
     /// <summary>The canonical action string for a picker index (out-of-range → null).</summary>
     public static string? IndexToBridgeLostAction(int index) =>
@@ -87,14 +82,23 @@ public static class SettingsOptions
     ];
 
     /// <summary>Index into <see cref="LogLevels"/> for a level (unknown → Debug's index).</summary>
-    public static int LogLevelToIndex(LogLevel level)
-    {
-        for (int i = 0; i < LogLevels.Count; i++)
-            if (LogLevels[i].Value == level) return i;
-        return LogLevelToIndex(LogLevel.Debug);
-    }
+    public static int LogLevelToIndex(LogLevel level) =>
+        IndexOfValue(LogLevels, level, fallback: IndexOfValue(LogLevels, LogLevel.Debug, fallback: 0));
 
     /// <summary>The <see cref="LogLevel"/> for a picker index (out-of-range → Debug).</summary>
     public static LogLevel IndexToLogLevel(int index) =>
         index >= 0 && index < LogLevels.Count ? LogLevels[index].Value : LogLevel.Debug;
+
+    // ── Shared ──────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Linear index of the first option whose <c>Value</c> equals <paramref name="value"/>, else
+    /// <paramref name="fallback"/>. Backs the *ToIndex mappers so the twin search loops don't drift.
+    /// </summary>
+    private static int IndexOfValue<T>(IReadOnlyList<(string Label, T Value)> options, T value, int fallback)
+    {
+        for (int i = 0; i < options.Count; i++)
+            if (EqualityComparer<T>.Default.Equals(options[i].Value, value)) return i;
+        return fallback;
+    }
 }
