@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Window
+    x:Class="HyperVManagerTray.UI.SettingsWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop Kind="BaseAlt" />
+    </Window.SystemBackdrop>
+
+    <!-- Sections are built in code-behind (BuildSections) — same code-first approach as
+         DashboardWindow, so the whole app shares one card idiom rather than pulling in a
+         separate settings-control toolkit. The window is a real titled, resizable, taskbar-
+         visible window (NOT the borderless auto-dismiss popup the tray dialogs use): it must
+         stay open while the user edits and alt-tabs away. -->
+    <ScrollViewer x:Name="RootScroll" VerticalScrollBarVisibility="Auto"
+                  Padding="24,20,24,24">
+        <StackPanel x:Name="RootPanel" Spacing="22" MaxWidth="660" HorizontalAlignment="Left"/>
+    </ScrollViewer>
+</Window>

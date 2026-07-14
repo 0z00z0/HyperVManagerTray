@@ -20,6 +20,8 @@
     <Compile Include="..\Helpers\IconGenerator.cs"    Link="Linked\IconGenerator.cs" />
     <Compile Include="..\Helpers\NativeMethods.cs"    Link="Linked\NativeMethods.cs" />
     <Compile Include="..\Helpers\AppInfo.cs"          Link="Linked\AppInfo.cs" />
+    <!-- Pure config↔UI mapping for the Settings window (issue #18). Only depends on LogLevel; no WinUI. -->
+    <Compile Include="..\Helpers\SettingsOptions.cs"  Link="Linked\SettingsOptions.cs" />
     <!-- Pure adapter-rename rules (validation, uniqueness, GUID→device resolution). No Win32 deps,
          so it links cleanly; the device-mutating AdapterRenamer.cs is deliberately NOT linked. -->
     <Compile Include="..\Helpers\AdapterNameRules.cs" Link="Linked\AdapterNameRules.cs" />

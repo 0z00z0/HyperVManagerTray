@@ -153,6 +153,64 @@ public sealed class ConfigManager : IDisposable
     }
 
     /// <summary>
+    /// Persists a new <see cref="AppConfig.LogLevel"/> to config.json and reloads (issue #18 —
+    /// surfaced in the Settings window; previously config.json-only).  A no-op when the level is
+    /// unchanged, so opening Settings and closing it doesn't needlessly rewrite the file.
+    /// </summary>
+    public void UpdateLogLevel(LogLevel level)
+    {
+        if (_config.LogLevel == level)
+        {
+            _logger.LogInformation("UpdateLogLevel: already {Level} — skipping.", level);
+            return;
+        }
+
+        SaveAndReload(
+            new AppConfig
+            {
+                VirtualMachines = _config.VirtualMachines,
+                Rules           = _config.Rules,
+                Fallback        = _config.Fallback,
+                AdapterNames    = _config.AdapterNames,
+                LogLevel        = level,
+            },
+            $"Log level set to {level} and saved to {_configPath}",
+            $"Failed to save log level {level}");
+    }
+
+    /// <summary>
+    /// Updates the "when the bridged network is lost" action and delay for a managed VM (issue #18 —
+    /// surfaced in the Settings window; previously config.json-only).  <paramref name="action"/> is the
+    /// canonical string (null = do nothing); <paramref name="delaySeconds"/> is clamped to a sane range.
+    /// Does nothing if no VM with that name is present.
+    /// </summary>
+    public void SetVmBridgeLostAction(string vmName, string? action, int delaySeconds)
+    {
+        var vm = _config.VirtualMachines.FirstOrDefault(v =>
+            v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase));
+        if (vm is null)
+        {
+            _logger.LogInformation("SetVmBridgeLostAction: '{Name}' not found in config — skipping.", vmName);
+            return;
+        }
+
+        vm.OnBridgeLostAction        = action;
+        vm.OnBridgeLostDelaySeconds  = delaySeconds;
+
+        SaveAndReload(
+            new AppConfig
+            {
+                VirtualMachines = _config.VirtualMachines,
+                Rules           = _config.Rules,
+                Fallback        = _config.Fallback,
+                AdapterNames    = _config.AdapterNames,
+                LogLevel        = _config.LogLevel,
+            },
+            $"Bridge-lost action for VM '{vmName}' set to {action ?? "none"} ({delaySeconds}s) and saved to {_configPath}",
+            $"Failed to save bridge-lost action for VM '{vmName}'");
+    }
+
+    /// <summary>
     /// Inserts or updates the saved-original-name record for a renamed adapter (issue #15), keyed by
     /// <see cref="AdapterNameOverride.DeviceInstanceId"/>, then saves and reloads.  Any existing record
     /// for the same device is replaced (so a re-rename updates <c>CurrentFriendlyName</c> without

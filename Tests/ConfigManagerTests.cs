@@ -184,6 +184,102 @@ public class ConfigManagerTests : IDisposable
         Assert.Equal("TestVM", mgr.Current.VirtualMachines[0].Name);
     }
 
+    // ── UpdateLogLevel (issue #18) ──────────────────────────────────────────────
+
+    [Fact]
+    public void UpdateLogLevel_PersistsNewLevel()
+    {
+        var path = WriteTempConfig(new AppConfig { LogLevel = Microsoft.Extensions.Logging.LogLevel.Debug });
+        using var mgr = MakeManager(path);
+
+        mgr.UpdateLogLevel(Microsoft.Extensions.Logging.LogLevel.Warning);
+
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Warning, ReadConfig(path).LogLevel);
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Warning, mgr.Current.LogLevel);
+    }
+
+    [Fact]
+    public void UpdateLogLevel_PreservesVmsAndRules()
+    {
+        var initial = new AppConfig
+        {
+            VirtualMachines = [ new VmTarget { Name = "Alpha", NicName = "NIC 1" } ],
+            Rules           = [ new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "Bridged" } ],
+            Fallback        = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Alpha"] },
+            LogLevel        = Microsoft.Extensions.Logging.LogLevel.Debug,
+        };
+        var path = WriteTempConfig(initial);
+        using var mgr = MakeManager(path);
+
+        mgr.UpdateLogLevel(Microsoft.Extensions.Logging.LogLevel.Error);
+
+        var saved = ReadConfig(path);
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Error, saved.LogLevel);
+        Assert.Single(saved.VirtualMachines);
+        Assert.Single(saved.Rules);
+        Assert.Equal("Default Switch", saved.Fallback.VirtualSwitch);
+    }
+
+    // ── SetVmBridgeLostAction (issue #18) ───────────────────────────────────────
+
+    [Fact]
+    public void SetVmBridgeLostAction_PersistsActionAndDelay()
+    {
+        var initial = new AppConfig
+        {
+            VirtualMachines = [ new VmTarget { Name = "Alpha" } ],
+        };
+        var path = WriteTempConfig(initial);
+        using var mgr = MakeManager(path);
+
+        mgr.SetVmBridgeLostAction("Alpha", "pause", 60);
+
+        var vm = Assert.Single(ReadConfig(path).VirtualMachines);
+        Assert.Equal("pause", vm.OnBridgeLostAction);
+        Assert.Equal(60,       vm.OnBridgeLostDelaySeconds);
+    }
+
+    [Fact]
+    public void SetVmBridgeLostAction_CaseInsensitiveNameMatch()
+    {
+        var path = WriteTempConfig(new AppConfig { VirtualMachines = [ new VmTarget { Name = "Alpha" } ] });
+        using var mgr = MakeManager(path);
+
+        mgr.SetVmBridgeLostAction("alpha", "save", 10);
+
+        Assert.Equal("save", ReadConfig(path).VirtualMachines[0].OnBridgeLostAction);
+    }
+
+    [Fact]
+    public void SetVmBridgeLostAction_NullAction_ClearsIt()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [ new VmTarget { Name = "Alpha", OnBridgeLostAction = "shutdown", OnBridgeLostDelaySeconds = 5 } ],
+        });
+        using var mgr = MakeManager(path);
+
+        mgr.SetVmBridgeLostAction("Alpha", null, 30);
+
+        var vm = ReadConfig(path).VirtualMachines[0];
+        Assert.Null(vm.OnBridgeLostAction);
+        Assert.Equal(30, vm.OnBridgeLostDelaySeconds);
+    }
+
+    [Fact]
+    public void SetVmBridgeLostAction_UnknownVm_IsNoOp()
+    {
+        var path = WriteTempConfig(new AppConfig { VirtualMachines = [ new VmTarget { Name = "Alpha" } ] });
+        using var mgr = MakeManager(path);
+
+        mgr.SetVmBridgeLostAction("Missing", "pause", 10);   // must not throw or add a VM
+
+        var saved = ReadConfig(path);
+        var vm = Assert.Single(saved.VirtualMachines);
+        Assert.Equal("Alpha", vm.Name);
+        Assert.Null(vm.OnBridgeLostAction);
+    }
+
     // ── Round-trip ────────────────────────────────────────────────────────────
 
     [Fact]
