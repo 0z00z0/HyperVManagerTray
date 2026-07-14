@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Text;
 using Microsoft.UI.Windowing;
@@ -47,6 +46,14 @@ internal sealed partial class SettingsWindow : Window
     // synchronously to completion before anything else can fire.
     private bool _updating;
 
+    // Set once the user physically flips the startup toggle, so the initial background schtasks read
+    // (which finishes ~1-2 s later) can't clobber a deliberate user action with a now-stale value.
+    private bool _userToggledStartup;
+
+    // Set in the Closed handler so any in-flight background callback (schtasks read, adapter
+    // enumeration, an error toast) early-returns instead of touching a torn-down window.
+    private bool _closed;
+
     private ComboBox?     _logLevelCombo;
     private ToggleSwitch? _startupToggle;
 
@@ -63,18 +70,41 @@ internal sealed partial class SettingsWindow : Window
             ?? throw new InvalidOperationException("SettingsWindow must be created on the UI thread.");
         _renameFlow = new AdapterRenameFlow(_config, _ui);
 
+        Closed += OnClosed;
+
         // NOTHING below may throw out of the constructor: the caller only assigns the singleton and
         // calls Activate() once the ctor returns, so a throw here would leave an orphaned, never-shown
         // window (the "Settings never appears" failure the sibling app hit on a multi-monitor host).
         // Each step is best-effort and degrades independently.
         SafeInit(nameof(ConfigureChrome), ConfigureChrome);
-        SafeInit(nameof(BuildSections),   BuildSections);
+        SafeInit(nameof(BuildSections),   BuildSections, onFail: ShowLoadFailurePlaceholder);
     }
 
-    private static void SafeInit(string step, Action body)
+    private static void SafeInit(string step, Action body, Action? onFail = null)
     {
         try { body(); }
-        catch (Exception ex) { AppInfo.AppendCrashLogLine("SettingsWindow", $"ctor step '{step}': {ex}"); }
+        catch (Exception ex)
+        {
+            AppInfo.AppendCrashLogLine("SettingsWindow", $"ctor step '{step}': {ex}");
+            try { onFail?.Invoke(); } catch { /* the fallback must never throw out of the ctor either */ }
+        }
+    }
+
+    // Leaves the user with a visible explanation instead of a blank window if section building throws
+    // part-way. Uses no theme brushes, so it can't itself fault; adds no window activation, so it can't
+    // reintroduce the orphaned-never-shown-window risk SafeInit exists to prevent.
+    private void ShowLoadFailurePlaceholder() => RootPanel.Children.Add(new TextBlock
+    {
+        Text         = "Settings could not be fully loaded. See the crash log for details.",
+        TextWrapping = TextWrapping.Wrap,
+        Margin       = new Thickness(0, 8, 0, 0),
+    });
+
+    private void OnClosed(object sender, WindowEventArgs e)
+    {
+        _closed = true;
+        if (_startupToggle is not null) _startupToggle.Toggled         -= OnStartupToggled;
+        if (_logLevelCombo is not null) _logLevelCombo.SelectionChanged -= OnLogLevelChanged;
     }
 
     // ── Window chrome / placement ────────────────────────────────────────────────
@@ -140,12 +170,8 @@ internal sealed partial class SettingsWindow : Window
 
         // Log level — previously only editable by hand in config.json.
         _logLevelCombo = new ComboBox { MinWidth = 200 };
-        WithUpdatingSuppressed(() =>
-        {
-            foreach (var (label, _) in SettingsOptions.LogLevels)
-                _logLevelCombo.Items.Add(new ComboBoxItem { Content = label });
-            _logLevelCombo.SelectedIndex = SettingsOptions.LogLevelToIndex(_config.Current.LogLevel);
-        });
+        WithUpdatingSuppressed(() => PopulateLabelCombo(
+            _logLevelCombo, SettingsOptions.LogLevels, SettingsOptions.LogLevelToIndex(_config.Current.LogLevel)));
         _logLevelCombo.SelectionChanged += OnLogLevelChanged;
         panel.Children.Add(SettingRow(
             "Log level",
@@ -160,15 +186,21 @@ internal sealed partial class SettingsWindow : Window
         bool enabled;
         try   { enabled = _startup.IsEnabled; }
         catch { enabled = false; }
-        _ui.TryEnqueue(() => WithUpdatingSuppressed(() =>
+        _ui.TryEnqueue(() =>
         {
-            if (_startupToggle is not null) _startupToggle.IsOn = enabled;
-        }));
+            // Don't clobber a torn-down window, nor a value the user has since set by hand.
+            if (_closed || _userToggledStartup) return;
+            WithUpdatingSuppressed(() =>
+            {
+                if (_startupToggle is not null) _startupToggle.IsOn = enabled;
+            });
+        });
     });
 
     private void OnStartupToggled(object sender, RoutedEventArgs e)
     {
         if (_updating || _startupToggle is null) return;
+        _userToggledStartup = true;   // a real user action — the initial load must not overwrite it
         bool wanted = _startupToggle.IsOn;
         Task.Run(() =>
         {
@@ -182,18 +214,26 @@ internal sealed partial class SettingsWindow : Window
             }
             catch (Exception ex)
             {
-                _ui.TryEnqueue(() => NativeMethods.Warn(
-                    $"Could not change the startup setting:\n\n{ex.Message}", AppInfo.Name));
+                _ui.TryEnqueue(() =>
+                {
+                    if (_closed) return;
+                    NativeMethods.Warn(
+                        $"Could not change the startup setting:\n\n{ex.Message}", AppInfo.Name);
+                });
             }
 
             // Re-sync to the task's real state (the write may have failed or been overridden).
             bool actual;
             try   { actual = _startup.IsEnabled; }
             catch { actual = false; }
-            _ui.TryEnqueue(() => WithUpdatingSuppressed(() =>
+            _ui.TryEnqueue(() =>
             {
-                if (_startupToggle is not null) _startupToggle.IsOn = actual;
-            }));
+                if (_closed) return;
+                WithUpdatingSuppressed(() =>
+                {
+                    if (_startupToggle is not null) _startupToggle.IsOn = actual;
+                });
+            });
         });
     }
 
@@ -206,8 +246,12 @@ internal sealed partial class SettingsWindow : Window
             try { _config.UpdateLogLevel(level); }
             catch (Exception ex)
             {
-                _ui.TryEnqueue(() => NativeMethods.Warn(
-                    $"Could not save the log level:\n\n{ex.Message}", AppInfo.Name));
+                _ui.TryEnqueue(() =>
+                {
+                    if (_closed) return;
+                    NativeMethods.Warn(
+                        $"Could not save the log level:\n\n{ex.Message}", AppInfo.Name);
+                });
             }
         });
     }
@@ -246,9 +290,8 @@ internal sealed partial class SettingsWindow : Window
 
         WithUpdatingSuppressed(() =>
         {
-            foreach (var (label, _) in SettingsOptions.BridgeLostActions)
-                actionCombo.Items.Add(new ComboBoxItem { Content = label });
-            actionCombo.SelectedIndex = SettingsOptions.BridgeLostActionToIndex(action);
+            PopulateLabelCombo(actionCombo, SettingsOptions.BridgeLostActions,
+                SettingsOptions.BridgeLostActionToIndex(action));
 
             LoadDelayCombo(delayCombo, SettingsOptions.NormalizeDelaySeconds(delaySeconds));
             delayCombo.IsEnabled = SettingsOptions.NormalizeBridgeLostAction(action) is not null;
@@ -265,8 +308,12 @@ internal sealed partial class SettingsWindow : Window
                 try { _config.SetVmBridgeLostAction(vmName, act, delay); }
                 catch (Exception ex)
                 {
-                    _ui.TryEnqueue(() => NativeMethods.Warn(
-                        $"Could not save the setting for {vmName}:\n\n{ex.Message}", AppInfo.Name));
+                    _ui.TryEnqueue(() =>
+                    {
+                        if (_closed) return;
+                        NativeMethods.Warn(
+                            $"Could not save the setting for {vmName}:\n\n{ex.Message}", AppInfo.Name);
+                    });
                 }
             });
         }
@@ -306,31 +353,16 @@ internal sealed partial class SettingsWindow : Window
             "Rename a physical network adapter's Windows description (Device Manager, Hyper-V Manager, " +
             "Settings). Renaming briefly drops that adapter's connection."));
 
-        IReadOnlyList<PhysicalAdapterInfo> adapters;
-        try   { adapters = AdapterMatcher.GetPhysicalAdapters(); }
-        catch { adapters = []; }
-
-        if (adapters.Count == 0)
-        {
-            panel.Children.Add(Card(new TextBlock { Text = "No network adapters found.", Opacity = 0.75 }));
-        }
-        else
-        {
-            foreach (var a in adapters)
-            {
-                var adapter = a;   // capture per iteration
-                var label = string.IsNullOrWhiteSpace(a.InterfaceAlias) || a.InterfaceAlias == a.Description
-                    ? a.Description
-                    : $"{a.InterfaceAlias} — {a.Description}";
-
-                var renameBtn = new Button { Content = "Rename…" };
-                renameBtn.Click += (_, _) => _ = _renameFlow.RunAsync(adapter);
-                panel.Children.Add(SettingRow(label, adapter.Mac, renameBtn));
-            }
-        }
+        // Adapter enumeration (AdapterMatcher.GetPhysicalAdapters) hits WMI/NDIS and can stall on a
+        // flaky USB-Ethernet dock. Never do it on the UI thread inside the ctor (that would freeze the
+        // Settings window open — the "nothing happens" symptom). Show a placeholder now and fill the
+        // rows in from a background thread when ready.
+        var loading = Card(new TextBlock { Text = "Loading adapters…", Opacity = 0.75 });
+        panel.Children.Add(loading);
+        LoadAdaptersAsync(panel, loading);
 
         // Fallback-switch info (read-only — editing switch names freely could break binding; this
-        // just surfaces what config.json currently uses when no rule matches).
+        // just surfaces what config.json currently uses when no rule matches). Cheap: read from config.
         var fb = _config.Current.Fallback;
         var fbTargets = fb.TargetVms.Count > 0 ? string.Join(", ", fb.TargetVms) : "none";
         panel.Children.Add(SettingRow(
@@ -347,6 +379,57 @@ internal sealed partial class SettingsWindow : Window
         return panel;
     }
 
+    /// <summary>
+    /// Enumerates physical adapters off the UI thread, then marshals back to replace the
+    /// "Loading adapters…" placeholder with the built rows (or a "none found" card). Wrapped so a
+    /// enumeration or build failure can neither crash the ctor nor leave the placeholder stuck.
+    /// </summary>
+    private void LoadAdaptersAsync(StackPanel panel, UIElement placeholder) => Task.Run(() =>
+    {
+        IReadOnlyList<PhysicalAdapterInfo> adapters;
+        try   { adapters = AdapterMatcher.GetPhysicalAdapters(); }
+        catch { adapters = []; }
+
+        _ui.TryEnqueue(() =>
+        {
+            if (_closed) return;
+            try
+            {
+                int idx = panel.Children.IndexOf(placeholder);
+                if (idx < 0) return;                 // section rebuilt/removed underneath us
+                panel.Children.RemoveAt(idx);
+
+                var rows = BuildAdapterRows(adapters);
+                for (int i = 0; i < rows.Count; i++)
+                    panel.Children.Insert(idx + i, rows[i]);
+            }
+            catch (Exception ex)
+            {
+                AppInfo.AppendCrashLogLine("SettingsWindow", $"LoadAdaptersAsync: {ex}");
+            }
+        });
+    });
+
+    private List<UIElement> BuildAdapterRows(IReadOnlyList<PhysicalAdapterInfo> adapters)
+    {
+        if (adapters.Count == 0)
+            return [Card(new TextBlock { Text = "No network adapters found.", Opacity = 0.75 })];
+
+        var rows = new List<UIElement>(adapters.Count);
+        foreach (var a in adapters)
+        {
+            var adapter = a;   // capture per iteration
+            var label = string.IsNullOrWhiteSpace(a.InterfaceAlias) || a.InterfaceAlias == a.Description
+                ? a.Description
+                : $"{a.InterfaceAlias} — {a.Description}";
+
+            var renameBtn = new Button { Content = "Rename…" };
+            renameBtn.Click += (_, _) => _ = _renameFlow.RunAsync(adapter);
+            rows.Add(SettingRow(label, adapter.Mac, renameBtn));
+        }
+        return rows;
+    }
+
     // ── Files & maintenance ──────────────────────────────────────────────────────
 
     private UIElement BuildMaintenanceSection()
@@ -356,10 +439,10 @@ internal sealed partial class SettingsWindow : Window
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
 
         var openConfig = new Button { Content = "Open config.json" };
-        openConfig.Click += (_, _) => OpenPath(ConfigManager.GetConfigPath());
+        openConfig.Click += (_, _) => Shell.OpenOrReveal(ConfigManager.GetConfigPath());
 
         var openLog = new Button { Content = "Open log file" };
-        openLog.Click += (_, _) => OpenPath(AppInfo.LogFile);
+        openLog.Click += (_, _) => Shell.OpenOrReveal(AppInfo.LogFile);
 
         var reload = new Button { Content = "Reload config from disk" };
         reload.Click += (_, _) => Task.Run(() =>
@@ -400,7 +483,7 @@ internal sealed partial class SettingsWindow : Window
     /// </summary>
     private void RefreshValuesFromConfig()
     {
-        if (_logLevelCombo is null) return;
+        if (_closed || _logLevelCombo is null) return;
         WithUpdatingSuppressed(() =>
             _logLevelCombo.SelectedIndex = SettingsOptions.LogLevelToIndex(_config.Current.LogLevel));
     }
@@ -408,6 +491,20 @@ internal sealed partial class SettingsWindow : Window
     // ── Small view helpers (shared card idiom, matching DashboardWindow) ──────────
 
     private static Brush Brush(string key) => (Brush)Application.Current.Resources[key];
+
+    /// <summary>
+    /// Fills a ComboBox with one <see cref="ComboBoxItem"/> per option label and selects
+    /// <paramref name="selectedIndex"/>. Shared by the log-level and per-VM action pickers so their
+    /// populate logic can't drift. (The delay picker uses <see cref="LoadDelayCombo"/> — its items
+    /// carry an int Tag and support a custom entry, so it isn't a fit for this.)
+    /// </summary>
+    private static void PopulateLabelCombo<T>(ComboBox combo, IReadOnlyList<(string Label, T Value)> options, int selectedIndex)
+    {
+        combo.Items.Clear();
+        foreach (var (label, _) in options)
+            combo.Items.Add(new ComboBoxItem { Content = label });
+        combo.SelectedIndex = selectedIndex;
+    }
 
     private static StackPanel Section(string title)
     {
@@ -478,12 +575,5 @@ internal sealed partial class SettingsWindow : Window
         _updating = true;
         try { apply(); }
         finally { _updating = false; }
-    }
-
-    // Open a file in its default handler; if that fails, reveal it in Explorer (same as the old tray).
-    private static void OpenPath(string path)
-    {
-        if (Shell.Open(path)) return;
-        try { Process.Start("explorer.exe", $"/select,\"{path}\""); } catch { /* ignore */ }
     }
 }
