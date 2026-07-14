@@ -40,4 +40,37 @@ public class FileLoggerTests : IDisposable
 
         Assert.Null(ex);
     }
+
+    // IsEnabled: every level is accepted except None (the provider defers all other filtering to
+    // the LoggerFactory's configured minimum level).
+    [Theory]
+    [InlineData(LogLevel.Trace,       true)]
+    [InlineData(LogLevel.Debug,       true)]
+    [InlineData(LogLevel.Information, true)]
+    [InlineData(LogLevel.Warning,     true)]
+    [InlineData(LogLevel.Error,       true)]
+    [InlineData(LogLevel.Critical,    true)]
+    [InlineData(LogLevel.None,        false)]
+    public void Logger_IsEnabled_TrueForEveryLevelExceptNone(LogLevel level, bool expected)
+    {
+        using var p = new FileLoggerProvider(_path);
+        var logger = p.CreateLogger("cat");
+        Assert.Equal(expected, logger.IsEnabled(level));
+    }
+
+    // Log() must no-op (not throw, not write) when the level is disabled (None) — BeginScope
+    // returning null must also not blow up a caller that disposes it.
+    [Fact]
+    public void Logger_LogWithDisabledLevel_DoesNotWrite()
+    {
+        using (var p = new FileLoggerProvider(_path))
+        {
+            var logger = p.CreateLogger("cat");
+            using var scope = logger.BeginScope("scope-state");
+            logger.Log(LogLevel.None, new EventId(1), "state", null, (s, e) => "should not appear");
+        }
+
+        var text = File.Exists(_path) ? File.ReadAllText(_path) : "";
+        Assert.DoesNotContain("should not appear", text);
+    }
 }

@@ -360,17 +360,23 @@ public static class AdapterMatcher
     /// suffix that appears in <see cref="NetworkInterface.Description"/> for some adapters,
     /// e.g. "Lenovo USB Ethernet-WFP Native MAC Layer LightWeight Filter-0000" → "Lenovo USB Ethernet".
     /// </summary>
-    private static string FriendlyAdapterName(NetworkInterface nic)
+    private static string FriendlyAdapterName(NetworkInterface nic) => StripFilterSuffix(nic.Description);
+
+    /// <summary>
+    /// Strips the Windows filter-driver suffix from a raw adapter <c>Description</c> string, e.g.
+    /// "Lenovo USB Ethernet-WFP Native MAC Layer LightWeight Filter-0000" → "Lenovo USB Ethernet".
+    /// Pure string logic extracted from <see cref="FriendlyAdapterName"/> so it can be unit-tested
+    /// without a live <see cref="NetworkInterface"/>. Returns the input unchanged when no marker is
+    /// found, or when a marker occurs at index 0 (nothing meaningful to keep as the base name).
+    /// </summary>
+    internal static string StripFilterSuffix(string description)
     {
-        var desc = nic.Description;
-        // Windows appends filter-driver names separated by a dash.  Strip from the first
-        // occurrence of any known filter-chain marker so only the base device name remains.
         foreach (var marker in new[] { "-WFP ", " - WFP ", "-NDIS ", " - NDIS " })
         {
-            var idx = desc.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-            if (idx > 0) return desc[..idx].Trim();
+            var idx = description.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (idx > 0) return description[..idx].Trim();
         }
-        return desc;
+        return description;
     }
 
     // Formats "AABBCCDDEEFF" → "AA:BB:CC:DD:EE:FF"
@@ -385,19 +391,30 @@ public static class AdapterMatcher
     {
         try
         {
-            var maskBytes = unicast.IPv4Mask.GetAddressBytes();
-            var prefixLen = 0;
-            foreach (var b in maskBytes) { var v = (int)b; while (v != 0) { prefixLen += v & 1; v >>= 1; } }
-
-            var ipBytes  = unicast.Address.GetAddressBytes();
-            var netBytes = ipBytes.Zip(maskBytes, (a, b) => (byte)(a & b)).ToArray();
-            return $"{new IPAddress(netBytes)}/{prefixLen}";
+            return CalculateCidrFromBytes(unicast.Address.GetAddressBytes(), unicast.IPv4Mask.GetAddressBytes());
         }
         catch
         {
             var parts = unicast.Address.ToString().Split('.');
             return $"{parts[0]}.{parts[1]}.{parts[2]}.0/24";
         }
+    }
+
+    /// <summary>
+    /// Computes the "network/prefixLen" CIDR string from a raw IPv4 address and subnet mask (both
+    /// 4-byte, network order). Pure byte-array logic extracted from <see cref="CalculateCidr"/> so it
+    /// can be unit-tested without constructing a live <see cref="UnicastIPAddressInformation"/> (which
+    /// has no public constructor). Counts mask bits regardless of contiguity — a non-standard,
+    /// non-contiguous mask (e.g. 255.0.255.0) still yields a bit count, matching the production
+    /// behaviour rather than validating mask well-formedness.
+    /// </summary>
+    internal static string CalculateCidrFromBytes(byte[] ipBytes, byte[] maskBytes)
+    {
+        var prefixLen = 0;
+        foreach (var b in maskBytes) { var v = (int)b; while (v != 0) { prefixLen += v & 1; v >>= 1; } }
+
+        var netBytes = ipBytes.Zip(maskBytes, (a, b) => (byte)(a & b)).ToArray();
+        return $"{new IPAddress(netBytes)}/{prefixLen}";
     }
 
     /// <summary>
