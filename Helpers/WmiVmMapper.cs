@@ -1,4 +1,3 @@
-using System.Globalization;
 using HyperVManagerTray.Models;
 
 namespace HyperVManagerTray.Helpers;
@@ -9,7 +8,8 @@ namespace HyperVManagerTray.Helpers;
 /// the mapping (unit codes, MB/ms conversions, state names) can be unit-tested without a host.
 ///
 /// Sources: <c>Msvm_ComputerSystem.EnabledState</c> / <c>Msvm_SummaryInformation</c> (ProcessorLoad,
-/// MemoryUsage [MB], Uptime [ms], EnabledState, StatusDescriptions) and <c>Msvm_ConcreteJob</c>.
+/// MemoryUsage [MB], Uptime [ms]) and the VM's active <c>Msvm_ConcreteJob</c> (ElementName +
+/// PercentComplete) — the latter is what Hyper-V Manager's Status column shows for a transition.
 /// </summary>
 public static class WmiVmMapper
 {
@@ -26,9 +26,20 @@ public static class WmiVmMapper
     private const ushort Pausing   = 32776;
     private const ushort Resuming  = 32777;
 
+    // CIM-standard EnabledState codes. Msvm_ComputerSystem uses the Msvm vendor codes above, but
+    // Msvm_SummaryInformation (and some hosts) report the CIM-standard values — a resume-from-Saved
+    // was captured live with EnabledState 10 there. Map them too so a summary-sourced or
+    // CIM-reporting host never falls through to "Unknown" (issue #13). Values 2/3/9 already coincide
+    // with the vendor arms above (Enabled/Disabled/Quiesce), so only 4/6/10/11 need adding.
+    private const ushort CimShuttingDown = 4;    // → Stopping
+    private const ushort CimOffline      = 6;    // Enabled but Offline → Saved
+    private const ushort CimStarting     = 10;
+    private const ushort CimStopping     = 11;
+
     /// <summary>
     /// Maps an <c>EnabledState</c> to the friendly string the UI expects
     /// (Running / Off / Paused / Saved / transient verbs), matching the old PowerShell VMState names.
+    /// Accepts both the Msvm vendor codes (Msvm_ComputerSystem) and the CIM-standard codes.
     /// </summary>
     public static string MapState(ushort enabledState) => enabledState switch
     {
@@ -46,6 +57,11 @@ public static class WmiVmMapper
         Stopping     => "Stopping",
         Pausing      => "Pausing",
         Resuming     => "Resuming",
+        // CIM-standard codes (see constants above).
+        CimShuttingDown => "Stopping",
+        CimOffline      => "Saved",
+        CimStarting     => "Starting",
+        CimStopping     => "Stopping",
         _            => "Unknown",
     };
 
@@ -59,15 +75,17 @@ public static class WmiVmMapper
     public static string UptimeString(ulong uptimeMs) =>
         uptimeMs == 0 ? "" : TimeSpan.FromMilliseconds(uptimeMs).ToString();
 
-    /// <summary>Assembles a <see cref="VmStatus"/> from summary-info primitives (units converted here).</summary>
+    /// <summary>Assembles a <see cref="VmStatus"/> from summary-info primitives (units converted here).
+    /// <paramref name="jobStatus"/> is the transient verb+percent from the VM's active
+    /// <c>Msvm_ConcreteJob</c> (e.g. "Restoring (10%)"), or empty when no operation is in flight.</summary>
     public static VmStatus BuildStatus(
         string name, ushort enabledState, int processorLoad, long memoryUsageMb, ulong uptimeMs,
-        string? statusDescription, long memMaxBytes, string switchName) => new()
+        long memMaxBytes, string switchName, string? jobStatus = "") => new()
     {
         Name        = name,
         State       = MapState(enabledState),
         Switch      = switchName ?? "",
-        StatusDesc  = statusDescription ?? "",
+        JobStatus   = jobStatus ?? "",
         Cpu         = Math.Clamp(processorLoad, 0, 100),
         MemAssigned = BytesFromMb(memoryUsageMb),
         MemMax      = memMaxBytes,
@@ -120,52 +138,38 @@ public static class WmiVmMapper
         _                 => "Working",
     };
 
-    /// <summary>Parses a percent out of a WMI StatusDescriptions string like "Saving, 47 %" (fallback).</summary>
-    public static int? PercentFromStatus(string? statusDescription)
-    {
-        if (string.IsNullOrEmpty(statusDescription)) return null;
-        int pct = statusDescription.IndexOf('%');
-        if (pct <= 0) return null;
-        int i = pct - 1;
-        while (i > 0 && (char.IsDigit(statusDescription[i - 1]) || statusDescription[i - 1] == ' ')) i--;
-        var num = statusDescription[i..pct].Trim();
-        return int.TryParse(num, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : null;
-    }
+    // ── Transient status from the active Msvm_ConcreteJob ─────────────────────────
 
     /// <summary>
-    /// Parses the transient operation verb (e.g. "Restoring") out of a WMI StatusDescriptions string.
-    /// This is the only place that verb exists: EnabledState 32770 ("Starting" per <see cref="MapState"/>)
-    /// is reported for both a cold boot and a resume-from-Saved on this host, so StatusDescriptions is
-    /// the sole signal that distinguishes them (issue #13).
-    ///
-    /// The verb always travels with a percentage during the transition (confirmed live: the percent is
-    /// present the whole time a resume-from-Saved runs), but the exact surrounding shape varies by
-    /// host/version and by how <see cref="Services.VmService.ReadSummaries"/> joins a multi-element
-    /// StatusDescriptions array. All of these must yield "Restoring":
-    ///   • "Restoring, 72 %"                    (comma + spaces)
-    ///   • "Restoring 72%"                       (no comma — the shape the earlier comma-only parse
-    ///                                            returned null for, leaving the coarse "Starting")
-    ///   • "Operating normally Restoring 72%"    (health element [0] joined before the operation verb)
-    /// So the verb is anchored on the '%' — it is the word immediately before the percent number —
-    /// rather than on a comma that isn't always present. Returns null when there is no percentage
-    /// (e.g. a plain "Operating normally"), so callers fall back cleanly to the coarse
-    /// EnabledState-derived state name.
+    /// A single snapshot of a VM's <c>Msvm_ConcreteJob</c> (or the embedded job in
+    /// <c>Msvm_SummaryInformation.AsynchronousTasks</c>): the CIM <c>JobState</c>, the job's
+    /// <c>ElementName</c> (the operation verb Hyper-V Manager shows, e.g. "Restoring"), and its
+    /// <c>PercentComplete</c>. Kept WMI-free so the selection/formatting below is unit-testable.
     /// </summary>
-    public static string? LeadingVerbFromStatus(string? statusDescription)
+    public readonly record struct JobSnapshot(ushort JobState, string? ElementName, int PercentComplete);
+
+    // CIM_ConcreteJob.JobState: an operation is in progress only while Starting (3) or Running (4);
+    // 7=Completed, 8/9/10=Terminated/Killed/Exception, etc. are finished and must be ignored.
+    private const ushort JobStarting = 3;
+    private const ushort JobRunning  = 4;
+
+    /// <summary>
+    /// The transient status string to mirror Hyper-V Manager's Status column, from the VM's first
+    /// ACTIVE job — e.g. "Restoring (10%)" for a resume-from-Saved. This is the real signal issue #13
+    /// needs: on a resume the coarse EnabledState reads "Starting" (same as a cold boot) while the
+    /// live "Restoring (n%)" only exists on the active <c>Msvm_ConcreteJob</c>, not in
+    /// StatusDescriptions (captured empty live). Returns null when no job is active (only JobState
+    /// 3/4 count) or none has a usable ElementName, so the caller falls back to the coarse state.
+    /// </summary>
+    public static string? ActiveJobStatus(IEnumerable<JobSnapshot> jobs)
     {
-        if (string.IsNullOrEmpty(statusDescription)) return null;
-
-        int pct = statusDescription.IndexOf('%');
-        if (pct <= 0) return null;   // no percentage → not a transient "verb N %" status
-
-        // Walk left from '%' over its spaces, digits and an optional comma to the end of the verb word,
-        // then over the verb's own letters to its start.
-        int i = pct - 1;
-        while (i >= 0 && (char.IsDigit(statusDescription[i]) || statusDescription[i] is ' ' or ',')) i--;
-        int end = i + 1;
-        while (i >= 0 && !char.IsWhiteSpace(statusDescription[i])) i--;
-
-        var verb = statusDescription[(i + 1)..end].Trim();
-        return verb.Length > 0 ? verb : null;
+        foreach (var job in jobs)
+        {
+            if (job.JobState is not (JobStarting or JobRunning)) continue;
+            var verb = job.ElementName?.Trim();
+            if (string.IsNullOrEmpty(verb)) continue;
+            return $"{verb} ({Math.Clamp(job.PercentComplete, 0, 100)}%)";
+        }
+        return null;
     }
 }

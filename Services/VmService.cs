@@ -346,7 +346,7 @@ public sealed class VmService : IDisposable
                     _memMax.TryGetValue(name, out var memMax);
                     _switchByVm.TryGetValue(name, out var switchName);
                     var st = WmiVmMapper.BuildStatus(
-                        name, id.EnabledState, m.Cpu, m.MemMb, m.UptimeMs, m.StatusDesc, memMax, switchName ?? "");
+                        name, id.EnabledState, m.Cpu, m.MemMb, m.UptimeMs, memMax, switchName ?? "", m.JobStatus);
                     if (_vhd.TryGetValue(name, out var v)) st.VhdBytes = v.Bytes;
                     list.Add(st);
                 }
@@ -391,9 +391,9 @@ public sealed class VmService : IDisposable
         return null;
     }
 
-    private Dictionary<string, (int Cpu, long MemMb, ulong UptimeMs, string StatusDesc)> ReadSummaries(ManagementScope scope)
+    private Dictionary<string, (int Cpu, long MemMb, ulong UptimeMs, string? JobStatus)> ReadSummaries(ManagementScope scope)
     {
-        var result = new Dictionary<string, (int, long, ulong, string)>(StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, (int, long, ulong, string?)>(StringComparer.OrdinalIgnoreCase);
         try
         {
             // SettingData = empty array asks for every VM's summary in one batch call — a prior
@@ -403,8 +403,12 @@ public sealed class VmService : IDisposable
             using var inParams = mgmt.GetMethodParameters("GetSummaryInformation");
             inParams["SettingData"] = Array.Empty<string>();
             // Msvm_SummaryInformationRequestType (Microsoft Learn, confirmed live 2026-07-03):
-            // 1=ElementName, 101=ProcessorLoad, 103=MemoryUsage, 105=Uptime, 111=StatusDescriptions.
-            inParams["RequestedInformation"] = new uint[] { 1, 101, 103, 105, 111 };
+            // 1=ElementName, 101=ProcessorLoad, 103=MemoryUsage, 105=Uptime. 108=AsynchronousTasks
+            // returns each VM's active Msvm_ConcreteJob(s) already correlated by Hyper-V — this is
+            // how MMC populates its Status column, and (issue #13) the only place a resume-from-Saved's
+            // "Restoring (n%)" verb lives (StatusDescriptions was captured EMPTY during that transition,
+            // so it is no longer requested).
+            inParams["RequestedInformation"] = new uint[] { 1, 101, 103, 105, 108 };
             using var outParams = mgmt.InvokeMethod("GetSummaryInformation", inParams, null);
 
             uint rv = Convert.ToUInt32(outParams["ReturnValue"]);
@@ -424,7 +428,7 @@ public sealed class VmService : IDisposable
                             SafeInt(info["ProcessorLoad"]),
                             SafeLong(info["MemoryUsage"]),
                             SafeULong(info["Uptime"]),
-                            (info["StatusDescriptions"] as string[]) is { Length: > 0 } sd ? string.Join(" ", sd) : "");
+                            ExtractJobStatus(scope, info["AsynchronousTasks"]));
                     }
             else if (outParams["SummaryInformation"] is not null)
                 _logger.LogWarning("GetSummaryInformation returned SummaryInformation as unexpected type {Type}", outParams["SummaryInformation"]!.GetType().Name);
@@ -435,6 +439,49 @@ public sealed class VmService : IDisposable
         catch (Exception ex) { _logger.LogWarning(ex, "GetSummaryInformation failed — metrics degraded to zeros"); }
         return result;
     }
+
+    /// <summary>
+    /// Turns the VM's <c>Msvm_SummaryInformation.AsynchronousTasks</c> (its active Hyper-V jobs,
+    /// already correlated to this VM by the provider — so VM A's job never shows on VM B) into the
+    /// transient status string Hyper-V Manager shows, e.g. "Restoring (10%)" (issue #13). Handles both
+    /// shapes the property can take across host versions: embedded <c>Msvm_ConcreteJob</c> instances,
+    /// or reference paths that need a follow-up Get. Returns null when there is no active job.
+    /// </summary>
+    private string? ExtractJobStatus(ManagementScope scope, object? asyncTasks)
+    {
+        if (asyncTasks is null) return null;
+        var snaps = new List<WmiVmMapper.JobSnapshot>();
+        try
+        {
+            if (asyncTasks is ManagementBaseObject[] embedded)
+            {
+                foreach (var job in embedded)
+                    using (job) snaps.Add(ToSnapshot(job));
+            }
+            else if (asyncTasks is string[] paths)
+            {
+                foreach (var path in paths)
+                {
+                    if (string.IsNullOrEmpty(path)) continue;
+                    // The job may have completed and vanished between the summary call and this Get;
+                    // that just means "no active job" for it, so swallow and move on.
+                    try
+                    {
+                        using var job = new ManagementObject(scope, new ManagementPath(path), null);
+                        job.Get();
+                        snaps.Add(ToSnapshot(job));
+                    }
+                    catch { /* job gone / unreadable */ }
+                }
+            }
+            else return null;
+        }
+        catch (Exception ex) { _logger.LogWarning(ex, "Reading VM async tasks failed"); return null; }
+        return WmiVmMapper.ActiveJobStatus(snaps);
+    }
+
+    private static WmiVmMapper.JobSnapshot ToSnapshot(ManagementBaseObject job) =>
+        new(SafeUShort(job["JobState"]), job["ElementName"] as string, SafeInt(job["PercentComplete"]));
 
     // NOTE (flagged for validation): every read below matches a child settings class back to its
     // owning VM by checking whether the setting's InstanceID *contains* the VM's Msvm_ComputerSystem
@@ -783,9 +830,10 @@ public sealed class VmService : IDisposable
         return s.Get().Cast<ManagementObject>().FirstOrDefault();
     }
 
-    private static int   SafeInt(object? o)   { try { return o is null ? 0 : Convert.ToInt32(o);  } catch { return 0; } }
-    private static long  SafeLong(object? o)  { try { return o is null ? 0 : Convert.ToInt64(o);  } catch { return 0; } }
-    private static ulong SafeULong(object? o) { try { return o is null ? 0 : Convert.ToUInt64(o); } catch { return 0; } }
+    private static int    SafeInt(object? o)    { try { return o is null ? 0 : Convert.ToInt32(o);  } catch { return 0; } }
+    private static long   SafeLong(object? o)   { try { return o is null ? 0 : Convert.ToInt64(o);  } catch { return 0; } }
+    private static ulong  SafeULong(object? o)  { try { return o is null ? 0 : Convert.ToUInt64(o); } catch { return 0; } }
+    private static ushort SafeUShort(object? o) { try { return o is null ? (ushort)0 : Convert.ToUInt16(o); } catch { return 0; } }
 
     /// <summary>Logs a warning only on the first occurrence of a persistent condition, so a WMI read
     /// that stays degraded across ticks doesn't flood the log once per tick.</summary>

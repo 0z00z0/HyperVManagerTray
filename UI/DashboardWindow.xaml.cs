@@ -414,14 +414,15 @@ public sealed partial class DashboardWindow : Window
         else
         {
             var state = EffectiveStateName(card.VmName, s);
-            // StatusDescriptions can carry a finer-grained verb than the coarse EnabledState-derived
-            // state — e.g. "Restoring, 72 %" for a resume-from-Saved that reports the same EnabledState
-            // (32770) as a cold boot ("Starting"). Prefer that verb for the displayed text when present,
-            // but keep colouring on the coarse `state` — BrushForState only recognises a small fixed set
-            // of names ("Running"/"Paused"/"Saved"), and an unrecognised verb like "Restoring" would
-            // otherwise fall through to the grey catch-all instead of "Starting"'s usual colour.
-            var displayState = WmiVmMapper.LeadingVerbFromStatus(s?.StatusDesc) ?? state;
-            card.State.Text       = s is not null && WmiVmMapper.PercentFromStatus(s.StatusDesc) is { } pct ? $"{displayState} ({pct}%)" : displayState;
+            // The VM's active Msvm_ConcreteJob carries a finer-grained verb+percent than the coarse
+            // EnabledState-derived state — e.g. "Restoring (10%)" for a resume-from-Saved that reports
+            // the same EnabledState ("Starting") as a cold boot (issue #13). This mirrors Hyper-V
+            // Manager's Status column and covers operations started externally in MMC, not just
+            // app-initiated ones. Prefer it for the displayed text when present, but keep colouring on
+            // the coarse `state` — BrushForState only recognises a small fixed set of names
+            // ("Running"/"Paused"/"Saved"), and an unrecognised verb like "Restoring" would otherwise
+            // fall through to the grey catch-all instead of "Starting"'s usual colour.
+            card.State.Text       = s is { JobStatus: { Length: > 0 } job } ? job : state;
             card.State.Foreground = BrushForState(state);
             ToolTipService.SetToolTip(card.State, null);   // clear any tooltip left by a prior overlay message
         }
