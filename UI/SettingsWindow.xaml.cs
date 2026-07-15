@@ -760,15 +760,20 @@ internal sealed partial class SettingsWindow : Window
     }
 
     /// <summary>
-    /// Re-reads the values that are cheap to re-sync in place (log level) after an explicit reload from
-    /// disk. VM rows and adapters keep their built structure — reopen the window to reflect a VM added
-    /// or removed by an out-of-band edit.
+    /// Re-syncs the whole window to the freshly reloaded <see cref="ConfigManager.Current"/> after an
+    /// explicit "Reload config from disk" (issue #24 — previously only the log level was re-read, leaving
+    /// VM rows, network rules and the fallback showing stale values). A full section rebuild is the robust
+    /// way to pick up VMs/rules added or removed by an out-of-band edit; every populate path is already
+    /// re-entrancy-guarded (<see cref="WithUpdatingSuppressed"/>) so the rebuild itself commits nothing.
+    /// The visible category is preserved (panel visibility is owned by the nav, which BuildSections leaves
+    /// untouched). _userToggledStartup is reset so the fresh startup toggle re-reads the real task state.
     /// </summary>
     private void RefreshValuesFromConfig()
     {
-        if (_closed || _logLevelCombo is null) return;
-        WithUpdatingSuppressed(() =>
-            _logLevelCombo.SelectedIndex = SettingsOptions.LogLevelToIndex(_config.Current.LogLevel));
+        if (_closed) return;
+        _userToggledStartup = false;
+        try { BuildSections(); }
+        catch (Exception ex) { AppInfo.AppendCrashLogLine("SettingsWindow", $"RefreshValuesFromConfig: {ex}"); }
     }
 
     // ── Small view helpers (shared card idiom, matching DashboardWindow) ──────────
