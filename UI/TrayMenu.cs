@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml.Controls;
 using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Models;
@@ -60,12 +61,12 @@ internal sealed class TrayMenu
         Flyout.Items.Add(new MenuFlyoutSeparator());
 
         var vmNetworkMenu = new MenuFlyoutSubItem { Text = "VM Network" };
-        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Re-check network now", Command = new RelayCommand(() => _ = _monitor.ForceEvaluateAsync()) });
-        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Repair host networking (host offline, VM online)", Command = new RelayCommand(() => _ = RepairHostNetworkingAsync()) });
+        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Re-check network now", Command = new RelayCommand(() => { LogClick("Re-check network now"); _ = _monitor.ForceEvaluateAsync(); }) });
+        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Repair host networking (host offline, VM online)", Command = new RelayCommand(() => { LogClick("Repair host networking"); _ = RepairHostNetworkingAsync(); }) });
         vmNetworkMenu.Items.Add(new MenuFlyoutSeparator());
         vmNetworkMenu.Items.Add(_overrideMenu);
         vmNetworkMenu.Items.Add(new MenuFlyoutSeparator());
-        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Add current network as a bridged rule", Command = new RelayCommand(() => _ = AddCurrentAsBridged()) });
+        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Add current network as a bridged rule", Command = new RelayCommand(() => { LogClick("Add current network as a bridged rule"); _ = AddCurrentAsBridged(); }) });
         Flyout.Items.Add(vmNetworkMenu);
         Flyout.Items.Add(new MenuFlyoutSeparator());
 
@@ -192,11 +193,15 @@ internal sealed class TrayMenu
     }
 
     private MenuFlyoutItem Item(string text, Func<Task> action)
-        => new() { Text = text, Command = new RelayCommand(() => _ = action()) };
+        => new() { Text = text, Command = new RelayCommand(() => { LogClick(text); _ = action(); }) };
 
     /// <summary>A menu item that fires a VM power action — synchronous, non-blocking (see <see cref="VmService.BeginPowerAction"/>).</summary>
     private MenuFlyoutItem PowerItem(string text, string vmName, VmOpKind kind)
-        => new() { Text = text, Command = new RelayCommand(() => _vm.BeginPowerAction(vmName, kind, VmOpOrigin.Tray)) };
+        => new() { Text = text, Command = new RelayCommand(() =>
+           {
+               UiActivityLog.Logger.LogInformation("Tray: {Command} '{Vm}'", text, vmName);
+               _vm.BeginPowerAction(vmName, kind, VmOpOrigin.Tray);
+           }) };
 
     /// <summary>The full power-action set for a managed VM: Start/Start&&Connect/Shutdown/Pause/Resume/Save.</summary>
     private void AddPowerItems(MenuFlyoutSubItem sub, string vmName, string nicName)
@@ -246,7 +251,11 @@ internal sealed class TrayMenu
                 _overrideMenu.Items.Add(new MenuFlyoutItem
                 {
                     Text    = $"{vm.Name} → {sw}",
-                    Command = new RelayCommand(() => _ = _monitor.ManualOverrideAsync(vmName, swName)),
+                    Command = new RelayCommand(() =>
+                    {
+                        UiActivityLog.Logger.LogInformation("Tray: Override switch '{Vm}' → '{Switch}'", vmName, swName);
+                        _ = _monitor.ManualOverrideAsync(vmName, swName);
+                    }),
                 });
             }
         }
@@ -397,7 +406,7 @@ internal sealed class TrayMenu
         _updateBadge = new MenuFlyoutItem
         {
             Text    = $"⬆  Update available: v{result.LatestVersion}",
-            Command = new RelayCommand(() => Shell.Open(result.ReleasePageUrl)),
+            Command = new RelayCommand(() => { LogClick("Update badge → releases page"); Shell.Open(result.ReleasePageUrl); }),
         };
 
         // Badge + separator always sit above everything else in the menu.
@@ -415,12 +424,18 @@ internal sealed class TrayMenu
         {
             if (_settingsWindow is not null)
             {
+                UiActivityLog.Logger.LogInformation("Window: Settings re-activated");
                 _settingsWindow.Activate();
                 return;
             }
 
+            UiActivityLog.Logger.LogInformation("Window: Settings opened");
             _settingsWindow = new SettingsWindow(_config, _startup, _updateChecker);
-            _settingsWindow.Closed += (_, _) => _settingsWindow = null;
+            _settingsWindow.Closed += (_, _) =>
+            {
+                UiActivityLog.Logger.LogInformation("Window: Settings closed");
+                _settingsWindow = null;
+            };
             _settingsWindow.Activate();
         });
     }
@@ -436,9 +451,12 @@ internal sealed class TrayMenu
             // Reuse the one open About window rather than stacking duplicates on repeated clicks.
             if (_aboutWindow is not null)
             {
+                UiActivityLog.Logger.LogInformation("Window: About re-activated");
                 _aboutWindow.Activate();
                 return;
             }
+
+            UiActivityLog.Logger.LogInformation("Window: About opened");
 
             var options = new BrandAboutOptions
             {
@@ -470,11 +488,19 @@ internal sealed class TrayMenu
             };
 
             _aboutWindow = new BrandAboutWindow(options);
-            _aboutWindow.Closed += (_, _) => _aboutWindow = null;
+            _aboutWindow.Closed += (_, _) =>
+            {
+                UiActivityLog.Logger.LogInformation("Window: About closed");
+                _aboutWindow = null;
+            };
             _aboutWindow.Activate();
         });
     }
 
     private void Add(string text, Action action)
-        => Flyout.Items.Add(new MenuFlyoutItem { Text = text, Command = new RelayCommand(action) });
+        => Flyout.Items.Add(new MenuFlyoutItem { Text = text, Command = new RelayCommand(() => { LogClick(text); action(); }) });
+
+    /// <summary>Records a tray-menu command invocation to ui.log (issue #21). Menu text only — no PII.</summary>
+    private static void LogClick(string command) =>
+        UiActivityLog.Logger.LogInformation("Tray: {Command}", command);
 }

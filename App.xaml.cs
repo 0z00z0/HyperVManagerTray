@@ -97,11 +97,12 @@ public partial class App : Application
                 // Minimum level comes from config.json (defaults to Debug). Read directly here — the
                 // logger must exist before the full ConfigManager (which needs a logger) is built.
                 b.SetMinimumLevel(ConfigManager.ReadLogLevel(configPath));
-                // Category-routing sink: the "vm-power" category → vm-power.log (issue #20);
-                // everything else → switcher.log.
+                // Category-routing sink: "vm-power" → vm-power.log (issue #20), "ui" → ui.log
+                // (issue #21); everything else → switcher.log.
                 b.AddSimpleFileLogger(AppInfo.LogFile, new Dictionary<string, string>
                 {
                     ["vm-power"] = AppInfo.VmPowerLog,
+                    ["ui"]       = AppInfo.UiLog,
                 });
             });
 
@@ -128,8 +129,13 @@ public partial class App : Application
             // (NetworkMonitor autostart / on-bridge-lost).
             var powerLog = _loggerFactory.CreateLogger("vm-power");
 
+            // Shared "ui" category logger → ui.log (issue #21): tray/window/rename UI events plus
+            // ConfigManager's settings-change lines. Set the static UI gateway before any UI exists.
+            var uiLog = _loggerFactory.CreateLogger("ui");
+            UI.UiActivityLog.Logger = uiLog;
+
             _exeDir  = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
-            _config  = new ConfigManager(configPath, _loggerFactory.CreateLogger<ConfigManager>());
+            _config  = new ConfigManager(configPath, uiLog);
             _hyperV  = new HyperVManager(_loggerFactory.CreateLogger<HyperVManager>());
             _vm      = new VmService(_loggerFactory.CreateLogger<VmService>(), powerLog);
             _monitor = new NetworkMonitor(_config, _hyperV, _vm, _loggerFactory.CreateLogger<NetworkMonitor>(), powerLog);

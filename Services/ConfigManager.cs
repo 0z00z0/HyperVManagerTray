@@ -28,7 +28,9 @@ public sealed class ConfigManager : IDisposable
     };
 
     private readonly string _configPath;
-    private readonly ILogger<ConfigManager> _logger;
+    // Non-generic ILogger so App can route ConfigManager's save/reload lines to the "ui" category →
+    // ui.log (issue #21). The category is chosen by App at construction, not by the type parameter.
+    private readonly ILogger _logger;
     private readonly FileSystemWatcher _watcher;
     private readonly System.Threading.Timer _debounceTimer;
     private AppConfig _config = new();
@@ -39,7 +41,7 @@ public sealed class ConfigManager : IDisposable
     /// <summary>The most recently loaded configuration.</summary>
     public AppConfig Current => _config;
 
-    public ConfigManager(string configPath, ILogger<ConfigManager> logger)
+    public ConfigManager(string configPath, ILogger logger)
     {
         _configPath = configPath;
         _logger = logger;

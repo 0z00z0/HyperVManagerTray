@@ -41,6 +41,9 @@ internal static class AppInfo
     /// <summary>Full path of the dedicated VM power-action log (issue #20). Beside <see cref="LogFile"/>.</summary>
     public static string VmPowerLog => Path.Combine(DataDir, "vm-power.log");
 
+    /// <summary>Full path of the dedicated UI-interaction log (issue #21). Beside <see cref="LogFile"/>.</summary>
+    public static string UiLog => Path.Combine(DataDir, "ui.log");
+
     /// <summary>Full path of the crash log written by the global exception handlers.</summary>
     public static string CrashLog => Path.Combine(DataDir, "crash.log");
 

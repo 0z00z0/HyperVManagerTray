@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -118,6 +119,7 @@ public sealed partial class DashboardWindow : Window
 
     public void ShowNearTray()
     {
+        UiActivityLog.Logger.LogInformation("Window: Dashboard shown");
         Refresh();
         ResizeAndPlace();
         AppWindow.Show();
@@ -126,6 +128,7 @@ public sealed partial class DashboardWindow : Window
 
     public void HideWindow()
     {
+        UiActivityLog.Logger.LogInformation("Window: Dashboard hidden");
         UnsubscribeMetricsIfNeeded();
         _hiddenAtUtc  = DateTime.UtcNow;
         _hiddenCursor = NativeMethods.GetCursorPosition();
@@ -695,7 +698,11 @@ public sealed partial class DashboardWindow : Window
             Content  = text,
             FontSize = 11,
             Padding  = new Thickness(8, 3, 8, 3),
-            Command  = new RelayCommand(() => _vm.BeginPowerAction(vm.Name, kind, VmOpOrigin.Dashboard)),
+            Command  = new RelayCommand(() =>
+            {
+                UiActivityLog.Logger.LogInformation("Dashboard: {Command} '{Vm}'", text, vm.Name);
+                _vm.BeginPowerAction(vm.Name, kind, VmOpOrigin.Dashboard);
+            }),
         });
 
         // The two actions that also launch vmconnect.exe still need an awaited Task.
@@ -704,7 +711,11 @@ public sealed partial class DashboardWindow : Window
             Content  = text,
             FontSize = 11,
             Padding  = new Thickness(8, 3, 8, 3),
-            Command  = new RelayCommand(() => _ = action()),
+            Command  = new RelayCommand(() =>
+            {
+                UiActivityLog.Logger.LogInformation("Dashboard: {Command} '{Vm}'", text, vm.Name);
+                _ = action();
+            }),
         });
 
         bool running = s?.IsRunning == true;
