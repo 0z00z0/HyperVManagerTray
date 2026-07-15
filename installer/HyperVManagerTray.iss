@@ -113,19 +113,25 @@ Type: files; Name: "{app}\Microsoft.Win32.*.dll"
 Type: files; Name: "{app}\Microsoft.DiaSymReader.Native.amd64.dll"
 Type: files; Name: "{app}\System.*.dll"
 Type: files; Name: "{app}\workloads*.json"
-; Superseded runtime-generated tray icons from older builds (v3 → v4 redesign).
+; Superseded runtime-generated tray icons from older builds (v3/v4 → v5 product-glyph redesign).
+Type: files; Name: "{app}\icon-unknown-v4.ico"
+Type: files; Name: "{app}\icon-bridged-v4.ico"
+Type: files; Name: "{app}\icon-fallback-v4.ico"
 Type: files; Name: "{app}\icon-unknown-v3.ico"
 Type: files; Name: "{app}\icon-bridged-v3.ico"
 Type: files; Name: "{app}\icon-fallback-v3.ico"
 
 ; Generated at runtime by the app — remove on uninstall so the folder can be cleaned up.
 [UninstallDelete]
-Type: files;      Name: "{app}\icon-unknown-v4.ico"
-Type: files;      Name: "{app}\icon-bridged-v4.ico"
-Type: files;      Name: "{app}\icon-fallback-v4.ico"
+Type: files;      Name: "{app}\icon-unknown-v5.ico"
+Type: files;      Name: "{app}\icon-bridged-v5.ico"
+Type: files;      Name: "{app}\icon-fallback-v5.ico"
 Type: files;      Name: "{app}\AppIcon.ico"
 Type: files;      Name: "{app}\app.ico"
 ; Legacy names — clean up if upgrading from an older install
+Type: files;      Name: "{app}\icon-unknown-v4.ico"
+Type: files;      Name: "{app}\icon-bridged-v4.ico"
+Type: files;      Name: "{app}\icon-fallback-v4.ico"
 Type: files;      Name: "{app}\icon-unknown-v3.ico"
 Type: files;      Name: "{app}\icon-bridged-v3.ico"
 Type: files;      Name: "{app}\icon-fallback-v3.ico"

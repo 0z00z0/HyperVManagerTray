@@ -19,9 +19,9 @@ public class IconGeneratorTests : IDisposable
     // ── Each state produces the correct named file ──────────────────────────────
 
     [Theory]
-    [InlineData(TrayIconState.Unknown,  "icon-unknown-v4.ico")]
-    [InlineData(TrayIconState.Bridged,  "icon-bridged-v4.ico")]
-    [InlineData(TrayIconState.Fallback, "icon-fallback-v4.ico")]
+    [InlineData(TrayIconState.Unknown,  "icon-unknown-v5.ico")]
+    [InlineData(TrayIconState.Bridged,  "icon-bridged-v5.ico")]
+    [InlineData(TrayIconState.Fallback, "icon-fallback-v5.ico")]
     public void GenerateAndSave_CreatesExpectedFile(TrayIconState state, string expectedFileName)
     {
         var path = IconGenerator.GenerateAndSave(_dir, state);
