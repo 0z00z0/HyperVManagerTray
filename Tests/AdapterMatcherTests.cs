@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.NetworkInformation;
 using HyperVManagerTray.Services;
 using Xunit;
 
@@ -6,6 +7,40 @@ namespace HyperVManagerTray.Tests;
 
 public class AdapterMatcherTests
 {
+    // ── IsPickerPhysicalAdapter (issue #25) ─────────────────────────────────────
+
+    [Theory]
+    // Real physical NICs that MUST still appear in the rename picker:
+    [InlineData(NetworkInterfaceType.Ethernet, 6, "Ethernet", "Intel(R) Ethernet Connection I219-V", true)]
+    [InlineData(NetworkInterfaceType.Ethernet, 6, "Ethernet 5", "Realtek USB GbE Family Controller #2", true)]   // USB dock
+    [InlineData(NetworkInterfaceType.Ethernet, 6, "Ethernet 7", "Lenovo USB Ethernet", true)]                    // USB dock
+    [InlineData(NetworkInterfaceType.Wireless80211, 6, "Wi-Fi", "Intel(R) Wi-Fi 6E AX211 160MHz", true)]
+    // Software / non-physical adapters that must be HIDDEN:
+    [InlineData(NetworkInterfaceType.Ethernet, 6, "Bluetooth Network Connection", "Bluetooth Device (Personal Area Network)", false)]
+    [InlineData(NetworkInterfaceType.Ethernet, 6, "Ethernet 3", "TAP-Windows Adapter V9", false)]
+    [InlineData(NetworkInterfaceType.Ethernet, 6, "VirtualBox Host-Only Network", "VirtualBox Host-Only Ethernet Adapter", false)]
+    [InlineData(NetworkInterfaceType.Ethernet, 6, "VMware Network Adapter VMnet8", "VMware Virtual Ethernet Adapter for VMnet8", false)]
+    [InlineData(NetworkInterfaceType.Ethernet, 6, "WireGuard Tunnel", "Wintun Userspace Tunnel", false)]
+    [InlineData(NetworkInterfaceType.Tunnel, 6, "Tunnel", "Teredo Tunneling Pseudo-Interface", false)]           // type Tunnel
+    [InlineData(NetworkInterfaceType.Ppp, 6, "VPN Connection", "WAN Miniport (PPP)", false)]                     // type Ppp
+    [InlineData(NetworkInterfaceType.Ethernet, 0, "Ethernet 9", "Some Adapter With No MAC", false)]              // no 6-byte MAC
+    [InlineData(NetworkInterfaceType.Ethernet, 8, "Ethernet 9", "Infiniband-ish", false)]                       // non-48-bit MAC
+    public void IsPickerPhysicalAdapter_FiltersToRealPhysicalNics(
+        NetworkInterfaceType type, int macBytes, string name, string description, bool expected)
+        => Assert.Equal(expected, AdapterMatcher.IsPickerPhysicalAdapter(type, macBytes, name, description));
+
+    [Theory]
+    [InlineData("Bluetooth Device (Personal Area Network)", true)]
+    [InlineData("TAP-Windows Adapter V9", true)]
+    [InlineData("VirtualBox Host-Only Ethernet Adapter", true)]
+    [InlineData("VMware Virtual Ethernet Adapter", true)]
+    [InlineData("Realtek USB GbE Family Controller", false)]
+    [InlineData("Intel(R) Ethernet Connection I219-V", false)]
+    [InlineData("", false)]
+    public void HasSoftwareAdapterMarker_MatchesOnlySoftwareAdapters(string description, bool expected)
+        => Assert.Equal(expected, AdapterMatcher.HasSoftwareAdapterMarker(description));
+
+
     [Theory]
     [InlineData("10.0.0.45",   "10.0.0.0/23", true)]
     [InlineData("10.0.1.200",  "10.0.0.0/23", true)]    // /23 spans .0 and .1
