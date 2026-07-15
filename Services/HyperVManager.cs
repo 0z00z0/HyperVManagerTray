@@ -131,15 +131,37 @@ public sealed class HyperVManager : IDisposable
     /// untouched. After a real rebind, <see cref="RepairHostVNicAsync"/> runs to collapse any duplicate
     /// host vNIC (kept as a safety net; the WMI re-home is not expected to create one).</para>
     /// </summary>
-    public Task UpdateSwitchBindingAsync(string switchName, string adapterName) =>
+    public Task<SwitchBindOutcome> UpdateSwitchBindingAsync(string switchName, string adapterName) =>
         WithLock(() =>
         {
-            if (UpdateSwitchBindingCore(switchName, adapterName))
+            var outcome = UpdateSwitchBindingCore(switchName, adapterName);
+            // The vNIC-repair safety net only makes sense after a REAL rebind — an AlreadyBound no-op
+            // touched nothing, and a Failed attempt must not be papered over as success.
+            if (outcome == SwitchBindOutcome.Bound)
                 RepairHostVNicCore(switchName);
+            return outcome;
         });
 
-    /// <summary>Returns true only when a real rebind was performed (so the caller runs the vNIC repair).</summary>
-    private bool UpdateSwitchBindingCore(string switchName, string adapterName)
+    /// <summary>
+    /// Outcome of an <see cref="UpdateSwitchBindingAsync"/> attempt (issue #29, finding 1). The
+    /// distinction matters to the caller's skip-cache: a failed bind was previously indistinguishable
+    /// from an already-bound no-op (both returned <c>false</c>), so <see cref="NetworkMonitor"/> cached
+    /// the target adapter as bound and never retried. Only <see cref="Bound"/>/<see cref="AlreadyBound"/>
+    /// mean the switch is now on the requested adapter; <see cref="Failed"/> must leave the cache clear
+    /// so the next network change retries.
+    /// </summary>
+    public enum SwitchBindOutcome
+    {
+        /// <summary>A real rebind was performed (external uplink re-pointed or added).</summary>
+        Bound,
+        /// <summary>The switch was already External + sharing + on this adapter — nothing changed.</summary>
+        AlreadyBound,
+        /// <summary>The bind could not be performed (adapter absent, switch/port not found, or an error).</summary>
+        Failed,
+    }
+
+    /// <summary>Performs the bind and reports its <see cref="SwitchBindOutcome"/> — only <see cref="SwitchBindOutcome.Bound"/> did real work.</summary>
+    private SwitchBindOutcome UpdateSwitchBindingCore(string switchName, string adapterName)
     {
         try
         {
@@ -152,17 +174,19 @@ public sealed class HyperVManager : IDisposable
             var (mac, desc) = ResolveAdapter(adapterName);
             if (mac is null)
             {
+                // Adapter genuinely absent (e.g. USB NIC unplugged). Treat as Failed so the caller leaves
+                // its skip-cache clear and retries once the adapter reappears, rather than caching it as bound.
                 _logger.LogInformation("Adapter '{Adapter}' not present — switch '{Switch}' left unchanged", adapterName, switchName);
-                return false;
+                return SwitchBindOutcome.Failed;
             }
 
             using var sw = FindSwitch(scope, switchName);
-            if (sw is null) { _logger.LogWarning("Virtual switch '{Switch}' not found — cannot bind", switchName); return false; }
+            if (sw is null) { _logger.LogWarning("Virtual switch '{Switch}' not found — cannot bind", switchName); return SwitchBindOutcome.Failed; }
             using var settings = SwitchSettings(sw);
-            if (settings is null) { _logger.LogWarning("Switch '{Switch}' has no settings data — cannot bind", switchName); return false; }
+            if (settings is null) { _logger.LogWarning("Switch '{Switch}' has no settings data — cannot bind", switchName); return SwitchBindOutcome.Failed; }
 
             using var extPort = FindExternalPort(scope, mac, desc);
-            if (extPort is null) { _logger.LogWarning("No external Ethernet port matches adapter '{Adapter}' — cannot bind '{Switch}'", adapterName, switchName); return false; }
+            if (extPort is null) { _logger.LogWarning("No external Ethernet port matches adapter '{Adapter}' — cannot bind '{Switch}'", adapterName, switchName); return SwitchBindOutcome.Failed; }
             var extPortPath = extPort.Path.Path;
 
             var ports = SwitchPorts(scope, sw);
@@ -176,7 +200,7 @@ public sealed class HyperVManager : IDisposable
                     ExternalPortMatches(scope, external.Epasd, mac, desc))
                 {
                     _logger.LogInformation("Switch '{Switch}' already bound to '{Adapter}' — no rebind", switchName, adapterName);
-                    return false;
+                    return SwitchBindOutcome.AlreadyBound;
                 }
 
                 if (external.Epasd is not null)
@@ -199,11 +223,11 @@ public sealed class HyperVManager : IDisposable
                     AddInternalPort(scope, settings);
 
                 _logger.LogInformation("Switch '{Switch}' bound to '{Adapter}'", switchName, adapterName);
-                return true;
+                return SwitchBindOutcome.Bound;
             }
             finally { DisposePorts(ports); }
         }
-        catch (Exception ex) { _logger.LogError(ex, "UpdateSwitchBindingAsync error"); return false; }
+        catch (Exception ex) { _logger.LogError(ex, "UpdateSwitchBindingAsync error"); return SwitchBindOutcome.Failed; }
     }
 
     /// <summary>Outcome of <see cref="RepairHostVNicAsync"/>.</summary>
@@ -283,6 +307,14 @@ public sealed class HyperVManager : IDisposable
     {
         await _lock.WaitAsync().ConfigureAwait(false);
         try { await Task.Run(wmiWork).ConfigureAwait(false); }
+        finally { _lock.Release(); }
+    }
+
+    /// <summary>Result-returning <see cref="WithLock(Action)"/> — same single-flight + off-UI-thread guarantees.</summary>
+    private async Task<T> WithLock<T>(Func<T> wmiWork)
+    {
+        await _lock.WaitAsync().ConfigureAwait(false);
+        try { return await Task.Run(wmiWork).ConfigureAwait(false); }
         finally { _lock.Release(); }
     }
 

@@ -79,6 +79,9 @@ public sealed class VmService : IDisposable
     private readonly object _subLock = new();
     private int _metricsSubs;
     private int _watcherSubs;
+    // True from the moment a watcher start is dispatched to the thread pool until it lands (or aborts),
+    // so a second Subscribe under _subLock doesn't kick off a duplicate watcher while the first connects.
+    private bool _watcherStarting;
     private CancellationTokenSource? _metricsCts;
     private int _refreshing;   // 0/1 coalescing guard (Interlocked)
 
@@ -261,7 +264,7 @@ public sealed class VmService : IDisposable
     /// <summary>Starts the shared state watcher if it isn't already running. Caller holds <see cref="_subLock"/>.</summary>
     private void EnsureWatcher()
     {
-        if (_watcher is null) StartWatcher();
+        if (_watcher is null && !_watcherStarting) StartWatcher();
     }
 
     /// <summary>Stops the shared watcher once no metrics AND no tooltip subscriber needs it. Caller holds <see cref="_subLock"/>.</summary>
@@ -270,39 +273,71 @@ public sealed class VmService : IDisposable
         if (_metricsSubs == 0 && _watcherSubs == 0) StopWatcher();
     }
 
+    /// <summary>
+    /// Dispatches the watcher's COM setup to the thread pool. Caller holds <see cref="_subLock"/>.
+    /// <c>EnsureScope().Connect()</c> and <c>ManagementEventWatcher.Start()</c> are blocking MTA/COM
+    /// calls that must never run on the WinUI UI thread — Subscribe* are invoked from it (issue #29,
+    /// finding 4). The counter/flag state stays under <see cref="_subLock"/>; only the COM work is
+    /// offloaded. If every subscriber has gone away by the time the connect completes, the freshly
+    /// started watcher is torn down again rather than left running.
+    /// </summary>
     private void StartWatcher()
     {
-        try
+        _watcherStarting = true;
+        _ = Task.Run(() =>
         {
-            EnsureScope();
-            // Filter to ACTUAL EnabledState transitions. Without the "<> PreviousInstance" clause a
-            // running VM fires a modification event roughly every WITHIN period anyway (its
-            // OnTimeInMilliseconds keeps ticking), which would drive a full RefreshCore every ~2 s for
-            // the whole lifetime of the always-on tooltip watcher — the idle-cost regression issue #16
-            // warns about. With the clause the watcher (and thus RefreshCore) fires only on a real
-            // start/stop/pause/save/resume. The WMI service still evaluates the WITHIN 2 poll host-side
-            // — the same mechanism Hyper-V Manager uses — but our process does no WMI until a real
-            // transition. The dashboard's live metrics/IPs keep flowing from the 2.5 s metrics loop.
-            _watcher = new ManagementEventWatcher(_scope,
-                new EventQuery("SELECT * FROM __InstanceModificationEvent WITHIN 2 " +
-                               "WHERE TargetInstance ISA 'Msvm_ComputerSystem' " +
-                               "AND TargetInstance.EnabledState <> PreviousInstance.EnabledState"));
-            _watcher.EventArrived += (_, _) =>
+            ManagementEventWatcher? started = null;
+            try
             {
-                // A VM whose power state changed may also have gained/lost a switch binding (e.g. it
-                // just started), so re-read the switch map on the next refresh — conversion #3.
-                _switchCacheDirty = true;
-                TriggerRefresh();
-            };
-            _watcher.Start();
-        }
-        catch (Exception ex) { _logger.LogWarning(ex, "Could not start VM state watcher (metrics timer still covers it)"); }
+                EnsureScope();
+                // Filter to ACTUAL EnabledState transitions. Without the "<> PreviousInstance" clause a
+                // running VM fires a modification event roughly every WITHIN period anyway (its
+                // OnTimeInMilliseconds keeps ticking), which would drive a full RefreshCore every ~2 s for
+                // the whole lifetime of the always-on tooltip watcher — the idle-cost regression issue #16
+                // warns about. With the clause the watcher (and thus RefreshCore) fires only on a real
+                // start/stop/pause/save/resume. The WMI service still evaluates the WITHIN 2 poll host-side
+                // — the same mechanism Hyper-V Manager uses — but our process does no WMI until a real
+                // transition. The dashboard's live metrics/IPs keep flowing from the 2.5 s metrics loop.
+                var watcher = new ManagementEventWatcher(_scope,
+                    new EventQuery("SELECT * FROM __InstanceModificationEvent WITHIN 2 " +
+                                   "WHERE TargetInstance ISA 'Msvm_ComputerSystem' " +
+                                   "AND TargetInstance.EnabledState <> PreviousInstance.EnabledState"));
+                watcher.EventArrived += (_, _) =>
+                {
+                    // A VM whose power state changed may also have gained/lost a switch binding (e.g. it
+                    // just started), so re-read the switch map on the next refresh — conversion #3.
+                    _switchCacheDirty = true;
+                    TriggerRefresh();
+                };
+                watcher.Start();
+                started = watcher;
+            }
+            catch (Exception ex) { _logger.LogWarning(ex, "Could not start VM state watcher (metrics timer still covers it)"); }
+
+            lock (_subLock)
+            {
+                _watcherStarting = false;
+                // No subscribers left (all unsubscribed while we were connecting), or a start failed:
+                // don't publish a live watcher. Tear a successfully-started-but-now-unwanted one down.
+                if (started is null) return;
+                if (_metricsSubs == 0 && _watcherSubs == 0)
+                {
+                    try { started.Stop(); started.Dispose(); } catch { }
+                    return;
+                }
+                _watcher = started;
+            }
+        });
     }
 
     private void StopWatcher()
     {
-        try { _watcher?.Stop(); _watcher?.Dispose(); } catch { }
+        // Hand the blocking Stop()/Dispose() COM calls to the thread pool too; StopWatcherIfIdle runs
+        // under _subLock from the UI thread. Null the field synchronously so EnsureWatcher sees "stopped".
+        var w = _watcher;
         _watcher = null;
+        if (w is null) return;
+        _ = Task.Run(() => { try { w.Stop(); w.Dispose(); } catch { } });
     }
 
     /// <summary>Coalesced background refresh — skips if one is already running.</summary>

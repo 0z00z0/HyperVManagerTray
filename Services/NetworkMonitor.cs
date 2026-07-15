@@ -25,9 +25,12 @@ public sealed class NetworkMonitor : IDisposable
     private readonly SemaphoreSlim _evalLock = new(1, 1);
     private volatile bool _evaluatePending;
     private MatchResult? _lastApplied;
-    // Tracks which physical adapter name was last passed to Set-VMSwitch so we can skip
-    // redundant re-binds (which cause a brief VM network drop) when nothing has changed.
-    private string? _lastBoundAdapterInterface;
+    // Tracks which physical adapter each virtual SWITCH was last successfully bound to, so we can skip
+    // redundant re-binds (which cause a brief VM network drop) when nothing has changed. Keyed by switch
+    // name (issue #29, finding 2): a single scalar wrongly suppressed binding a 2nd bridged switch that
+    // happened to sit on the same NIC as the first. An entry exists only after a Bound/AlreadyBound
+    // outcome — a failed bind is never recorded, so the next network change retries it (finding 1).
+    private readonly Dictionary<string, string> _lastBoundAdapterBySwitch = new(StringComparer.OrdinalIgnoreCase);
 
     // Per-VM cancellation tokens for the bridge-lost delay timers.
     // Protected by _disconnectLock (not _evalLock) so Dispose() can safely cancel pending
@@ -144,7 +147,11 @@ public sealed class NetworkMonitor : IDisposable
 
         try
         {
-            var result = AdapterMatcher.Evaluate(_config.Current);
+            // AdapterMatcher.Evaluate enumerates all NICs (GetAllNetworkInterfaces + GetIPProperties),
+            // which can block for hundreds of ms. ForceEvaluateAsync is invoked from the tray "Re-check
+            // network now" command on the UI thread, so run the enumeration on the thread pool to keep
+            // the UI responsive (issue #29, finding 3). The debounce path already runs on a timer thread.
+            var result = await Task.Run(() => AdapterMatcher.Evaluate(_config.Current));
             await ApplyAsync(result);
         }
         catch (Exception ex)
@@ -166,7 +173,7 @@ public sealed class NetworkMonitor : IDisposable
         await _hyperV.ApplySwitchAsync(vmName, vm.NicName, switchName);
 
         // Manual override bypasses the binding logic; force a re-bind next time a rule fires.
-        _lastBoundAdapterInterface = null;
+        _lastBoundAdapterBySwitch.Clear();
 
         var result = new MatchResult($"Manual ({switchName})", switchName, [vmName]);
         _lastApplied = result;
@@ -184,19 +191,28 @@ public sealed class NetworkMonitor : IDisposable
         // switch become an "External" (bridged) switch pointing at the right LAN NIC.
         // Skip for fallback — the fallback switch (Default Switch / NAT) needs no binding.
         //
-        // Only call Set-VMSwitch when the physical adapter actually changed: repeated calls
-        // with the same adapter cause a brief VM network drop even if nothing changed.
-        // Reset _lastBoundAdapterInterface when falling back so the next rule-match
-        // always re-binds (the switch may have been left on a different adapter).
+        // Only call Set-VMSwitch when the physical adapter actually changed for THIS switch: repeated
+        // calls with the same adapter cause a brief VM network drop even if nothing changed. Clear the
+        // whole skip-cache when falling back so the next rule-match always re-binds (a switch may have
+        // been left on a different adapter). The cache is keyed by switch (finding 2) and only recorded
+        // on a non-failed bind (finding 1), so a distinct switch on the same NIC still binds, and a
+        // failed bind is retried on the next change instead of being cached as done.
         if (result.RuleName == "Fallback")
         {
-            _lastBoundAdapterInterface = null;
+            _lastBoundAdapterBySwitch.Clear();
         }
-        else if (result.HostAdapterInterfaceName != "—" &&
-                 result.HostAdapterInterfaceName != _lastBoundAdapterInterface)
+        else if (result.HostAdapterInterfaceName != "—")
         {
-            await _hyperV.UpdateSwitchBindingAsync(result.VirtualSwitch, result.HostAdapterInterfaceName);
-            _lastBoundAdapterInterface = result.HostAdapterInterfaceName;
+            _lastBoundAdapterBySwitch.TryGetValue(result.VirtualSwitch, out var lastAdapter);
+            if (result.HostAdapterInterfaceName != lastAdapter)
+            {
+                var outcome = await _hyperV.UpdateSwitchBindingAsync(result.VirtualSwitch, result.HostAdapterInterfaceName);
+                if (outcome == HyperVManager.SwitchBindOutcome.Failed)
+                    // Leave the cache clear for this switch so the next NetworkChange retries the bind.
+                    _lastBoundAdapterBySwitch.Remove(result.VirtualSwitch);
+                else
+                    _lastBoundAdapterBySwitch[result.VirtualSwitch] = result.HostAdapterInterfaceName;
+            }
         }
 
         foreach (var vmName in result.TargetVms)

@@ -83,4 +83,15 @@ public class AdapterMatcherTests
     [InlineData("ABCDEF")]  // wrong length
     public void FormatMac_InvalidLength_ReturnsRawUnchanged(string raw)
         => Assert.Equal(raw, AdapterMatcher.FormatMac(raw));
+
+    // ── IsBridgeableAdapterType (issue #29, finding 5) ──────────────────────────
+    // Only wired adapters surface as Msvm_ExternalEthernetPort (the switch-binding target); Wi-Fi is a
+    // Msvm_WiFiPort the bind path never queries, so a Wi-Fi rule could never take effect.
+
+    [Theory]
+    [InlineData(NetworkInterfaceType.Ethernet, true)]
+    [InlineData(NetworkInterfaceType.GigabitEthernet, true)]
+    [InlineData(NetworkInterfaceType.Wireless80211, false)]
+    public void IsBridgeableAdapterType_RejectsWirelessOnly(NetworkInterfaceType type, bool expected)
+        => Assert.Equal(expected, AdapterMatcher.IsBridgeableAdapterType(type));
 }

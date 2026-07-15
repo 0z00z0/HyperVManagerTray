@@ -265,10 +265,26 @@ internal sealed class TrayMenu
 
     private async Task AddCurrentAsBridged()
     {
-        var info = AdapterMatcher.GetCurrentNetworkInfo();
+        // GetCurrentNetworkInfo enumerates all NICs (GetAllNetworkInterfaces + GetIPProperties) and can
+        // block for hundreds of ms; this runs from a tray command on the UI thread, so offload it to the
+        // thread pool to keep the UI responsive (issue #29, finding 3).
+        var info = await Task.Run(AdapterMatcher.GetCurrentNetworkInfo);
         if (info is null)
         {
             NativeMethods.Warn("No active network adapter with an IPv4 address was found.", AppName);
+            return;
+        }
+
+        // A Wi-Fi adapter surfaces as Msvm_WiFiPort, which the switch-binding path never targets, so a
+        // rule bound to it could never take effect (issue #29, finding 5). Reject it up front with an
+        // explanation rather than silently saving a rule that will never bridge.
+        if (info.IsWireless)
+        {
+            NativeMethods.Warn(
+                $"\"{info.AdapterDescription}\" is a Wi-Fi adapter.\n\n" +
+                "Bridging a Hyper-V switch onto a wireless adapter isn't supported — the switch can only " +
+                "bind to a wired (Ethernet) adapter, such as a USB-Ethernet dock. No rule was added.",
+                AppName);
             return;
         }
 
