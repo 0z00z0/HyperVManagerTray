@@ -743,31 +743,33 @@ public sealed partial class DashboardWindow : Window
             }),
         });
 
-        // Render buttons by coarse shape (issue #30, finding 3). A transitional state (Saving/Stopping/
-        // Starting/…) and an as-yet-unknown state both get NO power buttons — offering Start (or any
-        // verb) mid-transition would just return 0x8007. The state watcher rebuilds the card with the
-        // right buttons the instant the transition lands.
-        switch (VmStateUi.ClassifyShape(s?.State))
-        {
-            case VmStateUi.Shape.Running:
-                PowerBtn("Shutdown", VmOpKind.Shutdown);
-                PowerBtn("Pause",    VmOpKind.Pause);
-                PowerBtn("Save",     VmOpKind.Save);
-                TaskBtn("Connect",   () => ConnectAsync(vm));
-                break;
-            case VmStateUi.Shape.Paused:
-                PowerBtn("Resume", VmOpKind.Resume);
-                PowerBtn("Save",   VmOpKind.Save);
-                break;
-            case VmStateUi.Shape.Off:
-            case VmStateUi.Shape.Saved:
-                PowerBtn("Start",          VmOpKind.Start);
-                TaskBtn("Start & Connect", () => StartAndConnectAsync(vm));
-                break;
-            // Shape.Transition / Shape.None → no buttons (mid-transition or still loading).
-        }
+        // Buttons are driven off the shared VmStateUi verb model (cleanup 9) so the dashboard, the tray
+        // VM-power menu and the state classifier can't drift: the power verbs come from AllowedVerbs,
+        // "Connect" from CanConnect, and "Start & Connect" is offered exactly when Start is (an Off/Saved
+        // VM). A transitional (Saving/Stopping/…) or as-yet-unknown state yields no verbs — offering any
+        // mid-transition would just return 0x8007 — and the state watcher rebuilds the card the instant
+        // the transition lands (finding 3).
+        var allowed = VmStateUi.AllowedVerbs(s?.State);
+        foreach (var kind in allowed)
+            PowerBtn(PowerVerbLabel(kind), kind);
+        if (allowed.Contains(VmOpKind.Start))
+            TaskBtn("Start & Connect", () => StartAndConnectAsync(vm));
+        if (VmStateUi.CanConnect(s?.State))
+            TaskBtn("Connect", () => ConnectAsync(vm));
         return panel;
     }
+
+    /// <summary>Button caption for a power verb on the dashboard card (the tray menu uses "&amp;&amp;"-escaped
+    /// captions for its composite items, so the label lives at each call site rather than in VmStateUi).</summary>
+    private static string PowerVerbLabel(VmOpKind kind) => kind switch
+    {
+        VmOpKind.Start    => "Start",
+        VmOpKind.Shutdown => "Shutdown",
+        VmOpKind.Pause    => "Pause",
+        VmOpKind.Save     => "Save",
+        VmOpKind.Resume   => "Resume",
+        _                 => kind.ToString(),
+    };
 
     private async Task ConnectAsync(VmTarget vm)
     {

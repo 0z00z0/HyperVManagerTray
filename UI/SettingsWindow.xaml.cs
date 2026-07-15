@@ -70,8 +70,12 @@ internal sealed partial class SettingsWindow : Window
     private TextBox?    _fallbackSwitchBox;
     private TextBox?    _fallbackVmsBox;
 
-    // The Adapters section panel + its "Loading…" placeholder, kept so a reload can rebuild it.
-    private StackPanel? _adaptersSection;
+    // The single source of truth mapping each nav item's Tag → its content panel. Built once by
+    // BuildSections (after the XAML fields are assigned), it drives OnNavSelectionChanged so a 7th
+    // category can't be half-wired, AND doubles as the "panels are ready" guard: while it is null an
+    // early SelectionChanged (which fires during InitializeComponent, before the panels exist) is
+    // ignored instead of NRE-ing out of the constructor (finding 6, cleanup 13).
+    private IReadOnlyDictionary<string, StackPanel>? _panels;
 
     // Reused shared About window, so repeated clicks re-activate one window instead of stacking copies.
     private BrandAboutWindow? _aboutWindow;
@@ -131,15 +135,14 @@ internal sealed partial class SettingsWindow : Window
     // and against a torn-down window.
     private void OnNavSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
-        if (_closed || GeneralPanel is null) return;                 // panels not built yet / window closed
+        // _panels is null until BuildSections has run, so an early fire during InitializeComponent (the
+        // General item's IsSelected="True" raises this before every panel field is set) is ignored
+        // rather than dereferencing an unset panel and NRE-ing out of the ctor (finding 6).
+        if (_closed || _panels is null) return;
         if (args.SelectedItem is not NavigationViewItem { Tag: string tag }) return;
 
-        GeneralPanel.Visibility     = tag == "General"     ? Visibility.Visible : Visibility.Collapsed;
-        VmsPanel.Visibility         = tag == "Vms"         ? Visibility.Visible : Visibility.Collapsed;
-        NetworkPanel.Visibility     = tag == "Network"     ? Visibility.Visible : Visibility.Collapsed;
-        AdaptersPanel.Visibility    = tag == "Adapters"    ? Visibility.Visible : Visibility.Collapsed;
-        MaintenancePanel.Visibility = tag == "Maintenance" ? Visibility.Visible : Visibility.Collapsed;
-        AboutPanel.Visibility       = tag == "About"       ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var (panelTag, panel) in _panels)
+            panel.Visibility = panelTag == tag ? Visibility.Visible : Visibility.Collapsed;
     }
 
     // ── Window chrome / placement ────────────────────────────────────────────────
@@ -174,6 +177,19 @@ internal sealed partial class SettingsWindow : Window
     private void BuildSections()
     {
         VersionText.Text = $"v{AppInfo.Version}";
+
+        // Wire the Tag→panel map once the XAML fields are guaranteed assigned (we're past
+        // InitializeComponent). Tags must match the NavigationViewItem Tags in SettingsWindow.xaml.
+        // Also flips OnNavSelectionChanged's readiness guard on (see the field's remarks).
+        _panels = new Dictionary<string, StackPanel>(StringComparer.Ordinal)
+        {
+            ["General"]     = GeneralPanel,
+            ["Vms"]         = VmsPanel,
+            ["Network"]     = NetworkPanel,
+            ["Adapters"]    = AdaptersPanel,
+            ["Maintenance"] = MaintenancePanel,
+            ["About"]       = AboutPanel,
+        };
 
         GeneralPanel.Children.Clear();
         GeneralPanel.Children.Add(BuildGeneralSection());
@@ -428,11 +444,18 @@ internal sealed partial class SettingsWindow : Window
             "Used when no rule matches (typically a NAT switch such as the Hyper-V \"Default Switch\").",
             _fallbackSwitchBox));
 
-        _fallbackVmsBox = new TextBox { Text = SettingsOptions.JoinVmList(fb.TargetVms), MinWidth = 220 };
+        // One VM per line (fix 8): unambiguous even when a VM name contains a comma.
+        _fallbackVmsBox = new TextBox
+        {
+            Text         = SettingsOptions.JoinVmLines(fb.TargetVms),
+            MinWidth     = 220,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+        };
         _fallbackVmsBox.LostFocus += (_, _) => CommitFallback();
         panel.Children.Add(SettingRow(
             "Fallback target VMs",
-            "Comma-separated VM names reconnected to the fallback switch.",
+            "VM names reconnected to the fallback switch — one per line.",
             _fallbackVmsBox));
 
         return panel;
@@ -470,11 +493,12 @@ internal sealed partial class SettingsWindow : Window
 
         int row = 0;
 
-        TextBox TextField(string label, string? value, string? placeholder, Action<string> commit, Func<string, bool>? validate = null)
+        TextBox TextField(string label, string? value, string? placeholder, Action<string> commit, Func<string, bool>? validate = null, bool multiline = false)
         {
             var lbl = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, FontSize = 12, Opacity = 0.8 };
             Grid.SetRow(lbl, row); Grid.SetColumn(lbl, 0);
             var box = new TextBox { Text = value ?? "", PlaceholderText = placeholder ?? "", HorizontalAlignment = HorizontalAlignment.Stretch };
+            if (multiline) { box.AcceptsReturn = true; box.TextWrapping = TextWrapping.Wrap; }
             box.LostFocus += (_, _) =>
             {
                 if (_updating) return;
@@ -535,8 +559,9 @@ internal sealed partial class SettingsWindow : Window
             v => rule.Conditions.IpCidr = SettingsOptions.BlankToNull(v), SettingsOptions.IsValidCidr);
         TextField("Virtual switch", rule.VirtualSwitch, "Hyper-V switch name",
             v => rule.VirtualSwitch = v.Trim());
-        TextField("Target VMs", SettingsOptions.JoinVmList(rule.TargetVms), "VM1, VM2",
-            v => rule.TargetVms = SettingsOptions.ParseVmList(v));
+        // One VM per line (not comma-separated) so a VM whose name contains a comma round-trips intact (fix 8).
+        TextField("Target VMs", SettingsOptions.JoinVmLines(rule.TargetVms), "One VM name per line",
+            v => rule.TargetVms = SettingsOptions.ParseVmLines(v), multiline: true);
 
         // Auto-start toggle.
         var autoLabel = new TextBlock { Text = "Auto-start VMs", VerticalAlignment = VerticalAlignment.Center, FontSize = 12, Opacity = 0.8 };
@@ -572,7 +597,7 @@ internal sealed partial class SettingsWindow : Window
     {
         if (_updating || _fallbackSwitchBox is null || _fallbackVmsBox is null) return;
         var sw   = _fallbackSwitchBox.Text;
-        var vms  = SettingsOptions.ParseVmList(_fallbackVmsBox.Text);
+        var vms  = SettingsOptions.ParseVmLines(_fallbackVmsBox.Text);
         Task.Run(() =>
         {
             try { _config.SetFallback(sw, vms); }
@@ -592,7 +617,6 @@ internal sealed partial class SettingsWindow : Window
     private UIElement BuildAdaptersSection()
     {
         var panel = Section("Adapters");
-        _adaptersSection = panel;
         panel.Children.Add(Description(
             "Rename a physical network adapter's Windows description (Device Manager, Hyper-V Manager, " +
             "Settings). Renaming briefly drops that adapter's connection. Only real physical NICs are " +
@@ -733,22 +757,7 @@ internal sealed partial class SettingsWindow : Window
 
         var options = new BrandAboutOptions
         {
-            Info = new AboutInfo
-            {
-                AppName     = AppInfo.Name,
-                Version     = AppInfo.Version,
-                Description = "Automatically connects Hyper-V VMs to the right virtual switch when the host changes networks. Manage VM power and state directly from the system tray.",
-                RepoUrl     = "https://github.com/0z00z0/HyperVManagerTray",
-                ExternalLibraries =
-                [
-                    new ExternalLibrary("Microsoft.WindowsAppSDK", "Microsoft", "WinUI 3 framework (windowing, XAML, Mica)", "MS-EULA", "https://github.com/microsoft/WindowsAppSDK"),
-                    new ExternalLibrary("Microsoft.Windows.SDK.BuildTools", "Microsoft", "Windows SDK build tooling for the App SDK", "MS-EULA", "https://www.nuget.org/packages/Microsoft.Windows.SDK.BuildTools"),
-                    new ExternalLibrary("H.NotifyIcon.WinUI", "HavenDV", "System-tray icon + native context menu for WinUI 3", "MIT", "https://github.com/HavenDV/H.NotifyIcon"),
-                    new ExternalLibrary("System.Drawing.Common", "Microsoft", "Renders the tray .ico at runtime", "MIT", "https://www.nuget.org/packages/System.Drawing.Common"),
-                    new ExternalLibrary("Microsoft.Extensions.Logging", "Microsoft", "Logging abstraction; output goes to a small custom file sink", "MIT", "https://www.nuget.org/packages/Microsoft.Extensions.Logging"),
-                    new ExternalLibrary("System.Management", "Microsoft", "WMI access (root\\virtualization\\v2) for VM status/power", "MIT", "https://www.nuget.org/packages/System.Management"),
-                ],
-            },
+            Info = AppAbout.CreateInfo(),
             // Reuses this window's own update flow (UpdatePrompt.RunAsync). Returns false: the Inno
             // installer restarts the app itself, so the About window never needs to trigger a self-exit.
             OnCheckForUpdates = async () => { await CheckForUpdatesAsync(); return false; },

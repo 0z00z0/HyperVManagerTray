@@ -191,6 +191,30 @@ public class SettingsOptionsTests
         Assert.Equal(original, SettingsOptions.ParseVmList(SettingsOptions.JoinVmList(original)));
     }
 
+    // ── Newline-only VM list (fix 8: the editor representation) ──────────────────
+
+    [Theory]
+    [InlineData("VM1\nVM2\nVM3",   new[] { "VM1", "VM2", "VM3" })]
+    [InlineData("VM1\r\nVM2\r\n",  new[] { "VM1", "VM2" })]
+    [InlineData(" VM1 \n VM1 \nVM2", new[] { "VM1", "VM2" })]      // trims, dedupes
+    [InlineData("",                new string[0])]
+    [InlineData(null,              new string[0])]
+    public void ParseVmLines_SplitsOnNewlinesOnly(string? text, string[] expected)
+        => Assert.Equal(expected, SettingsOptions.ParseVmLines(text));
+
+    [Fact]
+    public void ParseVmLines_DoesNotSplitOnComma()
+        // The whole point of the newline representation: a VM name containing a comma is ONE entry.
+        => Assert.Equal(["Web, App"], SettingsOptions.ParseVmLines("Web, App"));
+
+    [Fact]
+    public void JoinVmLines_RoundTripsAVmNameContainingAComma()
+    {
+        // "Web, App" corrupts through the comma-based Join/Parse; the newline pair preserves it.
+        var original = new[] { "Web, App", "Db" };
+        Assert.Equal(original, SettingsOptions.ParseVmLines(SettingsOptions.JoinVmLines(original)));
+    }
+
     [Theory]
     [InlineData(-5,      0)]
     [InlineData(0,       0)]

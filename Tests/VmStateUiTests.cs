@@ -80,15 +80,31 @@ public class VmStateUiTests
     public void AllowedVerbs_Running_DoesNotOfferStart()
         => Assert.DoesNotContain(VmOpKind.Start, VmStateUi.AllowedVerbs("Running"));
 
+    // ── CanConnect (cleanup 9) ──────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("Running", true)]
+    [InlineData("Paused",  false)]
+    [InlineData("Saved",   false)]
+    [InlineData("Off",     false)]
+    [InlineData("Starting", false)]   // transition
+    [InlineData("Unknown", false)]
+    [InlineData(null,      false)]
+    public void CanConnect_OnlyRunning(string? state, bool expected)
+        => Assert.Equal(expected, VmStateUi.CanConnect(state));
+
     // ── IsOverlayExpired (findings 1 & 7) ───────────────────────────────────────
 
     [Fact]
     public void IsOverlayExpired_ShutdownRunning_ExpiresAfterDeadline()
     {
-        // Just under the deadline → still active; at/after → expired (finding 1: stuck Shutdown).
-        Assert.False(VmStateUi.IsOverlayExpired(VmOpKind.Shutdown, VmOpPhase.Running, TimeSpan.FromSeconds(119)));
+        // Just under the deadline → still active; at/after → expired (finding 1: stuck Shutdown). The
+        // deadline is deliberately long (a guest can legitimately stay Running for many minutes during
+        // an install-on-shutdown), so a value minutes in still must NOT expire.
+        Assert.False(VmStateUi.IsOverlayExpired(VmOpKind.Shutdown, VmOpPhase.Running, VmStateUi.ShutdownDeadline - TimeSpan.FromSeconds(1)));
+        Assert.False(VmStateUi.IsOverlayExpired(VmOpKind.Shutdown, VmOpPhase.Running, TimeSpan.FromMinutes(5)));
         Assert.True(VmStateUi.IsOverlayExpired(VmOpKind.Shutdown, VmOpPhase.Running, VmStateUi.ShutdownDeadline));
-        Assert.True(VmStateUi.IsOverlayExpired(VmOpKind.Shutdown, VmOpPhase.Running, TimeSpan.FromMinutes(5)));
+        Assert.True(VmStateUi.IsOverlayExpired(VmOpKind.Shutdown, VmOpPhase.Running, VmStateUi.ShutdownDeadline + TimeSpan.FromMinutes(5)));
     }
 
     [Fact]

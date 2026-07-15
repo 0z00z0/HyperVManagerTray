@@ -175,7 +175,7 @@ internal sealed class TrayMenu
             {
                 if (uAllowed.Contains(VmOpKind.Start))    sub.Items.Add(PowerItem("Start",    name, VmOpKind.Start));
                 if (uAllowed.Contains(VmOpKind.Shutdown)) sub.Items.Add(PowerItem("Shutdown", name, VmOpKind.Shutdown));
-                if (uShape == VmStateUi.Shape.Running)
+                if (VmStateUi.CanConnect(uState))
                     sub.Items.Add(Item("Connect", () => { Shell.OpenVmConnect(name); return Task.CompletedTask; }));
             }
             sub.Items.Add(new MenuFlyoutSeparator());
@@ -258,7 +258,7 @@ internal sealed class TrayMenu
         if (allowed.Contains(VmOpKind.Pause))    sub.Items.Add(PowerItem("Pause",    vmName, VmOpKind.Pause));
         if (allowed.Contains(VmOpKind.Save))     sub.Items.Add(PowerItem("Save",     vmName, VmOpKind.Save));
         // A running VM can be attached to without a power change.
-        if (shape == VmStateUi.Shape.Running)
+        if (VmStateUi.CanConnect(state))
             sub.Items.Add(Item("Connect", () => { Shell.OpenVmConnect(vmName); return Task.CompletedTask; }));
 
         if (sub.Items.Count == 0)
@@ -533,26 +533,7 @@ internal sealed class TrayMenu
 
             var options = new BrandAboutOptions
             {
-                Info = new AboutInfo
-                {
-                    AppName     = AppName,
-                    Version     = AppInfo.Version,
-                    Description = "Automatically connects Hyper-V VMs to the right virtual switch when the host changes networks. Manage VM power and state directly from the system tray.",
-                    RepoUrl     = "https://github.com/0z00z0/HyperVManagerTray",
-                    // Every third-party runtime package the app references (see the csproj + README
-                    // "External libraries" table — kept in sync with both). H.NotifyIcon.WinUI is the
-                    // only non-Microsoft dependency; the Microsoft packages ship under the Microsoft
-                    // Software Licence Terms (the WinAppSDK *source* is MIT on GitHub).
-                    ExternalLibraries =
-                    [
-                        new ExternalLibrary("Microsoft.WindowsAppSDK", "Microsoft", "WinUI 3 framework (windowing, XAML, Mica)", "MS-EULA", "https://github.com/microsoft/WindowsAppSDK"),
-                        new ExternalLibrary("Microsoft.Windows.SDK.BuildTools", "Microsoft", "Windows SDK build tooling for the App SDK", "MS-EULA", "https://www.nuget.org/packages/Microsoft.Windows.SDK.BuildTools"),
-                        new ExternalLibrary("H.NotifyIcon.WinUI", "HavenDV", "System-tray icon + native context menu for WinUI 3", "MIT", "https://github.com/HavenDV/H.NotifyIcon"),
-                        new ExternalLibrary("System.Drawing.Common", "Microsoft", "Renders the tray .ico at runtime", "MIT", "https://www.nuget.org/packages/System.Drawing.Common"),
-                        new ExternalLibrary("Microsoft.Extensions.Logging", "Microsoft", "Logging abstraction; output goes to a small custom file sink", "MIT", "https://www.nuget.org/packages/Microsoft.Extensions.Logging"),
-                        new ExternalLibrary("System.Management", "Microsoft", "WMI access (root\\virtualization\\v2) for VM status/power", "MIT", "https://www.nuget.org/packages/System.Management"),
-                    ],
-                },
+                Info = AppAbout.CreateInfo(),
                 // The shared window's "Check for Updates" reuses this class's own flow (which wraps
                 // UpdatePrompt.RunAsync via NativeMethods.CaptureHwnd()); it returns false because the
                 // Inno installer restarts the app itself, so no self-exit is needed. No update

@@ -15,6 +15,10 @@ public class AdapterMatcherTests
     [InlineData(NetworkInterfaceType.Ethernet, 6, "Ethernet 5", "Realtek USB GbE Family Controller #2", true)]   // USB dock
     [InlineData(NetworkInterfaceType.Ethernet, 6, "Ethernet 7", "Lenovo USB Ethernet", true)]                    // USB dock
     [InlineData(NetworkInterfaceType.Wireless80211, 6, "Wi-Fi", "Intel(R) Wi-Fi 6E AX211 160MHz", true)]
+    // Finding 4: a real physical NIC whose USER-RENAMABLE alias happens to contain a software marker
+    // ("Office-VPN", "Bluetooth desk") must NOT be hidden — only the immutable description decides.
+    [InlineData(NetworkInterfaceType.Ethernet, 6, "Office-VPN", "Realtek USB GbE Family Controller #2", true)]
+    [InlineData(NetworkInterfaceType.Ethernet, 6, "Bluetooth desk dock", "Intel(R) Ethernet Connection I219-V", true)]
     // Software / non-physical adapters that must be HIDDEN:
     [InlineData(NetworkInterfaceType.Ethernet, 6, "Bluetooth Network Connection", "Bluetooth Device (Personal Area Network)", false)]
     [InlineData(NetworkInterfaceType.Ethernet, 6, "Ethernet 3", "TAP-Windows Adapter V9", false)]
