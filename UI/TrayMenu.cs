@@ -448,9 +448,18 @@ internal sealed class TrayMenu
                     Version     = AppInfo.Version,
                     Description = "Automatically connects Hyper-V VMs to the right virtual switch when the host changes networks. Manage VM power and state directly from the system tray.",
                     RepoUrl     = "https://github.com/0z00z0/HyperVManagerTray",
+                    // Every third-party runtime package the app references (see the csproj + README
+                    // "External libraries" table — kept in sync with both). H.NotifyIcon.WinUI is the
+                    // only non-Microsoft dependency; the Microsoft packages ship under the Microsoft
+                    // Software Licence Terms (the WinAppSDK *source* is MIT on GitHub).
                     ExternalLibraries =
                     [
-                        new ExternalLibrary("H.NotifyIcon.WinUI", "Dmitry Kolchev (HavenDV)", "System-tray icon + native context menu for WinUI 3", "MIT", "https://github.com/HavenDV/H.NotifyIcon"),
+                        new ExternalLibrary("Microsoft.WindowsAppSDK", "Microsoft", "WinUI 3 framework (windowing, XAML, Mica)", "MS-EULA", "https://github.com/microsoft/WindowsAppSDK"),
+                        new ExternalLibrary("Microsoft.Windows.SDK.BuildTools", "Microsoft", "Windows SDK build tooling for the App SDK", "MS-EULA", "https://www.nuget.org/packages/Microsoft.Windows.SDK.BuildTools"),
+                        new ExternalLibrary("H.NotifyIcon.WinUI", "HavenDV", "System-tray icon + native context menu for WinUI 3", "MIT", "https://github.com/HavenDV/H.NotifyIcon"),
+                        new ExternalLibrary("System.Drawing.Common", "Microsoft", "Renders the tray .ico at runtime", "MIT", "https://www.nuget.org/packages/System.Drawing.Common"),
+                        new ExternalLibrary("Microsoft.Extensions.Logging", "Microsoft", "Logging abstraction; output goes to a small custom file sink", "MIT", "https://www.nuget.org/packages/Microsoft.Extensions.Logging"),
+                        new ExternalLibrary("System.Management", "Microsoft", "WMI access (root\\virtualization\\v2) for VM status/power", "MIT", "https://www.nuget.org/packages/System.Management"),
                     ],
                 },
                 // The shared window's "Check for Updates" reuses this class's own flow (which wraps
