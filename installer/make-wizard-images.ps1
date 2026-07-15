@@ -14,11 +14,15 @@
       • the two signature bracket gradients as top/bottom accent bars (teal->blue | purple->indigo),
       • the [Ø] STUDIO mark near the top (allowed here — the wizard is a "made by ZeroZero
         Software" surface, not the app's own icon; the product icon stays AppIcon.ico),
-      • the Hyper-V Manager Tray PRODUCT glyph — the hollow VM monitor + content bars + stand,
-        the SAME geometry the app draws for its tray icon (Helpers\IconGenerator.cs, its 16-unit
-        logical space scaled x16 into the 256-unit studio sub-canvas), rendered in the studio
-        gradients (monitor + stand purple->indigo, screen bars teal->blue),
+      • the Hyper-V Manager Tray PRODUCT glyph — the hollow VM monitor + content bars + stand +
+        green connection dot, the SAME v5 geometry the app draws for its tray/app icon
+        (Helpers\IconGenerator.cs, its 16-unit logical space scaled x16 into the 256-unit
+        sub-canvas), drawn FLAT in the app's own muted product palette (blue frame/bars/stand,
+        green dot) — the product identity, reconciled with the studio chrome around it,
       • the "Hyper-V Manager" product wordmark in Cascadia Mono.
+
+    Small header image: clears to WHITE (not studio dark) so it blends into the light inner wizard
+    pages; the muted-blue glyph + green dot read fine on white.
 
     Banner layout is two stacked, non-overlapping blocks (mirrors ChargeKeeper's #60 fix):
       STUDIO block:  [Ø] mark -> "ZeroZero Software" -> "Small tools. Zero bloat." (the studio's
@@ -58,6 +62,11 @@ $cBlue    = C 0x11 0xa9 0xd6
 $cPurple  = C 0x7b 0x8c 0xff
 $cIndigo  = C 0x3f 0x5b 0xe0
 $cAmber   = C 0xd8 0xa6 0x57
+# Product palette — HyperVManagerTray's OWN muted tray tones (see Helpers\IconGenerator.cs). The
+# banner's VM-monitor glyph is drawn flat in these, reconciling the product icon (#26) with the
+# studio chrome (dark bg, bracket accent bars, [Ø] mark) around it. NOT the studio gradients.
+$cVmBlue  = C 0x3b 0x7e 0xc4   # muted product blue — monitor frame, bars, stand
+$cVmGreen = C 0x35 0x9e 0x6a   # muted product green — connection dot
 
 # ── Brand typeface: Cascadia Mono, loaded privately from the sibling design/shared repo ──
 $fontPaths = @(
@@ -145,52 +154,52 @@ function Draw-Mark($g,[float]$ox,[float]$oy,[float]$s) {
     } finally { $slashPen.Dispose() }
 }
 
-# The Hyper-V Manager Tray product glyph (hollow VM monitor + content bars + stand), in a
-# 256-unit sub-canvas. Geometry is Helpers\IconGenerator.cs's 16-unit layout scaled x16, so the
-# banner glyph is exactly the shape the running app paints for its tray icon. Bounding box of the
-# drawn shapes: x 22.4..233.6, y 35.2..217.6 (used by Draw-VMGlyphInBox for centring).
+# The HyperVManagerTray product glyph (hollow VM monitor + content bars + stand + green connection
+# dot), in a 256-unit sub-canvas. Geometry is the v5 16-unit layout from Helpers\IconGenerator.cs
+# scaled x16, so the banner glyph is exactly the shape the running app paints for its tray/app icon
+# (#26). Drawn FLAT in the app's own muted product palette (blue frame/bars/stand, green dot) — not
+# the studio gradients — so the product identity is clear against the studio chrome around it.
+# Bounding box of the drawn shapes: x 24..232, y 36.8..216 (used by Draw-VMGlyphInBox for centring).
 function Draw-VMGlyph($g,[float]$ox,[float]$oy,[float]$s) {
     $mx = { param($v) $ox + $v*$s }
     $my = { param($v) $oy + $v*$s }
 
-    # ── Hollow monitor frame: outer bezel minus screen cut-out, as one Alternate-fill ring ──
-    $frame = New-Object System.Drawing.Drawing2D.GraphicsPath([System.Drawing.Drawing2D.FillMode]::Alternate)
+    $blue  = New-Object System.Drawing.SolidBrush($cVmBlue)
+    $green = New-Object System.Drawing.SolidBrush($cVmGreen)
     try {
-        Add-RoundedRect $frame (& $mx 22.4) (& $my 35.2) (211.2*$s) (140.8*$s) (28.8*$s)   # outer bezel
-        Add-RoundedRect $frame (& $mx 46.4) (& $my 59.2) (163.2*$s) (92.8*$s)  (16.0*$s)   # screen cut-out
-        $frameRect = New-Object System.Drawing.RectangleF((& $mx 22.4),(& $my 35.2),(211.2*$s),(140.8*$s))
-        $fb = New-Object System.Drawing.Drawing2D.LinearGradientBrush($frameRect,$cPurple,$cIndigo,
-            [System.Drawing.Drawing2D.LinearGradientMode]::ForwardDiagonal)
-        try { $g.FillPath($fb,$frame) } finally { $fb.Dispose() }
-    } finally { $frame.Dispose() }
+        # ── Hollow monitor frame: outer bezel minus screen cut-out, as one Alternate-fill ring ──
+        $frame = New-Object System.Drawing.Drawing2D.GraphicsPath([System.Drawing.Drawing2D.FillMode]::Alternate)
+        try {
+            Add-RoundedRect $frame (& $mx 24.0) (& $my 36.8) (208.0*$s) (134.4*$s) (30.4*$s)   # outer bezel
+            Add-RoundedRect $frame (& $mx 48.0) (& $my 60.8) (160.0*$s) (86.4*$s)  (17.6*$s)   # screen cut-out
+            $g.FillPath($blue,$frame)
+        } finally { $frame.Dispose() }
 
-    # ── Screen content bars (teal->blue, the two-tone family accent) ──
-    $bars = New-Object System.Drawing.Drawing2D.GraphicsPath
-    try {
-        Add-RoundedRect $bars (& $mx 65.6) (& $my 80.0)  (108.8*$s) (16*$s) (8*$s)   # long bar
-        Add-RoundedRect $bars (& $mx 65.6) (& $my 112.0) (68.8*$s)  (16*$s) (8*$s)   # short bar
-        $barRect = New-Object System.Drawing.RectangleF((& $mx 65.6),(& $my 80.0),(108.8*$s),(48*$s))
-        $bb = New-Object System.Drawing.Drawing2D.LinearGradientBrush($barRect,$cTeal,$cBlue,
-            [System.Drawing.Drawing2D.LinearGradientMode]::Horizontal)
-        try { $g.FillPath($bb,$bars) } finally { $bb.Dispose() }
-    } finally { $bars.Dispose() }
+        # ── Screen content bars ──
+        $bars = New-Object System.Drawing.Drawing2D.GraphicsPath
+        try {
+            Add-RoundedRect $bars (& $mx 67.2) (& $my 83.2)  (105.6*$s) (16*$s) (8*$s)   # long bar
+            Add-RoundedRect $bars (& $mx 67.2) (& $my 112.0) (67.2*$s)  (16*$s) (8*$s)   # short bar
+            $g.FillPath($blue,$bars)
+        } finally { $bars.Dispose() }
 
-    # ── Stand: neck + foot (purple->indigo, matching the monitor) ──
-    $stand = New-Object System.Drawing.Drawing2D.GraphicsPath
-    try {
-        Add-RoundedRect $stand (& $mx 112.0) (& $my 176.0) (32*$s)    (24*$s)   (4.8*$s)   # neck
-        Add-RoundedRect $stand (& $mx 76.8)  (& $my 195.2) (102.4*$s) (22.4*$s) (11.2*$s)  # foot
-        $standRect = New-Object System.Drawing.RectangleF((& $mx 76.8),(& $my 176.0),(102.4*$s),(41.6*$s))
-        $sb = New-Object System.Drawing.Drawing2D.LinearGradientBrush($standRect,$cPurple,$cIndigo,
-            [System.Drawing.Drawing2D.LinearGradientMode]::ForwardDiagonal)
-        try { $g.FillPath($sb,$stand) } finally { $sb.Dispose() }
-    } finally { $stand.Dispose() }
+        # ── Stand: neck + foot ──
+        $stand = New-Object System.Drawing.Drawing2D.GraphicsPath
+        try {
+            Add-RoundedRect $stand (& $mx 112.0) (& $my 171.2) (32*$s)    (22.4*$s) (4.8*$s)   # neck
+            Add-RoundedRect $stand (& $mx 73.6)  (& $my 192.0) (108.8*$s) (24*$s)   (12*$s)    # foot
+            $g.FillPath($blue,$stand)
+        } finally { $stand.Dispose() }
+
+        # ── Green connection dot (lower-right of the screen) — the "networked VM" cue ──
+        $g.FillEllipse($green,(& $mx 158.4),(& $my 113.6),(41.6*$s),(41.6*$s))
+    } finally { $blue.Dispose(); $green.Dispose() }
 }
 
-# Centre the VM glyph's bounding box (256-unit coords x 22.4..233.6, y 35.2..217.6) inside the
-# target rectangle (bx,by,bw,bh in px), scaled to fill $fill of it.
+# Centre the VM glyph's bounding box (256-unit coords x 24..232, y 36.8..216) inside the target
+# rectangle (bx,by,bw,bh in px), scaled to fill $fill of it.
 function Draw-VMGlyphInBox($g,[float]$bx,[float]$by,[float]$bw,[float]$bh,[float]$fill) {
-    $gw = 211.2; $gh = 182.4; $gx0 = 22.4; $gy0 = 35.2
+    $gw = 208.0; $gh = 179.2; $gx0 = 24.0; $gy0 = 36.8
     $s  = [Math]::Min(($bw*$fill)/$gw, ($bh*$fill)/$gh)
     $ox = $bx + ($bw - $gw*$s)/2 - $gx0*$s
     $oy = $by + ($bh - $gh*$s)/2 - $gy0*$s
@@ -282,12 +291,15 @@ function Render-Large([int]$w,[int]$h) {
     return $bmp
 }
 
-# ── Small header image (base 55x58) — product VM glyph on studio bg ────────────
+# ── Small header image (base 55x58) — product VM glyph on WHITE ────────────────
+# The inner wizard pages are the light/modern Inno theme, so this clears to WHITE (not the studio
+# dark) to blend in rather than float as a dark box. The muted-blue glyph + green dot read fine on
+# white; filling ~82 % keeps it dense at the small header size.
 function Render-Small([int]$w,[int]$h) {
     $bmp = New-Object System.Drawing.Bitmap($w,$h,[System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
     $g = New-Graphics $bmp
     try {
-        $g.Clear($cBg)
+        $g.Clear([System.Drawing.Color]::White)
         # VM glyph centred, filling ~82 % of the header.
         Draw-VMGlyphInBox $g 0 0 $w $h 0.82
     } finally { $g.Dispose() }
