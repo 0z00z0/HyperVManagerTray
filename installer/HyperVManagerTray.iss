@@ -47,6 +47,17 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 SetupIconFile=..\Assets\AppIcon.ico
+; ZeroZero Software studio-look wizard graphics, matching ChargeKeeper's installer so the two
+; read as one family. Built by installer\make-wizard-images.ps1 (native GDI+, no SVG rasteriser
+; needed): dark #0a0f17 studio background, the two bracket-gradient accent bars, the [Ø] studio
+; mark, and this app's own VM-monitor product glyph (the same shape Helpers\IconGenerator.cs
+; paints for the tray icon). Comma-separated variants at 100/125/150/175/200 % let Inno pick the
+; best for the display DPI. SetupIconFile above deliberately stays the product AppIcon.ico — the
+; [Ø] mark belongs to the wizard chrome only, never the app's own icon.
+WizardImageFile=wizard\wizimg-164x314.bmp,wizard\wizimg-205x392.bmp,wizard\wizimg-246x471.bmp,wizard\wizimg-287x549.bmp,wizard\wizimg-328x628.bmp
+WizardSmallImageFile=wizard\wizsmall-55x58.bmp,wizard\wizsmall-69x73.bmp,wizard\wizsmall-83x87.bmp,wizard\wizsmall-96x102.bmp,wizard\wizsmall-110x116.bmp
+; WizardImageStretch left at its default (yes): every variant shares Inno's exact image-area
+; aspect (164:314 and 55:58), so stretching only ever scales uniformly to a perfect fit.
 ; CloseApplications uses the Restart Manager, which CANNOT close the running app on an
 ; interactive upgrade: the app is requireAdministrator (high integrity) and this installer
 ; is per-user (low integrity), so it has no rights to terminate it.  PrepareToInstall (see
