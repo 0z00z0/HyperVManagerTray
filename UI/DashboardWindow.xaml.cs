@@ -36,6 +36,10 @@ public sealed partial class DashboardWindow : Window
     // In-flight/failed power-op message per VM, overlaid on the card's state label (optimistic
     // "Requesting start…", live "Saving (47%)…", or a sticky "Failed: not enough memory").
     private readonly Dictionary<string, VmOperationProgress> _op = new(StringComparer.OrdinalIgnoreCase);
+    // When each VM's current _op entry was last (re)set, so an overlay that never clears on its own can
+    // be aged out: a hung/cancelled graceful Shutdown stuck in the Running phase (issue #30, finding 1),
+    // and a sticky "Failed: …" overlay (finding 7). See VmStateUi.IsOverlayExpired.
+    private readonly Dictionary<string, DateTime> _opSince = new(StringComparer.OrdinalIgnoreCase);
     // Per-VM display state that bridges the gaps in the live WMI read. Each entry is (Name, HoldUntil):
     //   • HoldUntil in the FUTURE → an op just succeeded and we HOLD Name (its achieved state) until the
     //     lagging EnabledState catches up or the short grace expires, so a stale pre-op read can't flip
@@ -279,7 +283,7 @@ public sealed partial class DashboardWindow : Window
         {
             if (progress.Phase == VmOpPhase.Succeeded)
             {
-                _op.Remove(progress.VmName);
+                RemoveOp(progress.VmName);
                 // Show the achieved state immediately: the real EnabledState can lag several seconds
                 // behind a completed op (blank/"Unknown", or still the pre-op state, in the meantime).
                 // Hold the achieved state (future HoldUntil) so EffectiveStateName won't let a stale
@@ -287,7 +291,11 @@ public sealed partial class DashboardWindow : Window
                 if (SettledState(progress.Kind) is { } settled)
                     _effectiveState[progress.VmName] = (settled, DateTime.UtcNow.AddSeconds(6));
             }
-            else _op[progress.VmName] = progress;
+            else
+            {
+                _op[progress.VmName]      = progress;
+                _opSince[progress.VmName] = DateTime.UtcNow;   // (re)start the overlay's age clock
+            }
 
             // Update just the affected card in place — no need to wait for the next status tick.
             if (_cards.TryGetValue(progress.VmName, out var card))
@@ -321,9 +329,11 @@ public sealed partial class DashboardWindow : Window
     private readonly Dictionary<string, VmCard> _cards = new(StringComparer.OrdinalIgnoreCase);
     private List<string> _cardOrder = [];
 
-    /// <summary>Categorises everything that affects a card's row/button layout.</summary>
+    /// <summary>Categorises everything that affects a card's row/button layout. Uses the shared
+    /// <see cref="VmStateUi.ClassifyShape"/> so a transitional state gets its own shape (no power
+    /// buttons) and rebuilds the card when the transition lands (issue #30, finding 3).</summary>
     private static string ShapeOf(VmStatus? s) =>
-        (s switch { null => "none", { IsRunning: true } => "run", { IsPaused: true } => "pause", _ => "off" })
+        VmStateUi.ClassifyShape(s?.State).ToString()
         + "|" + (FormatUptime(s).Length > 0)
         + "|" + (s is { VhdBytes: > 0 });
 
@@ -402,7 +412,15 @@ public sealed partial class DashboardWindow : Window
         //     powers off asynchronously) and so never gets a Succeeded to clear it.
         // Succeeded ops are already removed in OnVmOperationProgress, so this covers the stuck cases.
         if (_op.TryGetValue(card.VmName, out var staleOp) && ReachedTarget(staleOp.Kind, s))
-            _op.Remove(card.VmName);
+            RemoveOp(card.VmName);
+
+        // Age-out overlays that never clear on their own: a hung/cancelled graceful Shutdown that stays
+        // in the Running phase (finding 1), and a sticky "Failed: …" overlay (finding 7). Runs on every
+        // ~2.5 s metrics tick while the dashboard is open, so a stuck card re-enables itself.
+        if (_op.TryGetValue(card.VmName, out var timedOp) &&
+            _opSince.TryGetValue(card.VmName, out var since) &&
+            VmStateUi.IsOverlayExpired(timedOp.Kind, timedOp.Phase, DateTime.UtcNow - since))
+            RemoveOp(card.VmName);
 
         if (_op.TryGetValue(card.VmName, out var op) && op.Message is { Length: > 0 } msg)
         {
@@ -489,6 +507,13 @@ public sealed partial class DashboardWindow : Window
 
     private bool IsOpActive(string vmName) =>
         _op.TryGetValue(vmName, out var op) && op.Phase is VmOpPhase.Requested or VmOpPhase.Running;
+
+    /// <summary>Removes a VM's overlay op and its age timestamp together, keeping the two dictionaries in sync.</summary>
+    private void RemoveOp(string vmName)
+    {
+        _op.Remove(vmName);
+        _opSince.Remove(vmName);
+    }
 
     private static void SetButtonsEnabled(VmCard card, bool enabled)
     {
@@ -718,25 +743,28 @@ public sealed partial class DashboardWindow : Window
             }),
         });
 
-        bool running = s?.IsRunning == true;
-        bool paused  = s?.IsPaused  == true;
-
-        if (running)
+        // Render buttons by coarse shape (issue #30, finding 3). A transitional state (Saving/Stopping/
+        // Starting/…) and an as-yet-unknown state both get NO power buttons — offering Start (or any
+        // verb) mid-transition would just return 0x8007. The state watcher rebuilds the card with the
+        // right buttons the instant the transition lands.
+        switch (VmStateUi.ClassifyShape(s?.State))
         {
-            PowerBtn("Shutdown", VmOpKind.Shutdown);
-            PowerBtn("Pause",    VmOpKind.Pause);
-            PowerBtn("Save",     VmOpKind.Save);
-            TaskBtn("Connect",   () => ConnectAsync(vm));
-        }
-        else if (paused)
-        {
-            PowerBtn("Resume", VmOpKind.Resume);
-            PowerBtn("Save",   VmOpKind.Save);
-        }
-        else if (s is not null) // Off / Saved — hide Start buttons while status is still loading
-        {
-            PowerBtn("Start",          VmOpKind.Start);
-            TaskBtn("Start & Connect", () => StartAndConnectAsync(vm));
+            case VmStateUi.Shape.Running:
+                PowerBtn("Shutdown", VmOpKind.Shutdown);
+                PowerBtn("Pause",    VmOpKind.Pause);
+                PowerBtn("Save",     VmOpKind.Save);
+                TaskBtn("Connect",   () => ConnectAsync(vm));
+                break;
+            case VmStateUi.Shape.Paused:
+                PowerBtn("Resume", VmOpKind.Resume);
+                PowerBtn("Save",   VmOpKind.Save);
+                break;
+            case VmStateUi.Shape.Off:
+            case VmStateUi.Shape.Saved:
+                PowerBtn("Start",          VmOpKind.Start);
+                TaskBtn("Start & Connect", () => StartAndConnectAsync(vm));
+                break;
+            // Shape.Transition / Shape.None → no buttons (mid-transition or still loading).
         }
         return panel;
     }
@@ -755,7 +783,10 @@ public sealed partial class DashboardWindow : Window
         // see its doc comment). On timeout it proceeds anyway rather than hanging the button — vmconnect
         // itself tolerates attaching to a VM that's still finishing boot.
         _vm.BeginPowerAction(vm.Name, VmOpKind.Start, VmOpOrigin.Dashboard);
-        await _vm.WaitUntilRunningAsync(vm.Name, StartAndConnectTimeout);
+        var readiness = await _vm.WaitUntilRunningAsync(vm.Name, StartAndConnectTimeout);
+        // Don't launch vmconnect onto a VM that failed to start (issue #30, finding 6); a plain timeout
+        // still connects, since vmconnect tolerates attaching to a VM that's still finishing boot.
+        if (readiness == VmService.StartReadiness.Failed) return;
         await ConnectAsync(vm);
     }
 

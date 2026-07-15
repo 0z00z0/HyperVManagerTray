@@ -79,13 +79,28 @@ public sealed class VmService : IDisposable
     private readonly object _subLock = new();
     private int _metricsSubs;
     private int _watcherSubs;
+    // True from the moment a watcher start is dispatched to the thread pool until it lands (or aborts),
+    // so a second Subscribe under _subLock doesn't kick off a duplicate watcher while the first connects.
+    private bool _watcherStarting;
     private CancellationTokenSource? _metricsCts;
-    private int _refreshing;   // 0/1 coalescing guard (Interlocked)
+    private int _refreshing;      // 0/1 coalescing guard (Interlocked)
+    private int _refreshPending;  // 0/1: a refresh arrived while one was in flight — run one more (finding 5)
+
+    // WMI scope/watcher self-recovery (issue #30, finding 4). _refreshFailures is only touched under
+    // _refreshLock; the rest coordinate the single-flight recovery task.
+    private const int MaxConsecutiveRefreshFailures = 3;
+    private int  _refreshFailures;
+    private int  _recoveryAttempts;   // escalates the backoff; reset by a clean RefreshCore
+    private bool _recovering;         // guarded by _subLock — one recovery in flight at a time
+    private bool _disposed;           // set in Dispose so a teardown-time watcher Stop doesn't self-recover
 
     // Caches (whole-object replacement on refresh → readers see a consistent snapshot).
     private volatile IReadOnlyDictionary<string, string> _vmIps =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     private volatile List<DiscoveredVm>? _discovered;
+    // Last per-VM status snapshot (state + metrics), exposed so the tray VM-Power submenu can filter
+    // its items by the VM's current state without a WMI call of its own (issue #30, finding 2).
+    private volatile IReadOnlyList<VmStatus>? _statuses;
     private readonly Dictionary<string, long> _memMax = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (long Bytes, DateTime At)> _vhd = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _switchByVm = new(StringComparer.OrdinalIgnoreCase);
@@ -117,6 +132,10 @@ public sealed class VmService : IDisposable
         _vmIps.TryGetValue(vmName, out var ip) ? ip : null;
 
     public List<DiscoveredVm>? GetCachedVmsSync() => _discovered;
+
+    /// <summary>Last per-VM status snapshot (state + metrics), or null before the first refresh. Read
+    /// from the UI thread with no WMI — used to filter the tray VM-Power submenu by state (finding 2).</summary>
+    public IReadOnlyList<VmStatus>? GetCachedStatusesSync() => _statuses;
 
     // ── Metrics subscription (dashboard open/close) ──────────────────────────────
 
@@ -197,33 +216,55 @@ public sealed class VmService : IDisposable
     /// <summary>One-shot refresh (e.g. startup pre-warm), regardless of subscription. Never throws.</summary>
     public Task RefreshOnceAsync() => Task.Run(RefreshCore);
 
+    /// <summary>Outcome of <see cref="WaitUntilRunningAsync"/> — lets Start &amp; Connect distinguish a
+    /// VM that failed to start (don't launch vmconnect onto a dead VM) from one that's merely slow.</summary>
+    public enum StartReadiness
+    {
+        /// <summary>The VM reached the Running state.</summary>
+        Running,
+        /// <summary>The Start power action reported a Failed phase — abort the connect (finding 6).</summary>
+        Failed,
+        /// <summary>Neither happened before the timeout — proceed anyway (vmconnect tolerates a booting VM).</summary>
+        Timeout,
+    }
+
     /// <summary>
     /// Waits until <paramref name="vmName"/> reports the "Running" state (mapped via
-    /// <see cref="WmiVmMapper.MapState"/>), or <paramref name="timeout"/> elapses — whichever comes
-    /// first. Event-driven, not a new polling loop: <see cref="SubscribeMetrics"/> (ref-counted, safe
-    /// to call even when the dashboard already has its own subscription active) guarantees the WMI
-    /// event watcher and metrics timer are actively pushing <see cref="StatusesChanged"/> updates for
-    /// the duration of the wait, so a real state change is picked up near-instantly. Subscribing our
-    /// handler first and then forcing one <see cref="RefreshOnceAsync"/> means a VM that's already
-    /// Running by the time this is called resolves immediately, instead of waiting on a change event
-    /// that might never come. Never throws; returns <c>false</c> on timeout so callers (e.g. Start
-    /// &amp; Connect) can proceed anyway — vmconnect.exe tolerates attaching to a VM that's still
-    /// finishing boot. Genuinely async (no blocking waits) — safe to await from the UI thread.
+    /// <see cref="WmiVmMapper.MapState"/>), or the Start action reports a Failed phase, or
+    /// <paramref name="timeout"/> elapses — whichever comes first. Event-driven, not a new polling loop:
+    /// <see cref="SubscribeMetrics"/> (ref-counted, safe to call even when the dashboard already has its
+    /// own subscription active) guarantees the WMI event watcher and metrics timer are actively pushing
+    /// <see cref="StatusesChanged"/> updates for the duration of the wait, so a real state change is
+    /// picked up near-instantly. Subscribing our handlers first and then forcing one
+    /// <see cref="RefreshOnceAsync"/> means a VM that's already Running by the time this is called
+    /// resolves immediately, instead of waiting on a change event that might never come. It also watches
+    /// <see cref="OperationProgress"/> so a Start that fails (e.g. not enough memory) returns
+    /// <see cref="StartReadiness.Failed"/> at once rather than blocking for the full timeout and then
+    /// connecting to a dead VM (issue #30, finding 6). Never throws; genuinely async (no blocking
+    /// waits) — safe to await from the UI thread.
     /// </summary>
-    public async Task<bool> WaitUntilRunningAsync(string vmName, TimeSpan timeout)
+    public async Task<StartReadiness> WaitUntilRunningAsync(string vmName, TimeSpan timeout)
     {
         SubscribeMetrics();
         try
         {
-            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var tcs = new TaskCompletionSource<StartReadiness>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             void OnStatuses(IReadOnlyList<VmStatus> statuses)
             {
                 var s = statuses.FirstOrDefault(x => x.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase));
-                if (s?.IsRunning == true) tcs.TrySetResult(true);
+                if (s?.IsRunning == true) tcs.TrySetResult(StartReadiness.Running);
             }
 
-            StatusesChanged += OnStatuses;
+            void OnProgress(VmOperationProgress p)
+            {
+                if (p.Phase == VmOpPhase.Failed && p.Kind == VmOpKind.Start &&
+                    p.VmName.Equals(vmName, StringComparison.OrdinalIgnoreCase))
+                    tcs.TrySetResult(StartReadiness.Failed);
+            }
+
+            StatusesChanged   += OnStatuses;
+            OperationProgress += OnProgress;
             try
             {
                 // Forces one immediate push through OnStatuses above, so an already-Running VM
@@ -231,11 +272,12 @@ public sealed class VmService : IDisposable
                 await RefreshOnceAsync().ConfigureAwait(false);
 
                 var winner = await Task.WhenAny(tcs.Task, Task.Delay(timeout)).ConfigureAwait(false);
-                return winner == tcs.Task;
+                return winner == tcs.Task ? tcs.Task.Result : StartReadiness.Timeout;
             }
             finally
             {
-                StatusesChanged -= OnStatuses;
+                StatusesChanged   -= OnStatuses;
+                OperationProgress -= OnProgress;
             }
         }
         finally
@@ -261,7 +303,7 @@ public sealed class VmService : IDisposable
     /// <summary>Starts the shared state watcher if it isn't already running. Caller holds <see cref="_subLock"/>.</summary>
     private void EnsureWatcher()
     {
-        if (_watcher is null) StartWatcher();
+        if (_watcher is null && !_watcherStarting) StartWatcher();
     }
 
     /// <summary>Stops the shared watcher once no metrics AND no tooltip subscriber needs it. Caller holds <see cref="_subLock"/>.</summary>
@@ -270,49 +312,153 @@ public sealed class VmService : IDisposable
         if (_metricsSubs == 0 && _watcherSubs == 0) StopWatcher();
     }
 
+    /// <summary>
+    /// Dispatches the watcher's COM setup to the thread pool. Caller holds <see cref="_subLock"/>.
+    /// <c>EnsureScope().Connect()</c> and <c>ManagementEventWatcher.Start()</c> are blocking MTA/COM
+    /// calls that must never run on the WinUI UI thread — Subscribe* are invoked from it (issue #29,
+    /// finding 4). The counter/flag state stays under <see cref="_subLock"/>; only the COM work is
+    /// offloaded. If every subscriber has gone away by the time the connect completes, the freshly
+    /// started watcher is torn down again rather than left running.
+    /// </summary>
     private void StartWatcher()
     {
-        try
+        _watcherStarting = true;
+        _ = Task.Run(() =>
         {
-            EnsureScope();
-            // Filter to ACTUAL EnabledState transitions. Without the "<> PreviousInstance" clause a
-            // running VM fires a modification event roughly every WITHIN period anyway (its
-            // OnTimeInMilliseconds keeps ticking), which would drive a full RefreshCore every ~2 s for
-            // the whole lifetime of the always-on tooltip watcher — the idle-cost regression issue #16
-            // warns about. With the clause the watcher (and thus RefreshCore) fires only on a real
-            // start/stop/pause/save/resume. The WMI service still evaluates the WITHIN 2 poll host-side
-            // — the same mechanism Hyper-V Manager uses — but our process does no WMI until a real
-            // transition. The dashboard's live metrics/IPs keep flowing from the 2.5 s metrics loop.
-            _watcher = new ManagementEventWatcher(_scope,
-                new EventQuery("SELECT * FROM __InstanceModificationEvent WITHIN 2 " +
-                               "WHERE TargetInstance ISA 'Msvm_ComputerSystem' " +
-                               "AND TargetInstance.EnabledState <> PreviousInstance.EnabledState"));
-            _watcher.EventArrived += (_, _) =>
+            ManagementEventWatcher? started = null;
+            try
             {
-                // A VM whose power state changed may also have gained/lost a switch binding (e.g. it
-                // just started), so re-read the switch map on the next refresh — conversion #3.
-                _switchCacheDirty = true;
-                TriggerRefresh();
-            };
-            _watcher.Start();
-        }
-        catch (Exception ex) { _logger.LogWarning(ex, "Could not start VM state watcher (metrics timer still covers it)"); }
+                EnsureScope();
+                // Filter to ACTUAL EnabledState transitions. Without the "<> PreviousInstance" clause a
+                // running VM fires a modification event roughly every WITHIN period anyway (its
+                // OnTimeInMilliseconds keeps ticking), which would drive a full RefreshCore every ~2 s for
+                // the whole lifetime of the always-on tooltip watcher — the idle-cost regression issue #16
+                // warns about. With the clause the watcher (and thus RefreshCore) fires only on a real
+                // start/stop/pause/save/resume. The WMI service still evaluates the WITHIN 2 poll host-side
+                // — the same mechanism Hyper-V Manager uses — but our process does no WMI until a real
+                // transition. The dashboard's live metrics/IPs keep flowing from the 2.5 s metrics loop.
+                var watcher = new ManagementEventWatcher(_scope,
+                    new EventQuery("SELECT * FROM __InstanceModificationEvent WITHIN 2 " +
+                                   "WHERE TargetInstance ISA 'Msvm_ComputerSystem' " +
+                                   "AND TargetInstance.EnabledState <> PreviousInstance.EnabledState"));
+                watcher.EventArrived += (_, _) =>
+                {
+                    // A VM whose power state changed may also have gained/lost a switch binding (e.g. it
+                    // just started), so re-read the switch map on the next refresh — conversion #3.
+                    _switchCacheDirty = true;
+                    TriggerRefresh();
+                };
+                // The watcher can die silently (WMI service hiccup, session drop) — Stopped fires when it
+                // does. Re-establish scope+watcher with backoff so events keep flowing (issue #30,
+                // finding 4). An intentional StopWatcher() only happens when no subscriber remains, and
+                // RecoverWatcher no-ops in that case, so this won't fight a deliberate teardown.
+                watcher.Stopped += (_, _) => RecoverWatcher("watcher stopped");
+                watcher.Start();
+                started = watcher;
+            }
+            catch (Exception ex) { _logger.LogWarning(ex, "Could not start VM state watcher (metrics timer still covers it)"); }
+
+            lock (_subLock)
+            {
+                _watcherStarting = false;
+                // No subscribers left (all unsubscribed while we were connecting), or a start failed:
+                // don't publish a live watcher. Tear a successfully-started-but-now-unwanted one down.
+                if (started is null) return;
+                if (_metricsSubs == 0 && _watcherSubs == 0)
+                {
+                    try { started.Stop(); started.Dispose(); } catch { }
+                    return;
+                }
+                _watcher = started;
+            }
+        });
     }
 
     private void StopWatcher()
     {
-        try { _watcher?.Stop(); _watcher?.Dispose(); } catch { }
+        // Hand the blocking Stop()/Dispose() COM calls to the thread pool too; StopWatcherIfIdle runs
+        // under _subLock from the UI thread. Null the field synchronously so EnsureWatcher sees "stopped".
+        var w = _watcher;
         _watcher = null;
+        if (w is null) return;
+        _ = Task.Run(() => { try { w.Stop(); w.Dispose(); } catch { } });
     }
 
-    /// <summary>Coalesced background refresh — skips if one is already running.</summary>
+    /// <summary>
+    /// Tears down the current watcher + WMI scope and re-arms them after a backoff, but only while a
+    /// subscriber still needs it (issue #30, finding 4). Triggered by the watcher's <c>Stopped</c> event
+    /// or by a run of consecutive <see cref="RefreshCore"/> failures. Single-flight via
+    /// <see cref="_recovering"/>; a deliberate idle <see cref="StopWatcher"/> is filtered out because
+    /// this no-ops when no subscriber remains. Never throws.
+    /// </summary>
+    private void RecoverWatcher(string reason)
+    {
+        int attempt;
+        lock (_subLock)
+        {
+            if (_disposed || _recovering) return;
+            if (_metricsSubs == 0 && _watcherSubs == 0) return;   // nobody needs it — this was an intentional stop
+            _recovering = true;
+            attempt = ++_recoveryAttempts;
+        }
+
+        // Escalating backoff, capped at 30 s, so a persistently sick WMI service isn't hammered.
+        var backoff = TimeSpan.FromSeconds(Math.Min(30, 2 * attempt));
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                _logger.LogWarning("Re-establishing WMI scope/watcher (attempt {Attempt}) — {Reason}", attempt, reason);
+                StopWatcher();                                   // drop the dead watcher (offloaded dispose)
+                lock (_scopeLock) { _scope = null; }             // force EnsureScope to reconnect
+                await Task.Delay(backoff).ConfigureAwait(false);
+
+                lock (_subLock)
+                {
+                    _recovering = false;
+                    if (_disposed || (_metricsSubs == 0 && _watcherSubs == 0)) return;
+                    EnsureWatcher();                             // reconnects scope + starts a fresh watcher
+                }
+                TriggerRefresh();                                // re-prime caches/tooltip immediately
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "WMI watcher recovery failed");
+                lock (_subLock) { _recovering = false; }
+            }
+        });
+    }
+
+    /// <summary>
+    /// Coalesced background refresh. If one is already running, the event isn't dropped: a pending flag
+    /// is set so the in-flight pass runs exactly one more time after it finishes (issue #30, finding 5).
+    /// Previously a 2nd event that arrived mid-refresh was silently lost, so a rapid state change could
+    /// leave the UI showing stale data until the next unrelated trigger.
+    /// </summary>
     private void TriggerRefresh()
     {
-        if (Interlocked.CompareExchange(ref _refreshing, 1, 0) != 0) return;
+        if (Interlocked.CompareExchange(ref _refreshing, 1, 0) != 0)
+        {
+            Volatile.Write(ref _refreshPending, 1);   // ask the in-flight pass to run once more
+            return;
+        }
         _ = Task.Run(() =>
         {
-            try { RefreshCore(); }
+            try
+            {
+                do
+                {
+                    Volatile.Write(ref _refreshPending, 0);
+                    RefreshCore();
+                }
+                while (Volatile.Read(ref _refreshPending) == 1);
+            }
             finally { Interlocked.Exchange(ref _refreshing, 0); }
+
+            // Tail race: an event could set _refreshPending after our last check but before we released
+            // _refreshing. Re-check and re-trigger so that event still gets serviced.
+            if (Volatile.Read(ref _refreshPending) == 1) TriggerRefresh();
         });
     }
 
@@ -360,12 +506,24 @@ public sealed class VmService : IDisposable
 
                 _discovered = ReadDiscovered(scope, vms);
                 _vmIps      = ReadIps(scope, vms);
+                _statuses   = list;
 
+                _refreshFailures   = 0;   // a clean read resets the failure/backoff counters
+                _recoveryAttempts  = 0;
                 StatusesChanged?.Invoke(list);
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "VM WMI refresh failed");
+                // A broken scope/watcher shows up as repeated RefreshCore failures. After a few in a row,
+                // tear the scope+watcher down and re-arm with backoff (issue #30, finding 4) — otherwise
+                // the watcher can die silently while the scope still reports "connected" and no event or
+                // metric ever flows again.
+                if (++_refreshFailures >= MaxConsecutiveRefreshFailures)
+                {
+                    _refreshFailures = 0;
+                    RecoverWatcher("consecutive refresh failures");
+                }
             }
         }
     }
@@ -893,6 +1051,7 @@ public sealed class VmService : IDisposable
 
     public void Dispose()
     {
+        lock (_subLock) { _disposed = true; }   // stop any watcher-Stopped from self-recovering during teardown
         try { _metricsCts?.Cancel(); _metricsCts?.Dispose(); } catch { }
         StopWatcher();
     }

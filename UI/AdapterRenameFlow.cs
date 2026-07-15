@@ -72,7 +72,10 @@ internal sealed class AdapterRenameFlow
                         && !string.IsNullOrEmpty(existing.OriginalFriendlyName);
         string? savedOriginal = canReset ? existing!.OriginalFriendlyName : null;
 
-        var others = AdapterMatcher.GetPhysicalAdapters()
+        // GetPhysicalAdapters enumerates all NICs and can block for hundreds of ms; the awaits above
+        // resume on the UI thread, so run it on the thread pool to keep the UI responsive
+        // (issue #29, finding 3 — mirrors SettingsWindow.LoadAdaptersAsync).
+        var others = (await Task.Run(AdapterMatcher.GetPhysicalAdapters))
             .Where(p => !p.InterfaceGuid.Equals(adapter.InterfaceGuid, StringComparison.OrdinalIgnoreCase))
             .Select(p => p.Description)
             .ToList();

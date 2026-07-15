@@ -160,9 +160,24 @@ internal sealed class TrayMenu
             var name    = vm.Name;
             var nicName = vm.NicName;
             var sub     = new MenuFlyoutSubItem { Text = $"{name} (unmanaged)" };
-            sub.Items.Add(PowerItem("Start",    name, VmOpKind.Start));
-            sub.Items.Add(PowerItem("Shutdown", name, VmOpKind.Shutdown));
-            sub.Items.Add(Item("Connect",  () => { Shell.OpenVmConnect(name); return Task.CompletedTask; }));
+
+            // Filter the limited unmanaged action set by state too (issue #30, finding 2).
+            var uState = StateOf(name);
+            var uShape = VmStateUi.ClassifyShape(uState);
+            var uAllowed = VmStateUi.AllowedVerbs(uState);
+            if (uShape == VmStateUi.Shape.None)
+            {
+                sub.Items.Add(PowerItem("Start",    name, VmOpKind.Start));
+                sub.Items.Add(PowerItem("Shutdown", name, VmOpKind.Shutdown));
+                sub.Items.Add(Item("Connect",  () => { Shell.OpenVmConnect(name); return Task.CompletedTask; }));
+            }
+            else
+            {
+                if (uAllowed.Contains(VmOpKind.Start))    sub.Items.Add(PowerItem("Start",    name, VmOpKind.Start));
+                if (uAllowed.Contains(VmOpKind.Shutdown)) sub.Items.Add(PowerItem("Shutdown", name, VmOpKind.Shutdown));
+                if (uShape == VmStateUi.Shape.Running)
+                    sub.Items.Add(Item("Connect", () => { Shell.OpenVmConnect(name); return Task.CompletedTask; }));
+            }
             sub.Items.Add(new MenuFlyoutSeparator());
             sub.Items.Add(Item("Add to config…", async () =>
             {
@@ -203,15 +218,55 @@ internal sealed class TrayMenu
                _vm.BeginPowerAction(vmName, kind, VmOpOrigin.Tray);
            }) };
 
-    /// <summary>The full power-action set for a managed VM: Start/Start&&Connect/Shutdown/Pause/Resume/Save.</summary>
+    /// <summary>The current mapped state of a VM from VmService's cached snapshot, or null if unknown
+    /// (cache still warming). No WMI — a pure read of <see cref="VmService.GetCachedStatusesSync"/>.</summary>
+    private string? StateOf(string vmName) =>
+        _vm.GetCachedStatusesSync()
+           ?.FirstOrDefault(x => x.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase))?.State;
+
+    /// <summary>
+    /// The power-action set for a managed VM, filtered to the verbs valid in its current state
+    /// (issue #30, finding 2) so the menu no longer offers e.g. Shutdown on a stopped VM (which just
+    /// failed silently). When no recognised state snapshot exists yet (cache warming / "Unknown"), the
+    /// full legacy set is shown rather than an empty menu; a transitional state shows a disabled hint.
+    /// </summary>
     private void AddPowerItems(MenuFlyoutSubItem sub, string vmName, string nicName)
     {
-        sub.Items.Add(PowerItem("Start",       vmName, VmOpKind.Start));
-        sub.Items.Add(Item("Start && Connect", () => StartAndConnect(vmName, nicName)));
-        sub.Items.Add(PowerItem("Shutdown",    vmName, VmOpKind.Shutdown));
-        sub.Items.Add(PowerItem("Pause",       vmName, VmOpKind.Pause));
-        sub.Items.Add(PowerItem("Resume",      vmName, VmOpKind.Resume));
-        sub.Items.Add(PowerItem("Save",        vmName, VmOpKind.Save));
+        var state = StateOf(vmName);
+        var shape = VmStateUi.ClassifyShape(state);
+
+        if (shape == VmStateUi.Shape.None)
+        {
+            // State not yet known — keep the full set so actions aren't hidden during the warm-up.
+            sub.Items.Add(PowerItem("Start",       vmName, VmOpKind.Start));
+            sub.Items.Add(Item("Start && Connect", () => StartAndConnect(vmName, nicName)));
+            sub.Items.Add(PowerItem("Shutdown",    vmName, VmOpKind.Shutdown));
+            sub.Items.Add(PowerItem("Pause",       vmName, VmOpKind.Pause));
+            sub.Items.Add(PowerItem("Resume",      vmName, VmOpKind.Resume));
+            sub.Items.Add(PowerItem("Save",        vmName, VmOpKind.Save));
+            return;
+        }
+
+        var allowed = VmStateUi.AllowedVerbs(state);
+        if (allowed.Contains(VmOpKind.Start))
+        {
+            sub.Items.Add(PowerItem("Start",       vmName, VmOpKind.Start));
+            sub.Items.Add(Item("Start && Connect", () => StartAndConnect(vmName, nicName)));
+        }
+        if (allowed.Contains(VmOpKind.Resume))   sub.Items.Add(PowerItem("Resume",   vmName, VmOpKind.Resume));
+        if (allowed.Contains(VmOpKind.Shutdown)) sub.Items.Add(PowerItem("Shutdown", vmName, VmOpKind.Shutdown));
+        if (allowed.Contains(VmOpKind.Pause))    sub.Items.Add(PowerItem("Pause",    vmName, VmOpKind.Pause));
+        if (allowed.Contains(VmOpKind.Save))     sub.Items.Add(PowerItem("Save",     vmName, VmOpKind.Save));
+        // A running VM can be attached to without a power change.
+        if (shape == VmStateUi.Shape.Running)
+            sub.Items.Add(Item("Connect", () => { Shell.OpenVmConnect(vmName); return Task.CompletedTask; }));
+
+        if (sub.Items.Count == 0)
+            sub.Items.Add(new MenuFlyoutItem
+            {
+                Text      = shape == VmStateUi.Shape.Transition ? $"({state}…)" : "(no actions available)",
+                IsEnabled = false,
+            });
     }
 
     // Cold boot under host load can legitimately take a while; long enough to cover that without
@@ -227,7 +282,9 @@ internal sealed class TrayMenu
         // with an actual readiness wait (event-driven off VmService.StatusesChanged — see its doc
         // comment). On timeout it proceeds anyway rather than silently doing nothing.
         _vm.BeginPowerAction(vmName, VmOpKind.Start, VmOpOrigin.Tray);
-        await _vm.WaitUntilRunningAsync(vmName, StartAndConnectTimeout);
+        var readiness = await _vm.WaitUntilRunningAsync(vmName, StartAndConnectTimeout);
+        // Skip the connect if the Start actually failed (issue #30, finding 6); a timeout still proceeds.
+        if (readiness == VmService.StartReadiness.Failed) return;
         var sw = _monitor.LastApplied?.VirtualSwitch;
         if (!string.IsNullOrEmpty(sw)) await _hyperV.ApplySwitchAsync(vmName, nicName, sw);
     }
@@ -265,10 +322,26 @@ internal sealed class TrayMenu
 
     private async Task AddCurrentAsBridged()
     {
-        var info = AdapterMatcher.GetCurrentNetworkInfo();
+        // GetCurrentNetworkInfo enumerates all NICs (GetAllNetworkInterfaces + GetIPProperties) and can
+        // block for hundreds of ms; this runs from a tray command on the UI thread, so offload it to the
+        // thread pool to keep the UI responsive (issue #29, finding 3).
+        var info = await Task.Run(AdapterMatcher.GetCurrentNetworkInfo);
         if (info is null)
         {
             NativeMethods.Warn("No active network adapter with an IPv4 address was found.", AppName);
+            return;
+        }
+
+        // A Wi-Fi adapter surfaces as Msvm_WiFiPort, which the switch-binding path never targets, so a
+        // rule bound to it could never take effect (issue #29, finding 5). Reject it up front with an
+        // explanation rather than silently saving a rule that will never bridge.
+        if (info.IsWireless)
+        {
+            NativeMethods.Warn(
+                $"\"{info.AdapterDescription}\" is a Wi-Fi adapter.\n\n" +
+                "Bridging a Hyper-V switch onto a wireless adapter isn't supported — the switch can only " +
+                "bind to a wired (Ethernet) adapter, such as a USB-Ethernet dock. No rule was added.",
+                AppName);
             return;
         }
 
