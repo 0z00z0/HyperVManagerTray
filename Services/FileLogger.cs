@@ -2,22 +2,60 @@ using Microsoft.Extensions.Logging;
 
 namespace HyperVManagerTray.Services;
 
-/// <summary><see cref="ILoggingBuilder"/> extension for registering the simple file logger.</summary>
+/// <summary><see cref="ILoggingBuilder"/> extension for registering the category-routing file logger.</summary>
 public static class FileLoggerExtensions
 {
-    /// <summary>Adds a logger that appends each entry as a line to <paramref name="path"/>.</summary>
-    public static ILoggingBuilder AddSimpleFileLogger(this ILoggingBuilder builder, string path)
+    /// <summary>
+    /// Adds a logger that appends each entry as a line to a file chosen by the logger's category name:
+    /// a category listed in <paramref name="categoryPaths"/> goes to its dedicated file, everything
+    /// else goes to <paramref name="defaultPath"/>. Categories sharing a path share one writer.
+    /// </summary>
+    /// <param name="defaultPath">The catch-all log (e.g. switcher.log) for un-routed categories.</param>
+    /// <param name="categoryPaths">Exact-category-name → dedicated-file map (e.g. "vm-power" → vm-power.log).</param>
+    public static ILoggingBuilder AddSimpleFileLogger(
+        this ILoggingBuilder builder,
+        string defaultPath,
+        IReadOnlyDictionary<string, string>? categoryPaths = null)
     {
-        builder.AddProvider(new FileLoggerProvider(path));
+        builder.AddProvider(new FileLoggerProvider(defaultPath, categoryPaths));
         return builder;
     }
 }
 
-/// <summary>Provides <see cref="FileLogger"/> instances that share a single append-mode writer.</summary>
-internal sealed class FileLoggerProvider(string path) : ILoggerProvider
+/// <summary>
+/// Routes each logger category to a file and hands out <see cref="FileLogger"/> instances that append
+/// to it. One shared append-mode <see cref="StreamWriter"/> is kept per distinct file path (categories
+/// mapped to the same path share a writer); a single lock serialises all writes across every file.
+/// </summary>
+internal sealed class FileLoggerProvider : ILoggerProvider
 {
-    private readonly StreamWriter _writer = OpenWriter(path);
+    private readonly string _defaultPath;
+    private readonly IReadOnlyDictionary<string, string> _categoryPaths;
+    // One writer per distinct destination path (default + each dedicated category file).
+    private readonly Dictionary<string, StreamWriter> _writers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lock _lock = new();
+
+    public FileLoggerProvider(string defaultPath, IReadOnlyDictionary<string, string>? categoryPaths = null)
+    {
+        _defaultPath   = defaultPath;
+        _categoryPaths = categoryPaths ?? new Dictionary<string, string>(StringComparer.Ordinal);
+
+        // Open every sink up front (construction is single-threaded) so a category's first log line
+        // never pays the open cost, and a bad path fails over to the null writer here, not mid-run.
+        OpenIfNeeded(_defaultPath);
+        foreach (var path in _categoryPaths.Values) OpenIfNeeded(path);
+    }
+
+    // Caller must hold _lock (or be in the constructor, which is single-threaded).
+    private StreamWriter OpenIfNeeded(string path)
+    {
+        if (!_writers.TryGetValue(path, out var writer))
+        {
+            writer = OpenWriter(path);
+            _writers[path] = writer;
+        }
+        return writer;
+    }
 
     /// <summary>
     /// Opens the log for appending without ever letting a file-lock fail app startup.
@@ -50,9 +88,19 @@ internal sealed class FileLoggerProvider(string path) : ILoggerProvider
         return StreamWriter.Null;  // logging disabled this session; app still starts
     }
 
-    public ILogger CreateLogger(string categoryName) => new FileLogger(categoryName, _writer, _lock);
+    public ILogger CreateLogger(string categoryName)
+    {
+        var path = _categoryPaths.TryGetValue(categoryName, out var mapped) ? mapped : _defaultPath;
+        StreamWriter writer;
+        lock (_lock) writer = OpenIfNeeded(path);
+        return new FileLogger(categoryName, writer, _lock);
+    }
 
-    public void Dispose() => _writer.Dispose();
+    public void Dispose()
+    {
+        lock (_lock)
+            foreach (var writer in _writers.Values) writer.Dispose();
+    }
 }
 
 /// <summary>Minimal <see cref="ILogger"/> that writes timestamped lines to a shared <see cref="StreamWriter"/>.</summary>

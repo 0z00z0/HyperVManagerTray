@@ -695,7 +695,7 @@ public sealed partial class DashboardWindow : Window
             Content  = text,
             FontSize = 11,
             Padding  = new Thickness(8, 3, 8, 3),
-            Command  = new RelayCommand(() => _vm.BeginPowerAction(vm.Name, kind)),
+            Command  = new RelayCommand(() => _vm.BeginPowerAction(vm.Name, kind, VmOpOrigin.Dashboard)),
         });
 
         // The two actions that also launch vmconnect.exe still need an awaited Task.
@@ -743,7 +743,7 @@ public sealed partial class DashboardWindow : Window
         // flat 2.5s guess with an actual readiness wait (event-driven off VmService.StatusesChanged —
         // see its doc comment). On timeout it proceeds anyway rather than hanging the button — vmconnect
         // itself tolerates attaching to a VM that's still finishing boot.
-        _vm.BeginPowerAction(vm.Name, VmOpKind.Start);
+        _vm.BeginPowerAction(vm.Name, VmOpKind.Start, VmOpOrigin.Dashboard);
         await _vm.WaitUntilRunningAsync(vm.Name, StartAndConnectTimeout);
         await ConnectAsync(vm);
     }

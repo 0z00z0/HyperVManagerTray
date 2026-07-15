@@ -7,10 +7,20 @@ namespace HyperVManagerTray.Tests;
 public class FileLoggerTests : IDisposable
 {
     private readonly string _path = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".log");
+    private readonly List<string> _extraPaths = [];
+
+    private string TempPath()
+    {
+        var p = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".log");
+        _extraPaths.Add(p);
+        return p;
+    }
 
     public void Dispose()
     {
         try { File.Delete(_path); } catch { /* best-effort */ }
+        foreach (var p in _extraPaths)
+            try { File.Delete(p); } catch { /* best-effort */ }
     }
 
     // The resume-from-standby race: a second instance must be able to open the same log while
@@ -72,5 +82,64 @@ public class FileLoggerTests : IDisposable
 
         var text = File.Exists(_path) ? File.ReadAllText(_path) : "";
         Assert.DoesNotContain("should not appear", text);
+    }
+
+    // ── Category routing (issue #20) ────────────────────────────────────────────
+
+    // A mapped category writes to its dedicated file; an un-mapped category writes to the default.
+    [Fact]
+    public void CategoryRouting_SendsMappedCategoryToItsFile_AndOthersToDefault()
+    {
+        var vmPowerPath = TempPath();
+        var map = new Dictionary<string, string> { ["vm-power"] = vmPowerPath };
+
+        using (var p = new FileLoggerProvider(_path, map))
+        {
+            p.CreateLogger("vm-power").LogInformation("power line");
+            p.CreateLogger("HyperVManagerTray.Services.VmService").LogInformation("default line");
+        }
+
+        var vmPowerText = File.ReadAllText(vmPowerPath);
+        var defaultText = File.ReadAllText(_path);
+
+        // The power line landed only in vm-power.log …
+        Assert.Contains("power line", vmPowerText);
+        Assert.DoesNotContain("power line", defaultText);
+        // … and the un-mapped category landed only in the default log.
+        Assert.Contains("default line", defaultText);
+        Assert.DoesNotContain("default line", vmPowerText);
+    }
+
+    // Two categories mapped to the SAME path share one writer and both land in that file.
+    [Fact]
+    public void CategoryRouting_TwoCategoriesSharingAPath_BothWriteToIt()
+    {
+        var uiPath = TempPath();
+        var map = new Dictionary<string, string> { ["ui"] = uiPath, ["also-ui"] = uiPath };
+
+        using (var p = new FileLoggerProvider(_path, map))
+        {
+            p.CreateLogger("ui").LogInformation("from ui");
+            p.CreateLogger("also-ui").LogInformation("from also-ui");
+        }
+
+        var uiText = File.ReadAllText(uiPath);
+        Assert.Contains("from ui", uiText);
+        Assert.Contains("from also-ui", uiText);
+    }
+
+    // With no category map the provider behaves exactly like the old single-sink logger.
+    [Fact]
+    public void CategoryRouting_WithNoMap_EverythingGoesToDefault()
+    {
+        using (var p = new FileLoggerProvider(_path))
+        {
+            p.CreateLogger("vm-power").LogInformation("still default");
+            p.CreateLogger("anything").LogInformation("also default");
+        }
+
+        var text = File.ReadAllText(_path);
+        Assert.Contains("still default", text);
+        Assert.Contains("also default", text);
     }
 }

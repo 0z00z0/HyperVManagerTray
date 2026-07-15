@@ -97,7 +97,12 @@ public partial class App : Application
                 // Minimum level comes from config.json (defaults to Debug). Read directly here — the
                 // logger must exist before the full ConfigManager (which needs a logger) is built.
                 b.SetMinimumLevel(ConfigManager.ReadLogLevel(configPath));
-                b.AddSimpleFileLogger(AppInfo.LogFile);
+                // Category-routing sink: the "vm-power" category → vm-power.log (issue #20);
+                // everything else → switcher.log.
+                b.AddSimpleFileLogger(AppInfo.LogFile, new Dictionary<string, string>
+                {
+                    ["vm-power"] = AppInfo.VmPowerLog,
+                });
             });
 
             // Capture a minidump if the app dies from a NATIVE fault (GDI+, comctl32, the
@@ -118,11 +123,16 @@ public partial class App : Application
                 return;
             }
 
+            // Shared "vm-power" category logger → vm-power.log (issue #20): the begin+outcome audit
+            // trail for every VM power action, from both the user (VmService) and automatic triggers
+            // (NetworkMonitor autostart / on-bridge-lost).
+            var powerLog = _loggerFactory.CreateLogger("vm-power");
+
             _exeDir  = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
             _config  = new ConfigManager(configPath, _loggerFactory.CreateLogger<ConfigManager>());
             _hyperV  = new HyperVManager(_loggerFactory.CreateLogger<HyperVManager>());
-            _vm      = new VmService(_loggerFactory.CreateLogger<VmService>());
-            _monitor = new NetworkMonitor(_config, _hyperV, _vm, _loggerFactory.CreateLogger<NetworkMonitor>());
+            _vm      = new VmService(_loggerFactory.CreateLogger<VmService>(), powerLog);
+            _monitor = new NetworkMonitor(_config, _hyperV, _vm, _loggerFactory.CreateLogger<NetworkMonitor>(), powerLog);
 
             InitTrayIcon();
 

@@ -196,7 +196,7 @@ internal sealed class TrayMenu
 
     /// <summary>A menu item that fires a VM power action — synchronous, non-blocking (see <see cref="VmService.BeginPowerAction"/>).</summary>
     private MenuFlyoutItem PowerItem(string text, string vmName, VmOpKind kind)
-        => new() { Text = text, Command = new RelayCommand(() => _vm.BeginPowerAction(vmName, kind)) };
+        => new() { Text = text, Command = new RelayCommand(() => _vm.BeginPowerAction(vmName, kind, VmOpOrigin.Tray)) };
 
     /// <summary>The full power-action set for a managed VM: Start/Start&&Connect/Shutdown/Pause/Resume/Save.</summary>
     private void AddPowerItems(MenuFlyoutSubItem sub, string vmName, string nicName)
@@ -221,7 +221,7 @@ internal sealed class TrayMenu
         // BeginPowerAction is fire-and-forget; WaitUntilRunningAsync replaces the old flat 2.5s guess
         // with an actual readiness wait (event-driven off VmService.StatusesChanged — see its doc
         // comment). On timeout it proceeds anyway rather than silently doing nothing.
-        _vm.BeginPowerAction(vmName, VmOpKind.Start);
+        _vm.BeginPowerAction(vmName, VmOpKind.Start, VmOpOrigin.Tray);
         await _vm.WaitUntilRunningAsync(vmName, StartAndConnectTimeout);
         var sw = _monitor.LastApplied?.VirtualSwitch;
         if (!string.IsNullOrEmpty(sw)) await _hyperV.ApplySwitchAsync(vmName, nicName, sw);
