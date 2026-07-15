@@ -2,6 +2,30 @@ using Microsoft.Extensions.Logging;
 
 namespace HyperVManagerTray.Services;
 
+/// <summary>
+/// A live, mutable minimum log level shared by the file logger and consulted on <em>every</em> write,
+/// so a level change (from Settings or a config.json edit) takes effect immediately with no restart
+/// (issue #22). The factory's own minimum is pinned to <see cref="LogLevel.Trace"/> so it never
+/// pre-filters ahead of this switch; this switch is the single runtime gate for switcher.log,
+/// vm-power.log and ui.log alike. Setting it to <see cref="LogLevel.None"/> silences all three.
+/// </summary>
+public sealed class LogLevelSwitch(LogLevel initial)
+{
+    // Enum with an int backing is a valid volatile type; reads/writes cross threads (UI sets it,
+    // background log-writer threads read it) without tearing.
+    private volatile LogLevel _minimum = initial;
+
+    /// <summary>The current minimum level. Anything below it (or <see cref="LogLevel.None"/>) is dropped.</summary>
+    public LogLevel MinimumLevel
+    {
+        get => _minimum;
+        set => _minimum = value;
+    }
+
+    /// <summary>True when <paramref name="level"/> should be written at the current minimum.</summary>
+    public bool IsEnabled(LogLevel level) => level != LogLevel.None && level >= _minimum;
+}
+
 /// <summary><see cref="ILoggingBuilder"/> extension for registering the category-routing file logger.</summary>
 public static class FileLoggerExtensions
 {
@@ -12,12 +36,17 @@ public static class FileLoggerExtensions
     /// </summary>
     /// <param name="defaultPath">The catch-all log (e.g. switcher.log) for un-routed categories.</param>
     /// <param name="categoryPaths">Exact-category-name → dedicated-file map (e.g. "vm-power" → vm-power.log).</param>
+    /// <param name="levelSwitch">
+    /// Optional live minimum-level gate consulted per write (issue #22). When null, every level except
+    /// <see cref="LogLevel.None"/> is written and filtering is left to the LoggerFactory minimum.
+    /// </param>
     public static ILoggingBuilder AddSimpleFileLogger(
         this ILoggingBuilder builder,
         string defaultPath,
-        IReadOnlyDictionary<string, string>? categoryPaths = null)
+        IReadOnlyDictionary<string, string>? categoryPaths = null,
+        LogLevelSwitch? levelSwitch = null)
     {
-        builder.AddProvider(new FileLoggerProvider(defaultPath, categoryPaths));
+        builder.AddProvider(new FileLoggerProvider(defaultPath, categoryPaths, levelSwitch));
         return builder;
     }
 }
@@ -31,14 +60,19 @@ internal sealed class FileLoggerProvider : ILoggerProvider
 {
     private readonly string _defaultPath;
     private readonly IReadOnlyDictionary<string, string> _categoryPaths;
+    private readonly LogLevelSwitch? _levelSwitch;
     // One writer per distinct destination path (default + each dedicated category file).
     private readonly Dictionary<string, StreamWriter> _writers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lock _lock = new();
 
-    public FileLoggerProvider(string defaultPath, IReadOnlyDictionary<string, string>? categoryPaths = null)
+    public FileLoggerProvider(
+        string defaultPath,
+        IReadOnlyDictionary<string, string>? categoryPaths = null,
+        LogLevelSwitch? levelSwitch = null)
     {
         _defaultPath   = defaultPath;
         _categoryPaths = categoryPaths ?? new Dictionary<string, string>(StringComparer.Ordinal);
+        _levelSwitch   = levelSwitch;
 
         // Open every sink up front (construction is single-threaded) so a category's first log line
         // never pays the open cost, and a bad path fails over to the null writer here, not mid-run.
@@ -93,7 +127,7 @@ internal sealed class FileLoggerProvider : ILoggerProvider
         var path = _categoryPaths.TryGetValue(categoryName, out var mapped) ? mapped : _defaultPath;
         StreamWriter writer;
         lock (_lock) writer = OpenIfNeeded(path);
-        return new FileLogger(categoryName, writer, _lock);
+        return new FileLogger(categoryName, writer, _lock, _levelSwitch);
     }
 
     public void Dispose()
@@ -104,12 +138,14 @@ internal sealed class FileLoggerProvider : ILoggerProvider
 }
 
 /// <summary>Minimal <see cref="ILogger"/> that writes timestamped lines to a shared <see cref="StreamWriter"/>.</summary>
-internal sealed class FileLogger(string category, StreamWriter writer, Lock lockObj) : ILogger
+internal sealed class FileLogger(string category, StreamWriter writer, Lock lockObj, LogLevelSwitch? levelSwitch) : ILogger
 {
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-    // Level filtering is owned by the LoggerFactory's configured minimum (SetMinimumLevel, driven
-    // by config.json's logLevel). This provider writes whatever the factory lets through.
-    public bool IsEnabled(LogLevel level) => level != LogLevel.None;
+    // Level filtering: when a live LogLevelSwitch is supplied it is the runtime gate (issue #22),
+    // consulted per write so a Settings/config change takes effect with no restart. Without one,
+    // filtering is left to the LoggerFactory's configured minimum and everything but None passes.
+    public bool IsEnabled(LogLevel level) =>
+        levelSwitch is null ? level != LogLevel.None : levelSwitch.IsEnabled(level);
 
     public void Log<TState>(LogLevel level, EventId eventId, TState state,
         Exception? exception, Func<TState, Exception?, string> formatter)

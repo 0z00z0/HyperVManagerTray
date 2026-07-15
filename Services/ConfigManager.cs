@@ -31,6 +31,9 @@ public sealed class ConfigManager : IDisposable
     // Non-generic ILogger so App can route ConfigManager's save/reload lines to the "ui" category →
     // ui.log (issue #21). The category is chosen by App at construction, not by the type parameter.
     private readonly ILogger _logger;
+    // Live log-level gate (issue #22). Kept in sync with the loaded config.LogLevel on every Load so a
+    // level change — via UpdateLogLevel (Settings) or a manual config.json edit — applies with no restart.
+    private readonly LogLevelSwitch? _levelSwitch;
     private readonly FileSystemWatcher _watcher;
     private readonly System.Threading.Timer _debounceTimer;
     private AppConfig _config = new();
@@ -41,10 +44,11 @@ public sealed class ConfigManager : IDisposable
     /// <summary>The most recently loaded configuration.</summary>
     public AppConfig Current => _config;
 
-    public ConfigManager(string configPath, ILogger logger)
+    public ConfigManager(string configPath, ILogger logger, LogLevelSwitch? levelSwitch = null)
     {
-        _configPath = configPath;
-        _logger = logger;
+        _configPath  = configPath;
+        _logger      = logger;
+        _levelSwitch = levelSwitch;
         _debounceTimer = new System.Threading.Timer(OnDebounceElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
         _watcher = new FileSystemWatcher(Path.GetDirectoryName(configPath)!, Path.GetFileName(configPath))
@@ -66,6 +70,9 @@ public sealed class ConfigManager : IDisposable
             var loaded = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? new AppConfig();
             loaded.Rules = [.. loaded.Rules.OrderBy(r => r.Priority)];
             _config = loaded;
+            // Apply the loaded verbosity to the live gate immediately (issue #22) — this is the single
+            // place every path (startup, UpdateLogLevel's SaveAndReload, a manual file edit) flows through.
+            if (_levelSwitch is not null) _levelSwitch.MinimumLevel = loaded.LogLevel;
             _logger.LogInformation("Config loaded from {Path} ({RuleCount} rules)", _configPath, _config.Rules.Count);
         }
         catch (Exception ex)
@@ -159,6 +166,8 @@ public sealed class ConfigManager : IDisposable
     /// Persists a new <see cref="AppConfig.LogLevel"/> to config.json and reloads (issue #18 —
     /// surfaced in the Settings window; previously config.json-only).  A no-op when the level is
     /// unchanged, so opening Settings and closing it doesn't needlessly rewrite the file.
+    /// The reload runs through <see cref="Load"/>, which applies the new level to the live
+    /// <see cref="LogLevelSwitch"/> immediately — all logs pick it up with no restart (issue #22).
     /// </summary>
     public void UpdateLogLevel(LogLevel level)
     {
