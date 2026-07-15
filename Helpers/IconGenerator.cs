@@ -23,15 +23,19 @@ public enum TrayIconState
 /// Three multi-size .ico files are written next to the exe and swapped on state changes; writing
 /// to disk lets H.NotifyIcon reload them and avoids the GDI handle leak of Bitmap.GetHicon().
 ///
-/// Icon version: v4 — transparent background, coloured VM-monitor glyph (replaces v3's coloured
-/// tile).  The version suffix forces regeneration on first run after an upgrade.
+/// Icon version: v5 — the restyled HyperVManagerTray product glyph (the 0z0-guideline product
+/// icon set, issue #26): a rounder hollow monitor, cleaner content bars and a wider grounded
+/// stand.  The exact same 16-unit geometry is drawn — plated white-on-blue with a green
+/// connection dot — by installer\Generate-AppIcon.ps1 for AppIcon.ico / TrayBlue.ico, so the tray
+/// glyphs and the app icon are one consistent family.  The version suffix forces regeneration on
+/// first run after an upgrade.
 /// </summary>
 internal static class IconGenerator
 {
-    // v4 — rename forces regeneration on first run after upgrade; old v2/v3 files are ignored.
-    private const string UnknownFile  = "icon-unknown-v4.ico";
-    private const string BridgedFile  = "icon-bridged-v4.ico";
-    private const string FallbackFile = "icon-fallback-v4.ico";
+    // v5 — rename forces regeneration on first run after upgrade; old v2/v3/v4 files are ignored.
+    private const string UnknownFile  = "icon-unknown-v5.ico";
+    private const string BridgedFile  = "icon-bridged-v5.ico";
+    private const string FallbackFile = "icon-fallback-v5.ico";
 
     // Frame sizes baked into each .ico.  64/48 are picked by Windows on 4K (200 %+ DPI)
     // without upscaling; 32/24/20/16 cover 100–150 % tray DPI.
@@ -70,12 +74,14 @@ internal static class IconGenerator
     // ── Rendering ───────────────────────────────────────────────────────────────
 
     // Glyph is designed in a 16-unit logical space and scaled to each frame size.  Everything is
-    // drawn with filled shapes (no thin strokes) so it stays crisp down to 16 px.  Layout:
+    // drawn with filled shapes (no thin strokes) so it stays crisp down to 16 px.  These are the
+    // canonical v5 product-glyph coordinates — installer\Generate-AppIcon.ps1 draws the identical
+    // geometry for AppIcon.ico / TrayBlue.ico, so keep the two in sync if either changes.  Layout:
     //   ┌──────────────────────┐   ← hollow monitor frame (transparent centre)
     //   │  ▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭  │   ← content bar 1
     //   │  ▭▭▭▭▭▭▭▭▭▭          │   ← content bar 2
     //   └──────────┬───────────┘
-    //          ▭▭▭▭▭▭▭▭▭            ← stand neck + foot
+    //          ▭▭▭▭▭▭▭▭▭            ← stand neck + wider foot
     /// <summary>Renders the tray glyph for <paramref name="state"/> at the given pixel size (transparent background).</summary>
     internal static Bitmap RenderIcon(int size, TrayIconState state)
     {
@@ -92,24 +98,24 @@ internal static class IconGenerator
         // ── Hollow monitor frame (outer ∖ inner via alternate fill = a ring) ──
         using (var frame = new GraphicsPath(FillMode.Alternate))
         {
-            AddRoundedRect(frame, new RectangleF(1.4f, 2.2f, 13.2f, 8.8f), 1.8f);  // outer bezel
-            AddRoundedRect(frame, new RectangleF(2.9f, 3.7f, 10.2f, 5.8f), 1.0f);  // screen cut-out
+            AddRoundedRect(frame, new RectangleF(1.5f, 2.3f, 13.0f, 8.4f), 1.9f);  // outer bezel
+            AddRoundedRect(frame, new RectangleF(3.0f, 3.8f, 10.0f, 5.4f), 1.1f);  // screen cut-out
             g.FillPath(fill, frame);
         }
 
         // ── Screen content bars (inside the transparent cut-out) ─────────────
         using (var bars = new GraphicsPath())
         {
-            AddRoundedRect(bars, new RectangleF(4.1f, 5.0f, 6.8f, 1.0f), 0.5f);  // long bar
-            AddRoundedRect(bars, new RectangleF(4.1f, 7.0f, 4.3f, 1.0f), 0.5f);  // short bar
+            AddRoundedRect(bars, new RectangleF(4.2f, 5.2f, 6.6f, 1.0f), 0.5f);  // long bar
+            AddRoundedRect(bars, new RectangleF(4.2f, 7.0f, 4.2f, 1.0f), 0.5f);  // short bar
             g.FillPath(fill, bars);
         }
 
-        // ── Stand: neck + foot ───────────────────────────────────────────────
+        // ── Stand: neck + wider foot ─────────────────────────────────────────
         using (var stand = new GraphicsPath())
         {
-            AddRoundedRect(stand, new RectangleF(7.0f, 11.0f, 2.0f, 1.5f), 0.3f);  // neck
-            AddRoundedRect(stand, new RectangleF(4.8f, 12.2f, 6.4f, 1.4f), 0.7f);  // foot
+            AddRoundedRect(stand, new RectangleF(7.0f, 10.7f, 2.0f, 1.4f),  0.3f);   // neck
+            AddRoundedRect(stand, new RectangleF(4.6f, 12.0f, 6.8f, 1.5f),  0.75f);  // foot
             g.FillPath(fill, stand);
         }
 
