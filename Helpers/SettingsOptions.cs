@@ -89,6 +89,82 @@ public static class SettingsOptions
     public static LogLevel IndexToLogLevel(int index) =>
         index >= 0 && index < LogLevels.Count ? LogLevels[index].Value : LogLevel.Debug;
 
+    // ── Network rules editor (issue #23) ────────────────────────────────────────
+    // Pure, WinUI-free validation/normalisation for the rules editor, so the round-trip guarantees
+    // (a hand-edited config value survives edit-something-else → save without silent loss) are testable.
+
+    /// <summary>
+    /// True when <paramref name="mac"/> is a well-formed 48-bit MAC (12 hex digits, optionally separated
+    /// by ':' or '-'). Null/blank is treated as valid (means "don't match on MAC").
+    /// </summary>
+    public static bool IsValidMac(string? mac)
+    {
+        if (string.IsNullOrWhiteSpace(mac)) return true;
+        var clean = mac.Replace(":", "").Replace("-", "").Trim();
+        return clean.Length == 12 && clean.All(Uri.IsHexDigit);
+    }
+
+    /// <summary>
+    /// Canonicalises a MAC to upper-case colon form ("AA:BB:CC:DD:EE:FF"). Blank → null. A value that
+    /// isn't a well-formed 12-hex-digit MAC is returned trimmed and unchanged, so a hand-typed value in
+    /// progress is never silently mangled (the UI gates saving on <see cref="IsValidMac"/>).
+    /// </summary>
+    public static string? CanonicalizeMac(string? mac)
+    {
+        if (string.IsNullOrWhiteSpace(mac)) return null;
+        var clean = mac.Replace(":", "").Replace("-", "").Trim().ToUpperInvariant();
+        if (clean.Length != 12 || !clean.All(Uri.IsHexDigit)) return mac.Trim();
+        return string.Join(":", Enumerable.Range(0, 6).Select(i => clean.Substring(i * 2, 2)));
+    }
+
+    /// <summary>
+    /// True when <paramref name="cidr"/> is a well-formed IPv4 CIDR ("10.0.0.0/23"): a dotted-quad and a
+    /// prefix length in [0, 32]. Null/blank is valid (means "don't match on IP").
+    /// </summary>
+    public static bool IsValidCidr(string? cidr)
+    {
+        if (string.IsNullOrWhiteSpace(cidr)) return true;
+        var parts = cidr.Trim().Split('/');
+        if (parts.Length != 2) return false;
+        if (!int.TryParse(parts[1], out int prefix) || prefix < 0 || prefix > 32) return false;
+        if (!System.Net.IPAddress.TryParse(parts[0], out var ip)) return false;
+        return ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork;
+    }
+
+    /// <summary>Trims a MAC/CIDR field to null when blank, else the trimmed string.</summary>
+    public static string? BlankToNull(string? s) =>
+        string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
+    /// <summary>
+    /// Splits a comma- and/or newline-separated VM list into a cleaned list: trimmed, blanks dropped,
+    /// duplicates removed case-insensitively (first spelling wins). Backs both the rule and fallback
+    /// target-VM editors so a hand-edited config value round-trips predictably.
+    /// </summary>
+    public static List<string> ParseVmList(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return [];
+        return CleanVmList(text.Split([',', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    /// <summary>Trims, drops blanks, and removes case-insensitive duplicates (first spelling wins).</summary>
+    public static List<string> CleanVmList(IEnumerable<string> names)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<string>();
+        foreach (var raw in names)
+        {
+            var name = raw.Trim();
+            if (name.Length > 0 && seen.Add(name)) result.Add(name);
+        }
+        return result;
+    }
+
+    /// <summary>Joins a VM list for display in a single-line editor ("VM1, VM2").</summary>
+    public static string JoinVmList(IEnumerable<string> names) => string.Join(", ", names);
+
+    /// <summary>Clamps a rule priority to a sane, non-negative range (a hand-edited negative → 0).</summary>
+    public static int NormalizePriority(int priority) => Math.Clamp(priority, 0, 100_000);
+
     // ── Shared ──────────────────────────────────────────────────────────────────
 
     /// <summary>

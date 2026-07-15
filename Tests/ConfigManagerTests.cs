@@ -320,6 +320,178 @@ public class ConfigManagerTests : IDisposable
         Assert.Equal("pause", before.OnBridgeLostAction);
     }
 
+    // ── SaveRules (issue #23) ───────────────────────────────────────────────────
+
+    [Fact]
+    public void SaveRules_ReplacesRulesAndSanitises()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        mgr.SaveRules(
+        [
+            new NetworkRule
+            {
+                Name          = "  Office  ",
+                Priority      = -5,                       // clamped to 0
+                VirtualSwitch = "  Bridged  ",
+                TargetVms     = ["VM1", " VM1 ", "VM2"],  // deduped + trimmed
+                Conditions    = new RuleConditions { AdapterMac = "aa-bb-cc-dd-ee-ff", IpCidr = " 10.0.0.0/23 " },
+            }
+        ]);
+
+        var rule = Assert.Single(ReadConfig(path).Rules);
+        Assert.Equal("Office", rule.Name);
+        Assert.Equal(0, rule.Priority);
+        Assert.Equal("Bridged", rule.VirtualSwitch);
+        Assert.Equal(["VM1", "VM2"], rule.TargetVms);
+        Assert.Equal("AA:BB:CC:DD:EE:FF", rule.Conditions.AdapterMac);   // canonicalised
+        Assert.Equal("10.0.0.0/23", rule.Conditions.IpCidr);             // trimmed
+    }
+
+    [Fact]
+    public void SaveRules_PreservesVmsFallbackAndLogLevel()
+    {
+        var initial = new AppConfig
+        {
+            VirtualMachines = [ new VmTarget { Name = "Alpha" } ],
+            Fallback        = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Alpha"] },
+            LogLevel        = Microsoft.Extensions.Logging.LogLevel.Warning,
+        };
+        var path = WriteTempConfig(initial);
+        using var mgr = MakeManager(path);
+
+        mgr.SaveRules([ new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "Bridged" } ]);
+
+        var saved = ReadConfig(path);
+        Assert.Single(saved.Rules);
+        Assert.Single(saved.VirtualMachines);
+        Assert.Equal("Default Switch", saved.Fallback.VirtualSwitch);
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Warning, saved.LogLevel);
+    }
+
+    [Fact]
+    public void SaveRules_EmptyList_ClearsRules()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            Rules = [ new NetworkRule { Name = "Old", VirtualSwitch = "X" } ],
+        });
+        using var mgr = MakeManager(path);
+
+        mgr.SaveRules([]);
+
+        Assert.Empty(ReadConfig(path).Rules);
+    }
+
+    [Fact]
+    public void SaveRules_BlankMacAndCidr_BecomeNull()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        mgr.SaveRules(
+        [
+            new NetworkRule { Name = "R", VirtualSwitch = "X", Conditions = new RuleConditions { AdapterMac = "  ", IpCidr = "" } }
+        ]);
+
+        var rule = Assert.Single(ReadConfig(path).Rules);
+        Assert.Null(rule.Conditions.AdapterMac);
+        Assert.Null(rule.Conditions.IpCidr);
+    }
+
+    [Fact]
+    public void SaveRules_NoChange_IsNoOpSameInstance()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            Rules = [ new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "X", TargetVms = ["A"] } ],
+        });
+        using var mgr = MakeManager(path);
+        var before = mgr.Current.Rules;
+
+        // Re-saving an identical (already-clean) rule set must not rewrite/reload.
+        mgr.SaveRules([ new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "X", TargetVms = ["A"] } ]);
+
+        Assert.Same(before, mgr.Current.Rules);
+    }
+
+    [Fact]
+    public void SaveRules_UpdatesInMemoryConfig()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        mgr.SaveRules([ new NetworkRule { Name = "Live", Priority = 3, VirtualSwitch = "S" } ]);
+
+        Assert.Equal("Live", Assert.Single(mgr.Current.Rules).Name);
+    }
+
+    // ── SetFallback (issue #23) ─────────────────────────────────────────────────
+
+    [Fact]
+    public void SetFallback_PersistsSwitchAndTargets()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        mgr.SetFallback("External", ["VM1", " VM1 ", "VM2"]);
+
+        var fb = ReadConfig(path).Fallback;
+        Assert.Equal("External", fb.VirtualSwitch);
+        Assert.Equal(["VM1", "VM2"], fb.TargetVms);
+    }
+
+    [Fact]
+    public void SetFallback_BlankSwitch_KeepsCurrent()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            Fallback = new FallbackAction { VirtualSwitch = "Default Switch" },
+        });
+        using var mgr = MakeManager(path);
+
+        mgr.SetFallback("   ", ["VM1"]);   // blank switch must not overwrite with empty
+
+        var fb = ReadConfig(path).Fallback;
+        Assert.Equal("Default Switch", fb.VirtualSwitch);
+        Assert.Equal(["VM1"], fb.TargetVms);
+    }
+
+    [Fact]
+    public void SetFallback_NoChange_IsNoOpSameInstance()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            Fallback = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Alpha"] },
+        });
+        using var mgr = MakeManager(path);
+        var before = mgr.Current.Fallback;
+
+        mgr.SetFallback("Default Switch", ["Alpha"]);
+
+        Assert.Same(before, mgr.Current.Fallback);
+    }
+
+    [Fact]
+    public void SetFallback_PreservesRulesAndVms()
+    {
+        var initial = new AppConfig
+        {
+            VirtualMachines = [ new VmTarget { Name = "Alpha" } ],
+            Rules           = [ new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "Bridged" } ],
+        };
+        var path = WriteTempConfig(initial);
+        using var mgr = MakeManager(path);
+
+        mgr.SetFallback("NewFallback", []);
+
+        var saved = ReadConfig(path);
+        Assert.Equal("NewFallback", saved.Fallback.VirtualSwitch);
+        Assert.Single(saved.Rules);
+        Assert.Single(saved.VirtualMachines);
+    }
+
     // ── Round-trip ────────────────────────────────────────────────────────────
 
     [Fact]

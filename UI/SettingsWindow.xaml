@@ -8,13 +8,76 @@
         <MicaBackdrop Kind="BaseAlt" />
     </Window.SystemBackdrop>
 
-    <!-- Sections are built in code-behind (BuildSections) — same code-first approach as
-         DashboardWindow, so the whole app shares one card idiom rather than pulling in a
-         separate settings-control toolkit. The window is a real titled, resizable, taskbar-
-         visible window (NOT the borderless auto-dismiss popup the tray dialogs use): it must
-         stay open while the user edits and alt-tabs away. -->
-    <ScrollViewer x:Name="RootScroll" VerticalScrollBarVisibility="Auto"
-                  Padding="24,20,24,24">
-        <StackPanel x:Name="RootPanel" Spacing="22" MaxWidth="660" HorizontalAlignment="Left"/>
-    </ScrollViewer>
+    <!-- Issue #23: the flat single-scroll card list became an in-box NavigationView with left-nav
+         categories (General / Managed VMs / Network / Adapters / Maintenance / About). Zero new
+         dependencies — the plain WinUI NavigationView plus the same code-built card idiom every other
+         window in this app uses (BuildXxxSection in code-behind fills the per-category panels). The
+         window stays a real titled, resizable, taskbar-visible window (NOT the borderless auto-dismiss
+         tray popup): it must stay open while the user edits and alt-tabs away. -->
+    <NavigationView x:Name="Nav"
+                    IsSettingsVisible="False"
+                    IsBackButtonVisible="Collapsed"
+                    IsTabStop="False"
+                    PaneDisplayMode="Left"
+                    SelectionChanged="OnNavSelectionChanged">
+
+        <!-- Let the Mica BaseAlt backdrop show through instead of the control painting its own lighter
+             pane/top strip over it (same treatment as the sibling app's SettingsWindow). The selected-item
+             highlight is a separate brush and is untouched. -->
+        <NavigationView.Resources>
+            <SolidColorBrush x:Key="NavigationViewDefaultPaneBackground" Color="Transparent"/>
+            <SolidColorBrush x:Key="NavigationViewExpandedPaneBackground" Color="Transparent"/>
+            <SolidColorBrush x:Key="NavigationViewTopPaneBackground" Color="Transparent"/>
+            <SolidColorBrush x:Key="NavigationViewContentBackground" Color="Transparent"/>
+            <SolidColorBrush x:Key="NavigationViewContentGridBorderBrush" Color="Transparent"/>
+            <Thickness x:Key="NavigationViewContentGridBorderThickness">0</Thickness>
+        </NavigationView.Resources>
+
+        <NavigationView.MenuItems>
+            <NavigationViewItem Content="General" Tag="General" IsSelected="True">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE713;"/></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Managed VMs" Tag="Vms">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE977;"/></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Network" Tag="Network">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE774;"/></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Adapters" Tag="Adapters">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE839;"/></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Maintenance" Tag="Maintenance">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE90F;"/></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="About" Tag="About">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE946;"/></NavigationViewItem.Icon>
+            </NavigationViewItem>
+        </NavigationView.MenuItems>
+
+        <!-- App-identity footer, bottom-left of the pane — name + running version (filled in the ctor
+             from AppInfo, never hard-coded). -->
+        <NavigationView.PaneFooter>
+            <StackPanel Margin="0,4,0,4">
+                <Border Height="1" Margin="16,0,16,8"
+                        Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+                <StackPanel Margin="16,4,16,12">
+                    <TextBlock Text="HyperVManagerTray" FontSize="12"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <TextBlock x:Name="VersionText" FontSize="11"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"/>
+                </StackPanel>
+            </StackPanel>
+        </NavigationView.PaneFooter>
+
+        <ScrollViewer x:Name="RootScroll" Padding="24,16,24,24" VerticalScrollBarVisibility="Auto">
+            <Grid MaxWidth="720" HorizontalAlignment="Left">
+                <StackPanel x:Name="GeneralPanel"     Spacing="10"/>
+                <StackPanel x:Name="VmsPanel"         Spacing="10" Visibility="Collapsed"/>
+                <StackPanel x:Name="NetworkPanel"     Spacing="10" Visibility="Collapsed"/>
+                <StackPanel x:Name="AdaptersPanel"    Spacing="10" Visibility="Collapsed"/>
+                <StackPanel x:Name="MaintenancePanel" Spacing="10" Visibility="Collapsed"/>
+                <StackPanel x:Name="AboutPanel"       Spacing="10" Visibility="Collapsed"/>
+            </Grid>
+        </ScrollViewer>
+    </NavigationView>
 </Window>
