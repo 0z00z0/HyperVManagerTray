@@ -71,6 +71,57 @@ public static class SwitchWmiHelpers
                first.Contains(switchId, StringComparison.OrdinalIgnoreCase);
     }
 
+    // ── VM-NIC connection correlation (FindNicConnection) ────────────────────────
+
+    /// <summary>
+    /// True when an <c>Msvm_EthernetPortAllocationSettingData</c> (EPASD — a VM NIC's switch connection)
+    /// belongs to the synthetic NIC whose <c>InstanceID</c> is <paramref name="nicInstanceId"/> (an
+    /// <c>Msvm_SyntheticEthernetPortSettingData</c>, of the form
+    /// <c>Microsoft:&lt;vmguid&gt;\&lt;portguid&gt;</c>).
+    ///
+    /// <para><b>Why not a raw <c>Parent</c> substring (the issue #17 bug).</b> The EPASD's <c>Parent</c>
+    /// is a REF path that references the SEPSD by its InstanceID, but the embedded <c>\</c> between the VM
+    /// and port GUIDs renders ESCAPED there — doubled to <c>\\</c>, sometimes also namespace-prefixed and
+    /// quoted (<c>\\HOST\root\virtualization\v2:Msvm_SyntheticEthernetPortSettingData.InstanceID="…"</c>).
+    /// A raw <c>Parent.Contains(nicInstanceId)</c> — where <paramref name="nicInstanceId"/> still has a
+    /// single <c>\</c> — therefore MISSES, so the caller wrongly concludes the NIC is unconnected and tries
+    /// to ADD a second Ethernet Connection to a NIC that already has one. That is the observed
+    /// <c>InvalidOperationException: '…' failed to add device 'Ethernet Connection'</c> failure.</para>
+    ///
+    /// <para><b>Correlation used.</b> Compare on the shared <c>&lt;vmguid&gt;\&lt;portguid&gt;</c> identity
+    /// after collapsing every backslash, so the level of escaping is irrelevant. Two independent signals
+    /// both carry that identity and either is accepted: the EPASD's <c>Parent</c> (its authoritative
+    /// reference to the SEPSD) and the EPASD's own <c>InstanceID</c> (which is the SEPSD InstanceID plus a
+    /// trailing connection segment, e.g. <c>Microsoft:VM\PORT\CONN</c>). This mirrors how
+    /// <see cref="VmService"/> correlates a port allocation to its VM by an InstanceID substring rather
+    /// than by a REF path. The full port GUID is part of the compared identity, so a different NIC on the
+    /// same VM (same vmguid, different portguid) never matches.</para>
+    /// </summary>
+    /// <param name="epasdInstanceId">The EPASD's own <c>InstanceID</c> (may be null/empty).</param>
+    /// <param name="epasdParent">The EPASD's <c>Parent</c> REF path to its SEPSD (may be null/empty).</param>
+    /// <param name="nicInstanceId">The synthetic NIC's (SEPSD) <c>InstanceID</c>; empty ⇒ never a match.</param>
+    public static bool NicConnectionMatches(string? epasdInstanceId, string? epasdParent, string? nicInstanceId)
+    {
+        if (string.IsNullOrEmpty(nicInstanceId)) return false;
+        var nicId = CollapseBackslashes(nicInstanceId);
+        if (nicId.Length == 0) return false;
+
+        return ContainsId(epasdParent, nicId) || ContainsId(epasdInstanceId, nicId);
+
+        static bool ContainsId(string? candidate, string nicId) =>
+            !string.IsNullOrEmpty(candidate) &&
+            CollapseBackslashes(candidate).Contains(nicId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Removes every backslash from a WMI InstanceID / REF path so a value read from a raw property (a
+    /// single <c>\</c> separator) and the same value embedded in an escaped REF path (a doubled <c>\\</c>,
+    /// or more) reduce to the same separator-free identity. Backslashes are only ever the GUID separators
+    /// here (the GUIDs themselves are hex + hyphens), so collapsing them is a lossless canonicalisation
+    /// that is immune to however many layers of escaping a given host renders.
+    /// </summary>
+    public static string CollapseBackslashes(string raw) => raw.Replace(@"\", "");
+
     // ── Host-vNIC repair decision (RepairHostVNicAsync) ──────────────────────────
 
     /// <summary>The action <see cref="DecideHostVNicRepair"/> selects for a switch's management-OS state.</summary>
