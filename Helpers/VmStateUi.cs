@@ -66,12 +66,24 @@ public static class VmStateUi
         _             => [],   // None / Transition
     };
 
+    /// <summary>
+    /// Whether a "Connect" (attach vmconnect) action makes sense for this state — only a Running VM can
+    /// be attached to. Centralised here (issue #30, cleanup 9) so the dashboard cards and both tray
+    /// VM-power variants decide Connect-eligibility from one place instead of each hard-coding
+    /// "shape == Running".
+    /// </summary>
+    public static bool CanConnect(string? state) => ClassifyShape(state) == Shape.Running;
+
     // ── Overlay-expiry deadlines (findings 1 & 7) ────────────────────────────────
 
     /// <summary>A graceful Shutdown emits only a "Running" phase and is normally cleared when the VM
     /// reaches Off; if the guest cancels/hangs the shutdown it never reaches Off, so after this long the
-    /// overlay is retired so the card's buttons aren't disabled forever (finding 1).</summary>
-    public static readonly TimeSpan ShutdownDeadline = TimeSpan.FromMinutes(2);
+    /// overlay is retired so the card's buttons aren't disabled forever (finding 1). Deliberately long:
+    /// a guest doing install-on-shutdown legitimately stays Running for many minutes, and clearing the
+    /// overlay early would re-enable Save/Pause and invite interrupting that update. This only needs to
+    /// eventually recover a TRULY stuck op, so it is generous — a real shutdown clears the moment the VM
+    /// reaches Off, well before this fires.</summary>
+    public static readonly TimeSpan ShutdownDeadline = TimeSpan.FromMinutes(30);
 
     /// <summary>A sticky "Failed: …" overlay ages out after this long so it doesn't linger forever
     /// (finding 7).</summary>

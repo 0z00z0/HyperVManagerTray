@@ -1,3 +1,4 @@
+using HyperVManagerTray.Services;
 using Microsoft.Extensions.Logging;
 
 namespace HyperVManagerTray.Helpers;
@@ -107,14 +108,16 @@ public static class SettingsOptions
     /// <summary>
     /// Canonicalises a MAC to upper-case colon form ("AA:BB:CC:DD:EE:FF"). Blank → null. A value that
     /// isn't a well-formed 12-hex-digit MAC is returned trimmed and unchanged, so a hand-typed value in
-    /// progress is never silently mangled (the UI gates saving on <see cref="IsValidMac"/>).
+    /// progress is never silently mangled (the UI gates saving on <see cref="IsValidMac"/>). The final
+    /// colon-grouping delegates to <see cref="AdapterMatcher.FormatMac"/> so a MAC canonicalises
+    /// identically whether it flows through Settings or the tray (cleanup 12).
     /// </summary>
     public static string? CanonicalizeMac(string? mac)
     {
         if (string.IsNullOrWhiteSpace(mac)) return null;
         var clean = mac.Replace(":", "").Replace("-", "").Trim().ToUpperInvariant();
         if (clean.Length != 12 || !clean.All(Uri.IsHexDigit)) return mac.Trim();
-        return string.Join(":", Enumerable.Range(0, 6).Select(i => clean.Substring(i * 2, 2)));
+        return AdapterMatcher.FormatMac(clean);
     }
 
     /// <summary>
@@ -145,6 +148,23 @@ public static class SettingsOptions
         if (string.IsNullOrWhiteSpace(text)) return [];
         return CleanVmList(text.Split([',', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries));
     }
+
+    /// <summary>
+    /// Splits a strictly NEWLINE-separated VM list into a cleaned list (trimmed, blanks dropped,
+    /// case-insensitive dedupe). Unlike <see cref="ParseVmList"/> it does NOT treat a comma as a
+    /// separator, so a VM whose name legitimately contains a comma (e.g. "Web, App") survives the
+    /// round-trip intact. This is the representation the Settings editor uses — one VM per line — which
+    /// is unambiguous where the old single-line comma form corrupted such names.
+    /// </summary>
+    public static List<string> ParseVmLines(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return [];
+        return CleanVmList(text.Split(['\n', '\r'], StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    /// <summary>Joins a VM list one-per-line for the multi-line editor (the unambiguous counterpart to
+    /// <see cref="ParseVmLines"/>; safe even when a name contains a comma).</summary>
+    public static string JoinVmLines(IEnumerable<string> names) => string.Join(Environment.NewLine, names);
 
     /// <summary>Trims, drops blanks, and removes case-insensitive duplicates (first spelling wins).</summary>
     public static List<string> CleanVmList(IEnumerable<string> names)

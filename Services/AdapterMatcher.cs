@@ -159,10 +159,13 @@ public static class AdapterMatcher
     /// <list type="bullet">
     ///   <item>Must carry a standard 48-bit (6-byte) MAC — excludes tunnel/WAN-miniport pseudo-NICs.</item>
     ///   <item>Excludes <see cref="NetworkInterfaceType.Tunnel"/> / <c>Ppp</c> / <c>Loopback</c>.</item>
-    ///   <item>Excludes known software-adapter name/description markers (Bluetooth PAN, TAP/OpenVPN,
-    ///   Wintun/WireGuard, VirtualBox, VMware, generic "virtual"/"pseudo"/"VPN").</item>
+    ///   <item>Excludes known software-adapter markers in the DEVICE DESCRIPTION (Bluetooth PAN,
+    ///   TAP/OpenVPN, Wintun/WireGuard, VirtualBox, VMware, generic "virtual"/"pseudo"/"VPN").</item>
     /// </list>
     /// A USB-Ethernet dock ("Realtek USB GbE Family Controller", real MAC, Ethernet type) passes.
+    /// The <paramref name="name"/> (connection alias) is deliberately NOT tested against the markers:
+    /// it is user-renamable, so a real physical NIC the user aliased e.g. "Office-VPN" would otherwise
+    /// be wrongly hidden. Only the immutable device <paramref name="description"/> decides (finding 4).
     /// </summary>
     internal static bool IsPickerPhysicalAdapter(NetworkInterfaceType type, int macByteLength, string name, string description)
     {
@@ -176,7 +179,9 @@ public static class AdapterMatcher
                 return false;
         }
 
-        return !HasSoftwareAdapterMarker(name) && !HasSoftwareAdapterMarker(description);
+        // Match markers against the device description only — never the renamable connection alias.
+        _ = name;
+        return !HasSoftwareAdapterMarker(description);
     }
 
     /// <summary>
@@ -318,12 +323,16 @@ public static class AdapterMatcher
         {
             try
             {
-                bool macOk = rule.Conditions.AdapterMac is null
+                // Null-guard rule.Conditions (finding 5): the model defaults it to a non-null instance,
+                // but a hand-edited / round-tripped config could deserialise "conditions": null. A null
+                // Conditions means "no conditions" — match the first physical NIC, matching the model's
+                // documented "a rule with no conditions matches the primary adapter" semantics.
+                bool macOk = rule.Conditions?.AdapterMac is null
                              || NormalizeMac(nic.GetPhysicalAddress().ToString()) ==
                                 NormalizeMac(rule.Conditions.AdapterMac);
 
                 if (!macOk) continue;
-                if (rule.Conditions.IpCidr is null) return nic;
+                if (rule.Conditions?.IpCidr is null) return nic;
 
                 // Check the physical NIC's own addresses.
                 foreach (var addr in nic.GetIPProperties().UnicastAddresses)

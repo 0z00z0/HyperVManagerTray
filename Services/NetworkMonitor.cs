@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.NetworkInformation;
 using HyperVManagerTray.Models;
 using Microsoft.Extensions.Logging;
@@ -30,7 +31,11 @@ public sealed class NetworkMonitor : IDisposable
     // name (issue #29, finding 2): a single scalar wrongly suppressed binding a 2nd bridged switch that
     // happened to sit on the same NIC as the first. An entry exists only after a Bound/AlreadyBound
     // outcome — a failed bind is never recorded, so the next network change retries it (finding 1).
-    private readonly Dictionary<string, string> _lastBoundAdapterBySwitch = new(StringComparer.OrdinalIgnoreCase);
+    // ConcurrentDictionary because ManualOverrideAsync clears it WITHOUT _evalLock (it bypasses the
+    // evaluate path) while ApplyAsync mutates it under _evalLock — a plain Dictionary would corrupt under
+    // that concurrent structural mutation (host-networking safety: a torn skip-cache could wrongly SKIP a
+    // required rebind). Every access here is a single atomic operation, so no compound lock is needed.
+    private readonly ConcurrentDictionary<string, string> _lastBoundAdapterBySwitch = new(StringComparer.OrdinalIgnoreCase);
 
     // Per-VM cancellation tokens for the bridge-lost delay timers.
     // Protected by _disconnectLock (not _evalLock) so Dispose() can safely cancel pending
@@ -209,7 +214,7 @@ public sealed class NetworkMonitor : IDisposable
                 var outcome = await _hyperV.UpdateSwitchBindingAsync(result.VirtualSwitch, result.HostAdapterInterfaceName);
                 if (outcome == HyperVManager.SwitchBindOutcome.Failed)
                     // Leave the cache clear for this switch so the next NetworkChange retries the bind.
-                    _lastBoundAdapterBySwitch.Remove(result.VirtualSwitch);
+                    _lastBoundAdapterBySwitch.TryRemove(result.VirtualSwitch, out _);
                 else
                     _lastBoundAdapterBySwitch[result.VirtualSwitch] = result.HostAdapterInterfaceName;
             }

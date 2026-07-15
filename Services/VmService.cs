@@ -90,7 +90,11 @@ public sealed class VmService : IDisposable
     // _refreshLock; the rest coordinate the single-flight recovery task.
     private const int MaxConsecutiveRefreshFailures = 3;
     private int  _refreshFailures;
-    private int  _recoveryAttempts;   // escalates the backoff; reset by a clean RefreshCore
+    // Escalates the recovery backoff; reset by a clean RefreshCore. Touched from two different lock
+    // regions (incremented under _subLock in RecoverWatcher, reset under _refreshLock in RefreshCore),
+    // so it is accessed via Interlocked rather than relying on either lock — a plain field mutated under
+    // two locks is effectively unsynchronised and could read a torn/stale backoff count (finding 7a).
+    private int  _recoveryAttempts;
     private bool _recovering;         // guarded by _subLock — one recovery in flight at a time
     private bool _disposed;           // set in Dispose so a teardown-time watcher Stop doesn't self-recover
 
@@ -361,10 +365,12 @@ public sealed class VmService : IDisposable
             lock (_subLock)
             {
                 _watcherStarting = false;
-                // No subscribers left (all unsubscribed while we were connecting), or a start failed:
-                // don't publish a live watcher. Tear a successfully-started-but-now-unwanted one down.
+                // No subscribers left (all unsubscribed while we were connecting), the service was
+                // disposed mid-connect, or a start failed: don't publish a live watcher. Tear a
+                // successfully-started-but-now-unwanted one down — otherwise a connect in flight during
+                // Dispose() would leak a live watcher that nothing ever stops (finding 7b).
                 if (started is null) return;
-                if (_metricsSubs == 0 && _watcherSubs == 0)
+                if (_disposed || (_metricsSubs == 0 && _watcherSubs == 0))
                 {
                     try { started.Stop(); started.Dispose(); } catch { }
                     return;
@@ -399,8 +405,8 @@ public sealed class VmService : IDisposable
             if (_disposed || _recovering) return;
             if (_metricsSubs == 0 && _watcherSubs == 0) return;   // nobody needs it — this was an intentional stop
             _recovering = true;
-            attempt = ++_recoveryAttempts;
         }
+        attempt = Interlocked.Increment(ref _recoveryAttempts);
 
         // Escalating backoff, capped at 30 s, so a persistently sick WMI service isn't hammered.
         var backoff = TimeSpan.FromSeconds(Math.Min(30, 2 * attempt));
@@ -508,8 +514,8 @@ public sealed class VmService : IDisposable
                 _vmIps      = ReadIps(scope, vms);
                 _statuses   = list;
 
-                _refreshFailures   = 0;   // a clean read resets the failure/backoff counters
-                _recoveryAttempts  = 0;
+                _refreshFailures = 0;     // a clean read resets the failure counter (under _refreshLock)
+                Interlocked.Exchange(ref _recoveryAttempts, 0);   // …and the cross-lock backoff counter
                 StatusesChanged?.Invoke(list);
             }
             catch (Exception ex)

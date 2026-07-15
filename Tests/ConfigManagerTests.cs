@@ -410,6 +410,30 @@ public class ConfigManagerTests : IDisposable
     }
 
     [Fact]
+    public void SaveRules_InvalidMacAndCidr_DroppedToNull()
+    {
+        // Persistence-boundary validation (finding 5): a malformed MAC/CIDR that reached SaveRules must
+        // be dropped to null rather than written back verbatim — the round-trip guarantee CleanRule's
+        // XML-doc now promises.
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        mgr.SaveRules(
+        [
+            new NetworkRule
+            {
+                Name          = "R",
+                VirtualSwitch = "X",
+                Conditions    = new RuleConditions { AdapterMac = "GG:BB:CC:DD:EE:FF", IpCidr = "10.0.0.0/99" },
+            }
+        ]);
+
+        var rule = Assert.Single(ReadConfig(path).Rules);
+        Assert.Null(rule.Conditions.AdapterMac);   // non-hex MAC → dropped
+        Assert.Null(rule.Conditions.IpCidr);        // prefix > 32 → dropped
+    }
+
+    [Fact]
     public void SaveRules_NoChange_IsNoOpSameInstance()
     {
         var path = WriteTempConfig(new AppConfig

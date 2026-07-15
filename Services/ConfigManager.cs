@@ -37,6 +37,12 @@ public sealed class ConfigManager : IDisposable
     private readonly FileSystemWatcher _watcher;
     private readonly System.Threading.Timer _debounceTimer;
     private AppConfig _config = new();
+    // Serialises SaveAndReload so overlapping saves (the rules editor commits each control edit via a
+    // fire-and-forget Task.Run, so rapid edits can overlap) queue instead of colliding — otherwise a
+    // second File.WriteAllText can hit the prior write's FileShare handle (spurious "could not save"),
+    // or a stale snapshot can finish last and silently lose an update. A plain lock (not SemaphoreSlim)
+    // so a ConfigReloaded subscriber that re-enters on the same thread can't self-deadlock.
+    private readonly object _saveLock = new();
 
     /// <summary>Raised after the config is reloaded (file change or rule addition).</summary>
     public event EventHandler<AppConfig>? ConfigReloaded;
@@ -94,14 +100,7 @@ public sealed class ConfigManager : IDisposable
     /// The FileSystemWatcher is paused during the write to avoid a redundant debounced reload.
     /// </summary>
     public void AddBridgedRule(NetworkRule rule) => SaveAndReload(
-        new AppConfig
-        {
-            VirtualMachines = _config.VirtualMachines,
-            Rules           = [.. _config.Rules, rule],
-            Fallback        = _config.Fallback,
-            AdapterNames    = _config.AdapterNames,
-            LogLevel        = _config.LogLevel,
-        },
+        With(rules: [.. _config.Rules, rule]),
         $"Rule '{rule.Name}' added and saved to {_configPath}",
         $"Failed to save new rule '{rule.Name}'");
 
@@ -124,14 +123,7 @@ public sealed class ConfigManager : IDisposable
         };
 
         SaveAndReload(
-            new AppConfig
-            {
-                VirtualMachines = [.. _config.VirtualMachines, newVm],
-                Rules           = _config.Rules,
-                Fallback        = _config.Fallback,
-                AdapterNames    = _config.AdapterNames,
-                LogLevel        = _config.LogLevel,
-            },
+            With(vms: [.. _config.VirtualMachines, newVm]),
             $"VM '{name}' added and saved to {_configPath}",
             $"Failed to save new VM '{name}'");
     }
@@ -149,15 +141,8 @@ public sealed class ConfigManager : IDisposable
         }
 
         SaveAndReload(
-            new AppConfig
-            {
-                VirtualMachines = [.. _config.VirtualMachines.Where(v =>
-                    !v.Name.Equals(name, StringComparison.OrdinalIgnoreCase))],
-                Rules           = _config.Rules,
-                Fallback        = _config.Fallback,
-                AdapterNames    = _config.AdapterNames,
-                LogLevel        = _config.LogLevel,
-            },
+            With(vms: [.. _config.VirtualMachines.Where(v =>
+                !v.Name.Equals(name, StringComparison.OrdinalIgnoreCase))]),
             $"VM '{name}' removed and saved to {_configPath}",
             $"Failed to remove VM '{name}'");
     }
@@ -178,14 +163,7 @@ public sealed class ConfigManager : IDisposable
         }
 
         SaveAndReload(
-            new AppConfig
-            {
-                VirtualMachines = _config.VirtualMachines,
-                Rules           = _config.Rules,
-                Fallback        = _config.Fallback,
-                AdapterNames    = _config.AdapterNames,
-                LogLevel        = level,
-            },
+            With(logLevel: level),
             $"Log level set to {level} and saved to {_configPath}",
             $"Failed to save log level {level}");
     }
@@ -224,34 +202,28 @@ public sealed class ConfigManager : IDisposable
         }
 
         SaveAndReload(
-            new AppConfig
-            {
-                VirtualMachines =
-                [
-                    .. _config.VirtualMachines.Select(v =>
-                        v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase)
-                            ? new VmTarget
-                              {
-                                  Name                     = v.Name,
-                                  NicName                  = v.NicName,
-                                  OnBridgeLostAction       = normalizedAction,
-                                  OnBridgeLostDelaySeconds = normalizedDelay,
-                              }
-                            : v)
-                ],
-                Rules           = _config.Rules,
-                Fallback        = _config.Fallback,
-                AdapterNames    = _config.AdapterNames,
-                LogLevel        = _config.LogLevel,
-            },
+            With(vms:
+            [
+                .. _config.VirtualMachines.Select(v =>
+                    v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase)
+                        ? new VmTarget
+                          {
+                              Name                     = v.Name,
+                              NicName                  = v.NicName,
+                              OnBridgeLostAction       = normalizedAction,
+                              OnBridgeLostDelaySeconds = normalizedDelay,
+                          }
+                        : v)
+            ]),
             $"Bridge-lost action for VM '{vmName}' set to {normalizedAction ?? "none"} ({normalizedDelay}s) and saved to {_configPath}",
             $"Failed to save bridge-lost action for VM '{vmName}'");
     }
 
     /// <summary>
     /// Replaces the entire rules list (issue #23 — the Network editor). Each rule is sanitised through a
-    /// fresh copy before it is written (name/switch trimmed, priority clamped, MAC canonicalised, CIDR/MAC
-    /// blanks→null, target-VM list cleaned) so a malformed hand-edit can't be persisted verbatim. Follows
+    /// fresh copy before it is written (name/switch trimmed, priority clamped, a valid MAC canonicalised,
+    /// CIDR/MAC blanks→null, an INVALID MAC/CIDR dropped to null, target-VM list cleaned) so a malformed
+    /// hand-edit can't be persisted verbatim. Follows
     /// the same build-fresh-then-swap discipline as the other mutators: the new list is only swapped in via
     /// <see cref="Load"/> after a successful write, and the live <see cref="AppConfig"/> is never mutated.
     /// A no-op when the cleaned list already equals what's stored.
@@ -268,14 +240,7 @@ public sealed class ConfigManager : IDisposable
         }
 
         SaveAndReload(
-            new AppConfig
-            {
-                VirtualMachines = _config.VirtualMachines,
-                Rules           = cleaned,
-                Fallback        = _config.Fallback,
-                AdapterNames    = _config.AdapterNames,
-                LogLevel        = _config.LogLevel,
-            },
+            With(rules: cleaned),
             $"Saved {cleaned.Count} network rule(s) to {_configPath}",
             "Failed to save network rules");
     }
@@ -298,19 +263,19 @@ public sealed class ConfigManager : IDisposable
         }
 
         SaveAndReload(
-            new AppConfig
-            {
-                VirtualMachines = _config.VirtualMachines,
-                Rules           = _config.Rules,
-                Fallback        = new FallbackAction { VirtualSwitch = sw, TargetVms = targets },
-                AdapterNames    = _config.AdapterNames,
-                LogLevel        = _config.LogLevel,
-            },
+            With(fallback: new FallbackAction { VirtualSwitch = sw, TargetVms = targets }),
             $"Fallback switch set to '{sw}' ({targets.Count} target VM(s)) and saved to {_configPath}",
             "Failed to save fallback switch");
     }
 
-    /// <summary>Returns a sanitised deep copy of a rule (see <see cref="SaveRules"/>).</summary>
+    /// <summary>
+    /// Returns a sanitised deep copy of a rule (see <see cref="SaveRules"/>). This is the persistence
+    /// boundary that makes the round-trip guarantee true: a MAC or CIDR that is NOT well-formed is
+    /// dropped to <c>null</c> ("don't match on it") rather than persisted verbatim, so a malformed
+    /// hand-edited value can't survive an unrelated edit-and-save (the UI already blocks committing an
+    /// invalid value, but this enforces it even for a value that reached here another way). A valid MAC
+    /// is canonicalised; blanks become null.
+    /// </summary>
     internal static NetworkRule CleanRule(NetworkRule r) => new()
     {
         Name          = r.Name?.Trim() ?? string.Empty,
@@ -320,8 +285,14 @@ public sealed class ConfigManager : IDisposable
         AutoStart     = r.AutoStart,
         Conditions    = new RuleConditions
         {
-            AdapterMac = SettingsOptions.CanonicalizeMac(r.Conditions?.AdapterMac),
-            IpCidr     = SettingsOptions.BlankToNull(r.Conditions?.IpCidr),
+            // IsValidMac/IsValidCidr treat null/blank as valid ("don't match"); an invalid, non-blank
+            // value fails the guard and is dropped to null rather than written back malformed.
+            AdapterMac = SettingsOptions.IsValidMac(r.Conditions?.AdapterMac)
+                             ? SettingsOptions.CanonicalizeMac(r.Conditions?.AdapterMac)
+                             : null,
+            IpCidr     = SettingsOptions.IsValidCidr(r.Conditions?.IpCidr)
+                             ? SettingsOptions.BlankToNull(r.Conditions?.IpCidr)
+                             : null,
         },
     };
 
@@ -357,14 +328,7 @@ public sealed class ConfigManager : IDisposable
             .Where(a => !a.DeviceInstanceId.Equals(entry.DeviceInstanceId, StringComparison.OrdinalIgnoreCase));
 
         SaveAndReload(
-            new AppConfig
-            {
-                VirtualMachines = _config.VirtualMachines,
-                Rules           = _config.Rules,
-                Fallback        = _config.Fallback,
-                AdapterNames    = [.. others, entry],
-                LogLevel        = _config.LogLevel,
-            },
+            With(adapterNames: [.. others, entry]),
             $"Adapter-name record for '{entry.DeviceInstanceId}' saved to {_configPath}",
             $"Failed to save adapter-name record for '{entry.DeviceInstanceId}'");
     }
@@ -379,25 +343,50 @@ public sealed class ConfigManager : IDisposable
     /// <param name="failureMessage">Message logged if the write throws.</param>
     private void SaveAndReload(AppConfig updated, string successMessage, string failureMessage)
     {
-        _watcher.EnableRaisingEvents = false;
-        try
+        // Serialise the whole write+reload so concurrent saves queue rather than clobbering each other.
+        lock (_saveLock)
         {
-            File.WriteAllText(_configPath, JsonSerializer.Serialize(updated, WriteOptions));
-            _logger.LogInformation("{Message}", successMessage);
+            _watcher.EnableRaisingEvents = false;
+            try
+            {
+                File.WriteAllText(_configPath, JsonSerializer.Serialize(updated, WriteOptions));
+                _logger.LogInformation("{Message}", successMessage);
 
-            Load();
-            ConfigReloaded?.Invoke(this, _config);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "{Message}", failureMessage);
-            throw;
-        }
-        finally
-        {
-            _watcher.EnableRaisingEvents = true;
+                Load();
+                ConfigReloaded?.Invoke(this, _config);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "{Message}", failureMessage);
+                throw;
+            }
+            finally
+            {
+                _watcher.EnableRaisingEvents = true;
+            }
         }
     }
+
+    /// <summary>
+    /// Builds a copy of <see cref="Current"/> with only the named fields replaced (each defaults to the
+    /// current value). The config mutators funnel through this instead of hand-writing a 5-field
+    /// <see cref="AppConfig"/> initialiser each — a hand-written copy that silently drops a field (a
+    /// real drift risk as fields are added) can't happen when every unspecified field falls through to
+    /// the live value.
+    /// </summary>
+    private AppConfig With(
+        List<VmTarget>? vms = null,
+        List<NetworkRule>? rules = null,
+        FallbackAction? fallback = null,
+        List<AdapterNameOverride>? adapterNames = null,
+        LogLevel? logLevel = null) => new()
+        {
+            VirtualMachines = vms          ?? _config.VirtualMachines,
+            Rules           = rules        ?? _config.Rules,
+            Fallback        = fallback     ?? _config.Fallback,
+            AdapterNames    = adapterNames ?? _config.AdapterNames,
+            LogLevel        = logLevel     ?? _config.LogLevel,
+        };
 
     /// <summary>Returns the expected config.json path: next to the executable.</summary>
     public static string GetConfigPath() =>
