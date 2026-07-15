@@ -160,6 +160,10 @@ public partial class App : Application
             //     (NO 2.5 s metrics loop — that stays dashboard-gated), so a VM state change pushes
             //     the tooltip even while the dashboard is closed, without a permanent metrics poll.
             _vm.StatusesChanged += OnVmStatuses;
+            // Surface a failed power action as a tray balloon when the dashboard isn't up to show it
+            // inline (issue #30, finding 2) — a tray-initiated Start/Shutdown/… that fails is otherwise
+            // completely silent.
+            _vm.OperationProgress += OnVmOperationFailed;
             _vm.SubscribeStateWatcher();
 
             // Show something immediately (caches may still be warming — PreWarmVmCacheAsync fills them).
@@ -297,6 +301,30 @@ public partial class App : Application
     /// even while the dashboard is closed (issue #16, conversion #2).
     /// </summary>
     private void OnVmStatuses(IReadOnlyList<Models.VmStatus> statuses) => PostTooltipFromCaches();
+
+    /// <summary>
+    /// Shows a tray balloon for a failed VM power action, but only when the dashboard isn't visible —
+    /// the dashboard already surfaces the failure on the card, so a toast would be redundant there. This
+    /// covers the tray VM-Power submenu path, whose failures were previously invisible (issue #30,
+    /// finding 2). Fired on a background thread by <see cref="VmService.OperationProgress"/>; marshalled
+    /// to the UI. Never throws.
+    /// </summary>
+    private void OnVmOperationFailed(Models.VmOperationProgress p)
+    {
+        if (p.Phase != Models.VmOpPhase.Failed) return;
+        _ui.TryEnqueue(() =>
+        {
+            try
+            {
+                if (_dashboard is { } d && d.AppWindow.IsVisible) return;   // dashboard shows it inline
+                _trayIcon?.ShowNotification(
+                    title: $"{AppInfo.Name} — {p.VmName}",
+                    message: string.IsNullOrWhiteSpace(p.Message) ? "Power action failed." : p.Message!,
+                    icon: H.NotifyIcon.Core.NotificationIcon.Error);
+            }
+            catch (Exception ex) { LogCrash("Failed-op tray toast", ex); }
+        });
+    }
 
     /// <summary>
     /// Rebuilds the tray tooltip from VmService's already-populated caches (no WMI call of its own)

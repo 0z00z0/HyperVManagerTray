@@ -17,6 +17,8 @@
     <Compile Include="..\Services\ConfigManager.cs"   Link="Linked\ConfigManager.cs" />
     <Compile Include="..\Helpers\UptimeFormatter.cs"  Link="Linked\UptimeFormatter.cs" />
     <Compile Include="..\Helpers\WmiVmMapper.cs"      Link="Linked\WmiVmMapper.cs" />
+    <!-- Pure state→UI decisions for VM power controls (issue #30). Depends only on VmOperation. -->
+    <Compile Include="..\Helpers\VmStateUi.cs"        Link="Linked\VmStateUi.cs" />
     <Compile Include="..\Models\VmOperation.cs"       Link="Linked\VmOperation.cs" />
     <Compile Include="..\Helpers\IconGenerator.cs"    Link="Linked\IconGenerator.cs" />
     <Compile Include="..\Helpers\NativeMethods.cs"    Link="Linked\NativeMethods.cs" />
