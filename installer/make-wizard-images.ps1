@@ -18,7 +18,13 @@
         the SAME geometry the app draws for its tray icon (Helpers\IconGenerator.cs, its 16-unit
         logical space scaled x16 into the 256-unit studio sub-canvas), rendered in the studio
         gradients (monitor + stand purple->indigo, screen bars teal->blue),
-      • the "Hyper-V Manager" wordmark + studio tagline in Cascadia Mono.
+      • the "Hyper-V Manager" product wordmark in Cascadia Mono.
+
+    Banner layout is two stacked, non-overlapping blocks (mirrors ChargeKeeper's #60 fix):
+      STUDIO block:  [Ø] mark -> "ZeroZero Software" -> "Small tools. Zero bloat." (the studio's
+                     tagline sits under the studio label, NOT under the product wordmark)
+      -- divider --
+      PRODUCT block: VM-monitor glyph -> "Hyper-V Manager" wordmark (no tagline).
 
     Output: installer\wizard\wizimg-{WxH}.bmp   (large side banner, base 164x314)
             installer\wizard\wizsmall-{WxH}.bmp  (small header,      base 55x58)
@@ -232,26 +238,46 @@ function Render-Large([int]$w,[int]$h) {
         Fill-AccentBar $g 0 0            $w (5*$k)
         Fill-AccentBar $g 0 ($h-5*$k)    $w (5*$k)
 
-        # [Ø] mark: 58-unit target box, centred, top area. markScale = 58/256.
-        $markW = 58*$k
-        Draw-Mark $g (($w-$markW)/2) (26*$k) ($markW/256.0)
+        # Layout (base 164x314 units, ×$k). Two stacked blocks with a divider between them, spaced so
+        # NOTHING overlaps. The studio tagline moved up under the studio label where it belongs (it's
+        # ZeroZero Software's tagline, not the product's), and the product wordmark now stands alone.
+        #
+        #   STUDIO block:  [Ø] mark  →  "ZeroZero Software"  →  "Small tools. Zero bloat."
+        #   ── divider ──
+        #   PRODUCT block: VM-monitor glyph  →  "Hyper-V Manager" wordmark
 
-        # VM-monitor product glyph: centred in the band between the mark and the wordmark.
-        Draw-VMGlyphInBox $g 0 (86*$k) $w (104*$k) 0.86
+        # [Ø] mark: 52-unit target box, centred near the top. Its visible extent (brackets/ring)
+        # lands ~y38..y58 in base units, clear of the studio label below.
+        $markW = 52*$k
+        Draw-Mark $g (($w-$markW)/2) (22*$k) ($markW/256.0)
 
-        # Wordmark + tagline
         $fmt = New-Object System.Drawing.StringFormat
         $fmt.Alignment = [System.Drawing.StringAlignment]::Center
-        $wordFont = New-Object System.Drawing.Font($brandFamily,(14*$k),[System.Drawing.FontStyle]::Bold,[System.Drawing.GraphicsUnit]::Pixel)
-        $tagFont  = New-Object System.Drawing.Font($brandFamily,(9*$k),[System.Drawing.FontStyle]::Regular,[System.Drawing.GraphicsUnit]::Pixel)
+
+        $studioFont = New-Object System.Drawing.Font($brandFamily,(11*$k),[System.Drawing.FontStyle]::Regular,[System.Drawing.GraphicsUnit]::Pixel)
+        $tagFont    = New-Object System.Drawing.Font($brandFamily,(9*$k), [System.Drawing.FontStyle]::Regular,[System.Drawing.GraphicsUnit]::Pixel)
+        $wordFont   = New-Object System.Drawing.Font($brandFamily,(14*$k),[System.Drawing.FontStyle]::Bold,   [System.Drawing.GraphicsUnit]::Pixel)
         try {
             $tb = New-Object System.Drawing.SolidBrush($cText)
             $mb = New-Object System.Drawing.SolidBrush($cMuted)
             try {
-                $g.DrawString("Hyper-V Manager",$wordFont,$tb,(New-Object System.Drawing.RectangleF(0,(198*$k),$w,(22*$k))),$fmt)
-                $g.DrawString("Small tools. Zero bloat.",$tagFont,$mb,(New-Object System.Drawing.RectangleF(0,(228*$k),$w,(16*$k))),$fmt)
+                # Studio label + studio tagline (top block, under the [Ø] mark). Text bands y78..y94
+                # and y96..y110 — clear of the mark above (~y58) and the divider below (y120).
+                $g.DrawString("ZeroZero Software",$studioFont,$tb,(New-Object System.Drawing.RectangleF(0,(78*$k),$w,(16*$k))),$fmt)
+                $g.DrawString("Small tools. Zero bloat.",$tagFont,$mb,(New-Object System.Drawing.RectangleF(0,(96*$k),$w,(14*$k))),$fmt)
+
+                # Divider between the studio and product blocks.
+                $divPen = New-Object System.Drawing.Pen($cBorder,(1*$k))
+                try { $g.DrawLine($divPen,(40*$k),(120*$k),($w-40*$k),(120*$k)) } finally { $divPen.Dispose() }
+
+                # VM-monitor product glyph: box y130..y222, fill 0.80. Drawn extent lands ~y139..y212,
+                # so it clears the divider above and the wordmark below.
+                Draw-VMGlyphInBox $g 0 (130*$k) $w (92*$k) 0.80
+
+                # "Hyper-V Manager" wordmark BELOW the glyph, with a clear gap. No tagline under it.
+                $g.DrawString("Hyper-V Manager",$wordFont,$tb,(New-Object System.Drawing.RectangleF(0,(228*$k),$w,(24*$k))),$fmt)
             } finally { $tb.Dispose(); $mb.Dispose() }
-        } finally { $wordFont.Dispose(); $tagFont.Dispose(); $fmt.Dispose() }
+        } finally { $studioFont.Dispose(); $tagFont.Dispose(); $wordFont.Dispose(); $fmt.Dispose() }
     } finally { $g.Dispose() }
     return $bmp
 }
