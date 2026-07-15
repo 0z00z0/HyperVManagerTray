@@ -41,6 +41,15 @@ public class ConfigManagerTests : IDisposable
         return JsonSerializer.Deserialize<AppConfig>(json, ReadOpts) ?? new AppConfig();
     }
 
+    /// <summary>Writes a raw JSON string verbatim (to simulate a hand-edited, non-canonical config).</summary>
+    private string WriteRawTempConfig(string json)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"hvmt_test_{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, json);
+        _tempFiles.Add(path);
+        return path;
+    }
+
     private readonly List<string> _tempFiles = [];
 
     private ConfigManager MakeManager(string path)
@@ -318,6 +327,249 @@ public class ConfigManagerTests : IDisposable
 
         Assert.Same(before, mgr.Current.VirtualMachines[0]);   // no reload, same instance
         Assert.Equal("pause", before.OnBridgeLostAction);
+    }
+
+    // ── SaveRules (issue #23) ───────────────────────────────────────────────────
+
+    [Fact]
+    public void SaveRules_ReplacesRulesAndSanitises()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        mgr.SaveRules(
+        [
+            new NetworkRule
+            {
+                Name          = "  Office  ",
+                Priority      = -5,                       // clamped to 0
+                VirtualSwitch = "  Bridged  ",
+                TargetVms     = ["VM1", " VM1 ", "VM2"],  // deduped + trimmed
+                Conditions    = new RuleConditions { AdapterMac = "aa-bb-cc-dd-ee-ff", IpCidr = " 10.0.0.0/23 " },
+            }
+        ]);
+
+        var rule = Assert.Single(ReadConfig(path).Rules);
+        Assert.Equal("Office", rule.Name);
+        Assert.Equal(0, rule.Priority);
+        Assert.Equal("Bridged", rule.VirtualSwitch);
+        Assert.Equal(["VM1", "VM2"], rule.TargetVms);
+        Assert.Equal("AA:BB:CC:DD:EE:FF", rule.Conditions.AdapterMac);   // canonicalised
+        Assert.Equal("10.0.0.0/23", rule.Conditions.IpCidr);             // trimmed
+    }
+
+    [Fact]
+    public void SaveRules_PreservesVmsFallbackAndLogLevel()
+    {
+        var initial = new AppConfig
+        {
+            VirtualMachines = [ new VmTarget { Name = "Alpha" } ],
+            Fallback        = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Alpha"] },
+            LogLevel        = Microsoft.Extensions.Logging.LogLevel.Warning,
+        };
+        var path = WriteTempConfig(initial);
+        using var mgr = MakeManager(path);
+
+        mgr.SaveRules([ new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "Bridged" } ]);
+
+        var saved = ReadConfig(path);
+        Assert.Single(saved.Rules);
+        Assert.Single(saved.VirtualMachines);
+        Assert.Equal("Default Switch", saved.Fallback.VirtualSwitch);
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Warning, saved.LogLevel);
+    }
+
+    [Fact]
+    public void SaveRules_EmptyList_ClearsRules()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            Rules = [ new NetworkRule { Name = "Old", VirtualSwitch = "X" } ],
+        });
+        using var mgr = MakeManager(path);
+
+        mgr.SaveRules([]);
+
+        Assert.Empty(ReadConfig(path).Rules);
+    }
+
+    [Fact]
+    public void SaveRules_BlankMacAndCidr_BecomeNull()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        mgr.SaveRules(
+        [
+            new NetworkRule { Name = "R", VirtualSwitch = "X", Conditions = new RuleConditions { AdapterMac = "  ", IpCidr = "" } }
+        ]);
+
+        var rule = Assert.Single(ReadConfig(path).Rules);
+        Assert.Null(rule.Conditions.AdapterMac);
+        Assert.Null(rule.Conditions.IpCidr);
+    }
+
+    [Fact]
+    public void SaveRules_NoChange_IsNoOpSameInstance()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            Rules = [ new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "X", TargetVms = ["A"] } ],
+        });
+        using var mgr = MakeManager(path);
+        var before = mgr.Current.Rules;
+
+        // Re-saving an identical (already-clean) rule set must not rewrite/reload.
+        mgr.SaveRules([ new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "X", TargetVms = ["A"] } ]);
+
+        Assert.Same(before, mgr.Current.Rules);
+    }
+
+    [Fact]
+    public void SaveRules_UpdatesInMemoryConfig()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        mgr.SaveRules([ new NetworkRule { Name = "Live", Priority = 3, VirtualSwitch = "S" } ]);
+
+        Assert.Equal("Live", Assert.Single(mgr.Current.Rules).Name);
+    }
+
+    // ── SetFallback (issue #23) ─────────────────────────────────────────────────
+
+    [Fact]
+    public void SetFallback_PersistsSwitchAndTargets()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        mgr.SetFallback("External", ["VM1", " VM1 ", "VM2"]);
+
+        var fb = ReadConfig(path).Fallback;
+        Assert.Equal("External", fb.VirtualSwitch);
+        Assert.Equal(["VM1", "VM2"], fb.TargetVms);
+    }
+
+    [Fact]
+    public void SetFallback_BlankSwitch_KeepsCurrent()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            Fallback = new FallbackAction { VirtualSwitch = "Default Switch" },
+        });
+        using var mgr = MakeManager(path);
+
+        mgr.SetFallback("   ", ["VM1"]);   // blank switch must not overwrite with empty
+
+        var fb = ReadConfig(path).Fallback;
+        Assert.Equal("Default Switch", fb.VirtualSwitch);
+        Assert.Equal(["VM1"], fb.TargetVms);
+    }
+
+    [Fact]
+    public void SetFallback_NoChange_IsNoOpSameInstance()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            Fallback = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Alpha"] },
+        });
+        using var mgr = MakeManager(path);
+        var before = mgr.Current.Fallback;
+
+        mgr.SetFallback("Default Switch", ["Alpha"]);
+
+        Assert.Same(before, mgr.Current.Fallback);
+    }
+
+    [Fact]
+    public void SetFallback_PreservesRulesAndVms()
+    {
+        var initial = new AppConfig
+        {
+            VirtualMachines = [ new VmTarget { Name = "Alpha" } ],
+            Rules           = [ new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "Bridged" } ],
+        };
+        var path = WriteTempConfig(initial);
+        using var mgr = MakeManager(path);
+
+        mgr.SetFallback("NewFallback", []);
+
+        var saved = ReadConfig(path);
+        Assert.Equal("NewFallback", saved.Fallback.VirtualSwitch);
+        Assert.Single(saved.Rules);
+        Assert.Single(saved.VirtualMachines);
+    }
+
+    // ── Hand-edited exotic config survival (issue #24) ──────────────────────────
+
+    // A deliberately non-canonical, hand-edited config: odd indentation, upper-case enum, a rule MAC
+    // without separators, rules out of priority order, a non-preset delay, and an upper-case action.
+    private const string ExoticConfigJson =
+        """
+        {
+            "logLevel": "Warning",
+            "virtualMachines": [
+                { "name": "Alpha", "nicName": "Network Adapter", "onBridgeLostAction": "PAUSE", "onBridgeLostDelaySeconds": 45 }
+            ],
+            "rules": [
+                { "name": "Second", "priority": 50, "virtualSwitch": "SwitchB", "targetVms": ["Alpha"], "conditions": { "adapterMac": "aabbccddeeff" } },
+                { "name": "First",  "priority": 10, "virtualSwitch": "SwitchA", "targetVms": ["Alpha"], "conditions": { "ipCidr": "10.0.0.0/23" } }
+            ],
+            "fallback": { "virtualSwitch": "Default Switch", "targetVms": ["Alpha"] }
+        }
+        """;
+
+    [Fact]
+    public void ConstructingManager_DoesNotRewriteFile()
+    {
+        // "Open → touch nothing → close": Load must only READ. The file bytes must be identical after a
+        // manager is constructed (and disposed) over a hand-edited config — no silent normalisation.
+        var path = WriteRawTempConfig(ExoticConfigJson);
+        var before = File.ReadAllBytes(path);
+
+        using (var mgr = MakeManager(path))
+        {
+            // Loaded correctly (case-insensitive enum, priority-sorted in memory)…
+            Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Warning, mgr.Current.LogLevel);
+            Assert.Equal("First", mgr.Current.Rules[0].Name);   // sorted by priority in memory only
+        }
+
+        Assert.Equal(before, File.ReadAllBytes(path));          // …but the file on disk is byte-identical
+    }
+
+    [Fact]
+    public void DeliberateEdit_PreservesOtherHandEditedValuesVerbatim()
+    {
+        // Changing ONE value (log level) must not canonicalise the untouched rule MAC — a hand-edited
+        // "aabbccddeeff" survives verbatim because the non-rule mutators copy the loaded rules as-is.
+        var path = WriteRawTempConfig(ExoticConfigJson);
+        using var mgr = MakeManager(path);
+
+        mgr.UpdateLogLevel(Microsoft.Extensions.Logging.LogLevel.Error);   // the one deliberate edit
+
+        var saved = ReadConfig(path);
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Error, saved.LogLevel);
+        var withMac = Assert.Single(saved.Rules, r => r.Name == "Second");
+        Assert.Equal("aabbccddeeff", withMac.Conditions.AdapterMac);       // untouched, not canonicalised
+        var vm = Assert.Single(saved.VirtualMachines);
+        Assert.Equal("PAUSE", vm.OnBridgeLostAction);                      // untouched action preserved
+        Assert.Equal(45,      vm.OnBridgeLostDelaySeconds);
+    }
+
+    [Fact]
+    public void NoOpSetters_OverExoticConfig_DoNotRewriteFile()
+    {
+        // Each mutator that detects "no change" must leave a hand-edited file byte-identical when handed
+        // the already-stored values (the UI's per-control commit passes exactly these on touch-nothing).
+        var path = WriteRawTempConfig(ExoticConfigJson);
+        using var mgr = MakeManager(path);
+        var before = File.ReadAllBytes(path);
+
+        mgr.UpdateLogLevel(Microsoft.Extensions.Logging.LogLevel.Warning);       // same level
+        mgr.SetFallback("Default Switch", ["Alpha"]);                            // same fallback
+
+        Assert.Equal(before, File.ReadAllBytes(path));
     }
 
     // ── Round-trip ────────────────────────────────────────────────────────────

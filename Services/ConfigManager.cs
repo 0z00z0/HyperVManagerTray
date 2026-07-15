@@ -238,6 +238,103 @@ public sealed class ConfigManager : IDisposable
     }
 
     /// <summary>
+    /// Replaces the entire rules list (issue #23 — the Network editor). Each rule is sanitised through a
+    /// fresh copy before it is written (name/switch trimmed, priority clamped, MAC canonicalised, CIDR/MAC
+    /// blanks→null, target-VM list cleaned) so a malformed hand-edit can't be persisted verbatim. Follows
+    /// the same build-fresh-then-swap discipline as the other mutators: the new list is only swapped in via
+    /// <see cref="Load"/> after a successful write, and the live <see cref="AppConfig"/> is never mutated.
+    /// A no-op when the cleaned list already equals what's stored.
+    /// </summary>
+    public void SaveRules(IReadOnlyList<NetworkRule> rules)
+    {
+        ArgumentNullException.ThrowIfNull(rules);
+        var cleaned = rules.Select(CleanRule).ToList();
+
+        if (RulesEqual(cleaned, _config.Rules))
+        {
+            _logger.LogInformation("SaveRules: rules unchanged — skipping.");
+            return;
+        }
+
+        SaveAndReload(
+            new AppConfig
+            {
+                VirtualMachines = _config.VirtualMachines,
+                Rules           = cleaned,
+                Fallback        = _config.Fallback,
+                AdapterNames    = _config.AdapterNames,
+                LogLevel        = _config.LogLevel,
+            },
+            $"Saved {cleaned.Count} network rule(s) to {_configPath}",
+            "Failed to save network rules");
+    }
+
+    /// <summary>
+    /// Updates the fallback switch and its target VMs (issue #23 — previously config.json-only). The
+    /// switch is trimmed (blank keeps the current value rather than writing an empty switch that would
+    /// break binding); the target-VM list is cleaned. No-op when nothing changed.
+    /// </summary>
+    public void SetFallback(string virtualSwitch, IEnumerable<string> targetVms)
+    {
+        var sw      = string.IsNullOrWhiteSpace(virtualSwitch) ? _config.Fallback.VirtualSwitch : virtualSwitch.Trim();
+        var targets = SettingsOptions.CleanVmList(targetVms ?? []);
+
+        if (sw.Equals(_config.Fallback.VirtualSwitch, StringComparison.Ordinal)
+            && targets.SequenceEqual(_config.Fallback.TargetVms, StringComparer.Ordinal))
+        {
+            _logger.LogInformation("SetFallback: unchanged — skipping.");
+            return;
+        }
+
+        SaveAndReload(
+            new AppConfig
+            {
+                VirtualMachines = _config.VirtualMachines,
+                Rules           = _config.Rules,
+                Fallback        = new FallbackAction { VirtualSwitch = sw, TargetVms = targets },
+                AdapterNames    = _config.AdapterNames,
+                LogLevel        = _config.LogLevel,
+            },
+            $"Fallback switch set to '{sw}' ({targets.Count} target VM(s)) and saved to {_configPath}",
+            "Failed to save fallback switch");
+    }
+
+    /// <summary>Returns a sanitised deep copy of a rule (see <see cref="SaveRules"/>).</summary>
+    internal static NetworkRule CleanRule(NetworkRule r) => new()
+    {
+        Name          = r.Name?.Trim() ?? string.Empty,
+        Priority      = SettingsOptions.NormalizePriority(r.Priority),
+        VirtualSwitch = r.VirtualSwitch?.Trim() ?? string.Empty,
+        TargetVms     = SettingsOptions.CleanVmList(r.TargetVms ?? []),
+        AutoStart     = r.AutoStart,
+        Conditions    = new RuleConditions
+        {
+            AdapterMac = SettingsOptions.CanonicalizeMac(r.Conditions?.AdapterMac),
+            IpCidr     = SettingsOptions.BlankToNull(r.Conditions?.IpCidr),
+        },
+    };
+
+    /// <summary>Structural equality of two rule lists — used to skip a redundant write.</summary>
+    private static bool RulesEqual(IReadOnlyList<NetworkRule> a, IReadOnlyList<NetworkRule> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+        {
+            var x = a[i];
+            var y = b[i];
+            if (!string.Equals(x.Name, y.Name, StringComparison.Ordinal)
+                || x.Priority != y.Priority
+                || !string.Equals(x.VirtualSwitch, y.VirtualSwitch, StringComparison.Ordinal)
+                || x.AutoStart != y.AutoStart
+                || !string.Equals(x.Conditions?.AdapterMac, y.Conditions?.AdapterMac, StringComparison.Ordinal)
+                || !string.Equals(x.Conditions?.IpCidr, y.Conditions?.IpCidr, StringComparison.Ordinal)
+                || !x.TargetVms.SequenceEqual(y.TargetVms, StringComparer.Ordinal))
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>
     /// Inserts or updates the saved-original-name record for a renamed adapter (issue #15), keyed by
     /// <see cref="AdapterNameOverride.DeviceInstanceId"/>, then saves and reloads.  Any existing record
     /// for the same device is replaced (so a re-rename updates <c>CurrentFriendlyName</c> without

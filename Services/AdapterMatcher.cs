@@ -124,9 +124,20 @@ public static class AdapterMatcher
         var list = new List<PhysicalAdapterInfo>(physical.Count);
         foreach (var nic in physical)
         {
-            string mac;
-            try   { mac = FormatMac(nic.GetPhysicalAddress().ToString()); }
-            catch { mac = "—"; }
+            byte[] macBytes;
+            try   { macBytes = nic.GetPhysicalAddress().GetAddressBytes(); }
+            catch { macBytes = []; }
+
+            // PICKER-specific gate (issue #25): SplitAdapters already dropped filter-layer / Hyper-V /
+            // bridge adapters (that filtering must NOT change — the rule engine and PrimaryAdapter share
+            // it), but Bluetooth PAN, TAP/VPN, VirtualBox/VMware host-only and similar software adapters
+            // are still Up "physical" NICs the rule engine tolerates yet make no sense to rename. Only
+            // the picker applies this tighter test, so USB-Ethernet docks (a real 6-byte MAC, no software
+            // marker) still appear.
+            if (!IsPickerPhysicalAdapter(nic.NetworkInterfaceType, macBytes.Length, nic.Name, nic.Description))
+                continue;
+
+            var mac = FormatMac(BitConverter.ToString(macBytes).Replace("-", ""));
 
             // Raw Description (not FriendlyAdapterName) — SplitAdapters already excluded the filter
             // adapters whose suffix FriendlyAdapterName strips, so this is the real device string and
@@ -135,6 +146,74 @@ public static class AdapterMatcher
         }
         return list;
     }
+
+    /// <summary>
+    /// PICKER-only test (issue #25) for whether an adapter is a real, renameable physical NIC.  Pure so
+    /// it can be unit-tested without a live <see cref="NetworkInterface"/>: takes the adapter's
+    /// <paramref name="type"/>, its MAC length in bytes, and its <paramref name="name"/>/<paramref name="description"/>.
+    /// This is DELIBERATELY separate from <see cref="SplitAdapters"/>: tightening the shared split would
+    /// change rule-matching / primary-adapter semantics, whereas hiding these adapters only trims the
+    /// rename list.  Rules:
+    /// <list type="bullet">
+    ///   <item>Must carry a standard 48-bit (6-byte) MAC — excludes tunnel/WAN-miniport pseudo-NICs.</item>
+    ///   <item>Excludes <see cref="NetworkInterfaceType.Tunnel"/> / <c>Ppp</c> / <c>Loopback</c>.</item>
+    ///   <item>Excludes known software-adapter name/description markers (Bluetooth PAN, TAP/OpenVPN,
+    ///   Wintun/WireGuard, VirtualBox, VMware, generic "virtual"/"pseudo"/"VPN").</item>
+    /// </list>
+    /// A USB-Ethernet dock ("Realtek USB GbE Family Controller", real MAC, Ethernet type) passes.
+    /// </summary>
+    internal static bool IsPickerPhysicalAdapter(NetworkInterfaceType type, int macByteLength, string name, string description)
+    {
+        if (macByteLength != 6) return false;
+
+        switch (type)
+        {
+            case NetworkInterfaceType.Tunnel:
+            case NetworkInterfaceType.Ppp:
+            case NetworkInterfaceType.Loopback:
+                return false;
+        }
+
+        return !HasSoftwareAdapterMarker(name) && !HasSoftwareAdapterMarker(description);
+    }
+
+    /// <summary>
+    /// True when a NIC name/description contains a marker of a software/virtual adapter that should never
+    /// be offered for rename (issue #25). Distinct from <see cref="IsFilterLayerAdapter"/>, which the
+    /// shared split uses to drop WFP/NDIS/bridge layers; this set targets end-user virtual adapters that
+    /// otherwise look physical (own MAC, Ethernet type). Chosen substrings are specific enough not to hit
+    /// legitimate USB-Ethernet dock names.
+    /// </summary>
+    internal static bool HasSoftwareAdapterMarker(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return false;
+        foreach (var marker in SoftwareAdapterMarkers)
+            if (s.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        return false;
+    }
+
+    private static readonly string[] SoftwareAdapterMarkers =
+    [
+        "Bluetooth",          // Bluetooth PAN / Personal Area Network
+        "TAP-Windows",        // OpenVPN TAP adapter
+        "TAP-Win32",
+        "OpenVPN",
+        "Wintun",             // WireGuard / modern tunnel driver
+        "WireGuard",
+        "VirtualBox",         // VirtualBox Host-Only Network
+        "VMware",             // VMware Virtual Ethernet Adapter (VMnet1/VMnet8)
+        "VMnet",
+        "Hyper-V",            // belt-and-braces (SplitAdapters already drops these)
+        "Virtual Adapter",
+        "Virtual Ethernet",
+        "Pseudo",
+        "VPN",
+        "GlobalProtect",      // Palo Alto PANGP
+        "PANGP",
+        "ZeroTier",
+        "Tailscale",
+        "Npcap Loopback",
+    ];
 
     // ── Private helpers ───────────────────────────────────────────────────────
 

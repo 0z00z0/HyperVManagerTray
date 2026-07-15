@@ -120,4 +120,82 @@ public class SettingsOptionsTests
         foreach (LogLevel level in Enum.GetValues<LogLevel>())
             Assert.Contains(SettingsOptions.LogLevels, o => o.Value == level);
     }
+
+    // ── Network rules editor helpers (issue #23) ─────────────────────────────────
+
+    [Theory]
+    [InlineData(null,                 true)]   // blank = "don't match on MAC"
+    [InlineData("",                   true)]
+    [InlineData("   ",                true)]
+    [InlineData("AA:BB:CC:DD:EE:FF",  true)]
+    [InlineData("aa-bb-cc-dd-ee-ff",  true)]
+    [InlineData("AABBCCDDEEFF",       true)]
+    [InlineData("AA:BB:CC:DD:EE",     false)]  // too short
+    [InlineData("GG:BB:CC:DD:EE:FF",  false)]  // non-hex
+    [InlineData("not-a-mac",          false)]
+    public void IsValidMac_AcceptsWellFormedOrBlank(string? mac, bool expected)
+        => Assert.Equal(expected, SettingsOptions.IsValidMac(mac));
+
+    [Theory]
+    [InlineData("aa:bb:cc:dd:ee:ff", "AA:BB:CC:DD:EE:FF")]
+    [InlineData("AABBCCDDEEFF",      "AA:BB:CC:DD:EE:FF")]
+    [InlineData("aa-bb-cc-dd-ee-ff", "AA:BB:CC:DD:EE:FF")]
+    public void CanonicalizeMac_NormalisesToColonUpper(string input, string expected)
+        => Assert.Equal(expected, SettingsOptions.CanonicalizeMac(input));
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void CanonicalizeMac_BlankBecomesNull(string? input)
+        => Assert.Null(SettingsOptions.CanonicalizeMac(input));
+
+    [Fact]
+    public void CanonicalizeMac_InProgressValueNotMangled()
+        // A value that isn't yet a valid MAC is returned trimmed, not silently dropped (the UI gates
+        // saving on IsValidMac, so a partial value is never persisted, but it must survive display).
+        => Assert.Equal("AA:BB", SettingsOptions.CanonicalizeMac("  AA:BB  "));
+
+    [Theory]
+    [InlineData(null,             true)]   // blank = "don't match on IP"
+    [InlineData("",               true)]
+    [InlineData("10.0.0.0/23",    true)]
+    [InlineData("192.168.1.0/24", true)]
+    [InlineData("10.0.0.1/32",    true)]
+    [InlineData("0.0.0.0/0",      true)]
+    [InlineData("10.0.0.0/33",    false)]  // prefix > 32
+    [InlineData("10.0.0.0/-1",    false)]
+    [InlineData("10.0.0.0",       false)]  // no prefix
+    [InlineData("not/24",         false)]
+    [InlineData("999.0.0.0/24",   false)]  // bad octet
+    public void IsValidCidr_AcceptsWellFormedOrBlank(string? cidr, bool expected)
+        => Assert.Equal(expected, SettingsOptions.IsValidCidr(cidr));
+
+    [Theory]
+    [InlineData("VM1, VM2, VM3",   new[] { "VM1", "VM2", "VM3" })]
+    [InlineData(" VM1 ,VM2,, VM1", new[] { "VM1", "VM2" })]        // trims, drops blanks, dedupes
+    [InlineData("VM1\nVM2\r\nVM3", new[] { "VM1", "VM2", "VM3" })] // newline-separated too
+    [InlineData("",                new string[0])]
+    [InlineData(null,              new string[0])]
+    public void ParseVmList_CleansAndDedupes(string? text, string[] expected)
+        => Assert.Equal(expected, SettingsOptions.ParseVmList(text));
+
+    [Fact]
+    public void ParseVmList_DedupeIsCaseInsensitiveFirstSpellingWins()
+        => Assert.Equal(["Alpha"], SettingsOptions.ParseVmList("Alpha, alpha, ALPHA"));
+
+    [Fact]
+    public void JoinVmList_RoundTripsWithParse()
+    {
+        var original = new[] { "Alpha", "Beta", "Gamma" };
+        Assert.Equal(original, SettingsOptions.ParseVmList(SettingsOptions.JoinVmList(original)));
+    }
+
+    [Theory]
+    [InlineData(-5,      0)]
+    [InlineData(0,       0)]
+    [InlineData(100,     100)]
+    [InlineData(200_000, 100_000)]
+    public void NormalizePriority_Clamps(int input, int expected)
+        => Assert.Equal(expected, SettingsOptions.NormalizePriority(input));
 }
