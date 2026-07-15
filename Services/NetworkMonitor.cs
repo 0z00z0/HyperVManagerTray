@@ -15,6 +15,10 @@ public sealed class NetworkMonitor : IDisposable
     private readonly HyperVManager _hyperV;   // switch binding (PowerShell)
     private readonly VmService     _vm;       // VM power (WMI)
     private readonly ILogger<NetworkMonitor> _logger;
+    // Dedicated "vm-power" category logger → vm-power.log (issue #20): records the automatic power
+    // actions this monitor triggers (autostart, on-bridge-lost) with their triggering rule/reason,
+    // alongside the begin+outcome lines VmService writes for the action itself.
+    private readonly ILogger _powerLog;
     private readonly System.Threading.Timer _debounceTimer;
     // Single-flight guard: only one evaluate/apply runs at a time.  '_evaluatePending'
     // coalesces changes that arrive while one is running into exactly one follow-up pass.
@@ -37,12 +41,14 @@ public sealed class NetworkMonitor : IDisposable
     /// <summary>The most recently applied match result, or null if nothing applied yet.</summary>
     public MatchResult? LastApplied => _lastApplied;
 
-    public NetworkMonitor(ConfigManager config, HyperVManager hyperV, VmService vm, ILogger<NetworkMonitor> logger)
+    public NetworkMonitor(ConfigManager config, HyperVManager hyperV, VmService vm,
+                          ILogger<NetworkMonitor> logger, ILogger powerLog)
     {
-        _config = config;
-        _hyperV = hyperV;
-        _vm     = vm;
-        _logger = logger;
+        _config   = config;
+        _hyperV   = hyperV;
+        _vm       = vm;
+        _logger   = logger;
+        _powerLog = powerLog;
         _debounceTimer = new System.Threading.Timer(OnDebounceElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
         NetworkChange.NetworkAddressChanged += OnNetworkChanged;
@@ -214,7 +220,8 @@ public sealed class NetworkMonitor : IDisposable
                 foreach (var vmName in rule.TargetVms)
                 {
                     _logger.LogInformation("Autostart: starting/resuming {Vm} for rule '{Rule}'", vmName, rule.Name);
-                    _vm.BeginPowerAction(vmName, VmOpKind.Start);
+                    _powerLog.LogInformation("AUTO Start '{Vm}': rule '{Rule}' autostart (network became active)", vmName, rule.Name);
+                    _vm.BeginPowerAction(vmName, VmOpKind.Start, VmOpOrigin.Auto);
                 }
             }
         }
@@ -282,12 +289,15 @@ public sealed class NetworkMonitor : IDisposable
                         _logger.LogInformation(
                             "Bridge-lost action: {Action} {Vm} (bridge absent for {Delay}s)",
                             action, vmName, delaySec);
+                        _powerLog.LogInformation(
+                            "AUTO {Action} '{Vm}': bridged network lost (absent for {Delay}s)",
+                            action, vmName, delaySec);
 
                         switch (action)
                         {
-                            case "pause":    _vm.BeginPowerAction(vmName, VmOpKind.Pause);    break;
-                            case "save":     _vm.BeginPowerAction(vmName, VmOpKind.Save);     break;
-                            case "shutdown": _vm.BeginPowerAction(vmName, VmOpKind.Shutdown); break;
+                            case "pause":    _vm.BeginPowerAction(vmName, VmOpKind.Pause,    VmOpOrigin.Auto); break;
+                            case "save":     _vm.BeginPowerAction(vmName, VmOpKind.Save,     VmOpOrigin.Auto); break;
+                            case "shutdown": _vm.BeginPowerAction(vmName, VmOpKind.Shutdown, VmOpOrigin.Auto); break;
                         }
                     }
                     catch (OperationCanceledException) { /* bridge restored — expected */ }

@@ -3,6 +3,9 @@ namespace HyperVManagerTray.Models;
 /// <summary>A VM power operation the user (or a rule) requested.</summary>
 public enum VmOpKind { Start, Resume, Pause, Save, Shutdown }
 
+/// <summary>Where a <see cref="VmOpKind"/> request originated — recorded in vm-power.log (issue #20).</summary>
+public enum VmOpOrigin { Tray, Dashboard, Auto }
+
 /// <summary>Lifecycle phase of a <see cref="VmOpKind"/>.</summary>
 public enum VmOpPhase { Requested, Running, Succeeded, Failed }
 

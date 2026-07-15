@@ -54,6 +54,9 @@ public sealed class VmService : IDisposable
     private readonly record struct VmIdentity(ushort EnabledState, string Guid);
 
     private readonly ILogger<VmService> _logger;
+    // Dedicated "vm-power" category logger → vm-power.log (issue #20). Carries the begin+outcome
+    // audit trail for every power action; diagnostic/degradation noise stays on _logger (switcher.log).
+    private readonly ILogger _powerLog;
     private readonly object _scopeLock = new();
     private ManagementScope? _scope;
     private ManagementEventWatcher? _watcher;
@@ -102,7 +105,11 @@ public sealed class VmService : IDisposable
     /// <summary>Raised (on a background thread) as a power action progresses. Marshal to the UI.</summary>
     public event Action<VmOperationProgress>? OperationProgress;
 
-    public VmService(ILogger<VmService> logger) => _logger = logger;
+    public VmService(ILogger<VmService> logger, ILogger powerLog)
+    {
+        _logger   = logger;
+        _powerLog = powerLog;
+    }
 
     // ── Sync cache reads (UI-thread safe, no WMI) ────────────────────────────────
 
@@ -614,24 +621,32 @@ public sealed class VmService : IDisposable
     /// immediately ("Requesting …"), then live progress from the WMI job, then success or the exact
     /// failure text. The state watcher/metrics refresh flip the card to the real state afterward.
     /// </summary>
-    public void BeginPowerAction(string vmName, VmOpKind kind)
+    public void BeginPowerAction(string vmName, VmOpKind kind, VmOpOrigin origin)
     {
         Emit(vmName, kind, VmOpPhase.Requested, null, null);
-        _ = Task.Run(() => RunPowerAction(vmName, kind));
+        _ = Task.Run(() => RunPowerAction(vmName, kind, origin));
     }
 
-    private void RunPowerAction(string vmName, VmOpKind kind)
+    private void RunPowerAction(string vmName, VmOpKind kind, VmOpOrigin origin)
     {
+        // Begin line for EVERY power action — the vm-power.log audit trail (issue #20). Every exit
+        // path below writes exactly one matching outcome line (succeeded / no-op / failed / job-tracked).
+        _powerLog.LogInformation("BEGIN {Kind} '{Vm}' (origin={Origin})", kind, vmName, origin);
         try
         {
             EnsureScope();
             var scope = _scope!;
             using var vm = FindVm(scope, vmName);
-            if (vm is null) { Emit(vmName, kind, VmOpPhase.Failed, null, "VM not found"); return; }
+            if (vm is null)
+            {
+                _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): VM not found", kind, vmName, origin);
+                Emit(vmName, kind, VmOpPhase.Failed, null, "VM not found");
+                return;
+            }
 
             if (kind == VmOpKind.Shutdown)
             {
-                RunShutdown(scope, vm, vmName);
+                RunShutdown(scope, vm, vmName, origin);
                 return;
             }
 
@@ -649,6 +664,8 @@ public sealed class VmService : IDisposable
             };
             if (WmiVmMapper.MapState(Convert.ToUInt16(vm["EnabledState"])) == targetStateName)
             {
+                _powerLog.LogInformation("SUCCEEDED {Kind} '{Vm}' (origin={Origin}): already {State} — no-op",
+                    kind, vmName, origin, targetStateName);
                 Emit(vmName, kind, VmOpPhase.Succeeded, null, null);
                 return;
             }
@@ -665,15 +682,18 @@ public sealed class VmService : IDisposable
             inParams["RequestedState"] = requestCode;
             using var outParams = vm.InvokeMethod("RequestStateChange", inParams, null);
             uint ret = Convert.ToUInt32(outParams["ReturnValue"]);
+            _powerLog.LogDebug("{Kind} '{Vm}' (origin={Origin}): RequestStateChange returned {Ret}", kind, vmName, origin, ret);
 
-            if (ret == 0)    { Emit(vmName, kind, VmOpPhase.Succeeded, null, null); return; }
-            if (ret == 4096) { TrackJob(scope, (string)outParams["Job"], vmName, kind); return; }
+            if (ret == 0)    { _powerLog.LogInformation("SUCCEEDED {Kind} '{Vm}' (origin={Origin})", kind, vmName, origin); Emit(vmName, kind, VmOpPhase.Succeeded, null, null); return; }
+            if (ret == 4096) { TrackJob(scope, (string)outParams["Job"], vmName, kind, origin); return; }
 
+            _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): RequestStateChange error 0x{Ret:X}", kind, vmName, origin, ret);
             Emit(vmName, kind, VmOpPhase.Failed, null, $"error 0x{ret:X}");
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Power action {Kind} on {Vm} failed", kind, vmName);
+            _powerLog.LogError(ex, "FAILED {Kind} '{Vm}' (origin={Origin}): {Error}", kind, vmName, origin, ex.Message);
             Emit(vmName, kind, VmOpPhase.Failed, null, ex.Message);
         }
         finally
@@ -682,7 +702,7 @@ public sealed class VmService : IDisposable
         }
     }
 
-    private void RunShutdown(ManagementScope scope, ManagementObject vm, string vmName)
+    private void RunShutdown(ManagementScope scope, ManagementObject vm, string vmName, VmOpOrigin origin)
     {
         // Graceful guest shutdown via the shutdown integration component (no WMI job; the guest
         // shuts down asynchronously, and the state watcher flips the card to Off).
@@ -690,7 +710,12 @@ public sealed class VmService : IDisposable
         using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
             $"SELECT * FROM Msvm_ShutdownComponent WHERE SystemName='{guid}'"));
         ManagementObject? sc = s.Get().Cast<ManagementObject>().FirstOrDefault();
-        if (sc is null) { Emit(vmName, VmOpKind.Shutdown, VmOpPhase.Failed, null, "Integration services not available"); return; }
+        if (sc is null)
+        {
+            _powerLog.LogWarning("FAILED Shutdown '{Vm}' (origin={Origin}): integration services not available", vmName, origin);
+            Emit(vmName, VmOpKind.Shutdown, VmOpPhase.Failed, null, "Integration services not available");
+            return;
+        }
         using (sc)
         using (var inP = sc.GetMethodParameters("InitiateShutdown"))
         {
@@ -698,12 +723,22 @@ public sealed class VmService : IDisposable
             inP["Reason"] = "Requested from Hyper-V Manager Tray";
             using var outP = sc.InvokeMethod("InitiateShutdown", inP, null);
             uint ret = Convert.ToUInt32(outP["ReturnValue"]);
-            if (ret is 0 or 4096) Emit(vmName, VmOpKind.Shutdown, VmOpPhase.Running, null, null);
-            else Emit(vmName, VmOpKind.Shutdown, VmOpPhase.Failed, null, $"error 0x{ret:X}");
+            if (ret is 0 or 4096)
+            {
+                // Graceful shutdown has no WMI job to track: the guest powers off asynchronously and
+                // the state watcher flips the card to Off, so this "initiated" line is the outcome.
+                _powerLog.LogInformation("Shutdown '{Vm}' (origin={Origin}): initiated — guest shutting down", vmName, origin);
+                Emit(vmName, VmOpKind.Shutdown, VmOpPhase.Running, null, null);
+            }
+            else
+            {
+                _powerLog.LogWarning("FAILED Shutdown '{Vm}' (origin={Origin}): error 0x{Ret:X}", vmName, origin, ret);
+                Emit(vmName, VmOpKind.Shutdown, VmOpPhase.Failed, null, $"error 0x{ret:X}");
+            }
         }
     }
 
-    private void TrackJob(ManagementScope scope, string jobPath, string vmName, VmOpKind kind)
+    private void TrackJob(ManagementScope scope, string jobPath, string vmName, VmOpKind kind, VmOpOrigin origin)
     {
         // Pause is near-instant (the VM stays memory-resident); everything else that reaches here
         // (Start, Resume, Save) can legitimately take minutes — e.g. a cold-boot Start under host
@@ -730,13 +765,20 @@ public sealed class VmService : IDisposable
             if (jobState == 7)   // Completed
             {
                 if (Interlocked.Exchange(ref completed, 1) == 0)
-                { Emit(vmName, kind, VmOpPhase.Succeeded, null, null); done.Set(); }
+                {
+                    _powerLog.LogInformation("SUCCEEDED {Kind} '{Vm}' (origin={Origin}): job completed", kind, vmName, origin);
+                    Emit(vmName, kind, VmOpPhase.Succeeded, null, null); done.Set();
+                }
                 return true;
             }
             if (jobState >= 8)   // Terminated / Killed / Exception
             {
                 if (Interlocked.Exchange(ref completed, 1) == 0)
-                { Emit(vmName, kind, VmOpPhase.Failed, null, snap["ErrorDescription"] as string); done.Set(); }
+                {
+                    var err = snap["ErrorDescription"] as string;
+                    _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): job {JobState} — {Error}", kind, vmName, origin, jobState, err ?? "(no detail)");
+                    Emit(vmName, kind, VmOpPhase.Failed, null, err); done.Set();
+                }
                 return true;
             }
             Emit(vmName, kind, VmOpPhase.Running, SafeInt(snap["PercentComplete"]), null);
@@ -781,13 +823,19 @@ public sealed class VmService : IDisposable
 
             // Block on the event (not a poll loop) until terminal or the fallback timeout.
             if (!done.Wait(timeout) && Interlocked.Exchange(ref completed, 1) == 0)
+            {
+                _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): job timed out", kind, vmName, origin);
                 Emit(vmName, kind, VmOpPhase.Failed, null, "timed out");
+            }
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Job tracking failed for {Vm}", vmName);
             if (Interlocked.Exchange(ref completed, 1) == 0)
+            {
+                _powerLog.LogError(ex, "FAILED {Kind} '{Vm}' (origin={Origin}): job tracking error — {Error}", kind, vmName, origin, ex.Message);
                 Emit(vmName, kind, VmOpPhase.Failed, null, ex.Message);
+            }
         }
         finally
         {

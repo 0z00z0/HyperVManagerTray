@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.UI.Dispatching;
 using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Models;
@@ -38,10 +39,13 @@ internal sealed class AdapterRenameFlow
     /// </summary>
     public async Task RunAsync(PhysicalAdapterInfo adapter)
     {
+        UiActivityLog.Logger.LogInformation("Rename flow: started for adapter '{Adapter}'", adapter.Description);
+
         AdapterNameRules.DeviceResolution resolution;
         try   { resolution = await Task.Run(() => AdapterRenamer.ResolveDevice(adapter.InterfaceGuid)); }
         catch (Exception ex)
         {
+            UiActivityLog.Logger.LogWarning("Rename flow: device resolution threw for '{Adapter}'", adapter.Description);
             NativeMethods.Error($"Could not identify the device for this adapter:\n{ex.Message}", AppName);
             return;
         }
@@ -49,6 +53,7 @@ internal sealed class AdapterRenameFlow
         if (!resolution.Success || resolution.DeviceInstanceId is null)
         {
             // 0 or >1 devices resolved — never guess which dock; abort with no changes.
+            UiActivityLog.Logger.LogWarning("Rename flow: device could not be safely resolved for '{Adapter}' — aborted", adapter.Description);
             NativeMethods.Error(
                 $"Could not safely identify the device behind \"{adapter.Description}\".\n\n" +
                 $"{resolution.Error}\n\nNo changes were made.",
@@ -73,12 +78,22 @@ internal sealed class AdapterRenameFlow
             .ToList();
 
         var result = await RenameAdapterWindow.ShowAsync(adapter.Description, others, savedOriginal, canReset);
-        if (result is null) return;
+        if (result is null)
+        {
+            UiActivityLog.Logger.LogInformation("Rename flow: dialog cancelled for '{Adapter}'", adapter.Description);
+            return;
+        }
 
         if (result.Choice == RenameDialogChoice.Reset)
+        {
+            UiActivityLog.Logger.LogInformation("Rename flow: reset requested for '{Adapter}'", adapter.Description);
             await ResetAdapterNameAsync(adapter, deviceInstanceId, existing!);
+        }
         else
+        {
+            UiActivityLog.Logger.LogInformation("Rename flow: rename requested for '{Adapter}' → '{NewName}'", adapter.Description, result.NewName);
             await ApplyRenameAsync(adapter, deviceInstanceId, result.NewName!, existing);
+        }
     }
 
     private async Task ApplyRenameAsync(
@@ -92,7 +107,10 @@ internal sealed class AdapterRenameFlow
                 "adapter may need to be disabled/enabled or the PC restarted, which will briefly drop " +
                 "this adapter's network connection.",
                 AppName))
+        {
+            UiActivityLog.Logger.LogInformation("Rename flow: rename confirmation declined for '{Adapter}'", adapter.Description);
             return;
+        }
 
         try
         {
@@ -122,10 +140,12 @@ internal sealed class AdapterRenameFlow
         }
         catch (Exception ex)
         {
+            UiActivityLog.Logger.LogWarning("Rename flow: FriendlyName write failed for '{Adapter}'", adapter.Description);
             NativeMethods.Error($"The rename could not be completed:\n{ex.Message}", AppName);
             return;
         }
 
+        UiActivityLog.Logger.LogInformation("Rename flow: FriendlyName written for '{Adapter}' → '{NewName}'", adapter.Description, newName);
         OfferDeviceRestart(deviceInstanceId, newName);
     }
 
@@ -161,10 +181,12 @@ internal sealed class AdapterRenameFlow
         }
         catch (Exception ex)
         {
+            UiActivityLog.Logger.LogWarning("Rename flow: reset write failed for '{Adapter}'", adapter.Description);
             NativeMethods.Error($"Could not restore the original name:\n{ex.Message}", AppName);
             return;
         }
 
+        UiActivityLog.Logger.LogInformation("Rename flow: original name restored for '{Adapter}' → '{NewName}'", adapter.Description, existing.OriginalFriendlyName);
         OfferDeviceRestart(deviceInstanceId, existing.OriginalFriendlyName);
     }
 
@@ -184,11 +206,13 @@ internal sealed class AdapterRenameFlow
 
         if (!restart)
         {
+            UiActivityLog.Logger.LogInformation("Rename flow: device restart deferred (name '{Name}')", appliedName);
             NativeMethods.Info(
                 "The new name is saved. Restart the adapter or reboot to see it everywhere.", AppName);
             return;
         }
 
+        UiActivityLog.Logger.LogInformation("Rename flow: restarting device to apply name '{Name}'", appliedName);
         _ = Task.Run(() =>
         {
             try

@@ -18,6 +18,7 @@ namespace HyperVManagerTray;
 public partial class App : Application
 {
     private ILoggerFactory? _loggerFactory;
+    private LogLevelSwitch? _logLevelSwitch;   // live minimum level for all file logs (issue #22)
     private ConfigManager?  _config;
     private HyperVManager?  _hyperV;   // Phase 1: switch binding / host-vNIC repair only (PowerShell)
     private VmService?      _vm;       // VM status/metrics/power/IPs via WMI
@@ -92,12 +93,25 @@ public partial class App : Application
 
             var logDir = AppInfo.DataDir;
             Directory.CreateDirectory(logDir);
+
+            // Single live verbosity gate (issue #22): initialised from config.json's logLevel, then
+            // consulted per write by the file logger so a Settings/config change applies with no
+            // restart. Read directly here — the switch must exist before the full ConfigManager
+            // (which updates it on every reload) is built.
+            _logLevelSwitch = new LogLevelSwitch(ConfigManager.ReadLogLevel(configPath));
+
             _loggerFactory = LoggerFactory.Create(b =>
             {
-                // Minimum level comes from config.json (defaults to Debug). Read directly here — the
-                // logger must exist before the full ConfigManager (which needs a logger) is built.
-                b.SetMinimumLevel(ConfigManager.ReadLogLevel(configPath));
-                b.AddSimpleFileLogger(AppInfo.LogFile);
+                // Pin the factory minimum to Trace so it never pre-filters ahead of the live switch;
+                // _logLevelSwitch is the sole runtime gate for all three logs (issue #22).
+                b.SetMinimumLevel(LogLevel.Trace);
+                // Category-routing sink: "vm-power" → vm-power.log (issue #20), "ui" → ui.log
+                // (issue #21); everything else → switcher.log. All gated by the live switch.
+                b.AddSimpleFileLogger(AppInfo.LogFile, new Dictionary<string, string>
+                {
+                    ["vm-power"] = AppInfo.VmPowerLog,
+                    ["ui"]       = AppInfo.UiLog,
+                }, _logLevelSwitch);
             });
 
             // Capture a minidump if the app dies from a NATIVE fault (GDI+, comctl32, the
@@ -118,11 +132,21 @@ public partial class App : Application
                 return;
             }
 
+            // Shared "vm-power" category logger → vm-power.log (issue #20): the begin+outcome audit
+            // trail for every VM power action, from both the user (VmService) and automatic triggers
+            // (NetworkMonitor autostart / on-bridge-lost).
+            var powerLog = _loggerFactory.CreateLogger("vm-power");
+
+            // Shared "ui" category logger → ui.log (issue #21): tray/window/rename UI events plus
+            // ConfigManager's settings-change lines. Set the static UI gateway before any UI exists.
+            var uiLog = _loggerFactory.CreateLogger("ui");
+            UI.UiActivityLog.Logger = uiLog;
+
             _exeDir  = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
-            _config  = new ConfigManager(configPath, _loggerFactory.CreateLogger<ConfigManager>());
+            _config  = new ConfigManager(configPath, uiLog, _logLevelSwitch);
             _hyperV  = new HyperVManager(_loggerFactory.CreateLogger<HyperVManager>());
-            _vm      = new VmService(_loggerFactory.CreateLogger<VmService>());
-            _monitor = new NetworkMonitor(_config, _hyperV, _vm, _loggerFactory.CreateLogger<NetworkMonitor>());
+            _vm      = new VmService(_loggerFactory.CreateLogger<VmService>(), powerLog);
+            _monitor = new NetworkMonitor(_config, _hyperV, _vm, _loggerFactory.CreateLogger<NetworkMonitor>(), powerLog);
 
             InitTrayIcon();
 
