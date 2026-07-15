@@ -147,6 +147,98 @@ public class SwitchWmiHelpersTests
         Assert.False(SwitchWmiHelpers.ConnectionTargetsSwitch(new string?[] { "" }, "id"));
     }
 
+    // ── NicConnectionMatches (FindNicConnection correlation, issue #17) ──────────
+
+    // A realistic synthetic-NIC (SEPSD) InstanceID: Microsoft:<vmguid>\<portguid>.
+    private const string VmGuid   = "4021A7DA-1234-4567-89AB-CDEF01234567";
+    private const string PortGuid = "B0C4E8B2-AAAA-1111-2222-333344445555";
+    private const string NicInstanceId = @"Microsoft:4021A7DA-1234-4567-89AB-CDEF01234567\B0C4E8B2-AAAA-1111-2222-333344445555";
+
+    [Fact]
+    public void NicConnectionMatches_EscapedParentPath_Matches()
+    {
+        // The Parent REF path doubles the embedded backslash — the exact shape a raw Contains missed.
+        var parent = $@"Msvm_SyntheticEthernetPortSettingData.InstanceID=""Microsoft:{VmGuid}\\{PortGuid}""";
+        Assert.True(SwitchWmiHelpers.NicConnectionMatches(epasdInstanceId: null, parent, NicInstanceId));
+    }
+
+    [Fact]
+    public void NicConnectionMatches_NamespacePrefixedQuotedParent_Matches()
+    {
+        // Full remote-path rendering: host + namespace prefix (its own backslashes) plus the doubled
+        // separator inside the quoted InstanceID.
+        var parent = $@"\\HOST\root\virtualization\v2:Msvm_SyntheticEthernetPortSettingData.InstanceID=""Microsoft:{VmGuid}\\{PortGuid}""";
+        Assert.True(SwitchWmiHelpers.NicConnectionMatches(null, parent, NicInstanceId));
+    }
+
+    [Fact]
+    public void NicConnectionMatches_EpasdInstanceIdPrefix_Matches()
+    {
+        // The EPASD's own InstanceID is the SEPSD InstanceID plus a trailing connection segment; used as
+        // the fallback signal when Parent is unavailable.
+        var epasdId = NicInstanceId + @"\C0F45C4E-9999-8888-7777-666655554444";
+        Assert.True(SwitchWmiHelpers.NicConnectionMatches(epasdId, epasdParent: null, NicInstanceId));
+    }
+
+    [Fact]
+    public void NicConnectionMatches_IsCaseInsensitive()
+    {
+        var parent = $@"Msvm_SyntheticEthernetPortSettingData.InstanceID=""microsoft:{VmGuid.ToLowerInvariant()}\\{PortGuid.ToLowerInvariant()}""";
+        Assert.True(SwitchWmiHelpers.NicConnectionMatches(null, parent, NicInstanceId));
+    }
+
+    [Fact]
+    public void NicConnectionMatches_DifferentPortOnSameVm_DoesNotMatch()
+    {
+        // Same VM GUID, different synthetic port GUID — must NOT be treated as this NIC's connection.
+        const string otherPort = "99999999-0000-0000-0000-999999999999";
+        var epasdId = $@"Microsoft:{VmGuid}\{otherPort}\C0F45C4E-9999-8888-7777-666655554444";
+        var parent  = $@"Msvm_SyntheticEthernetPortSettingData.InstanceID=""Microsoft:{VmGuid}\\{otherPort}""";
+        Assert.False(SwitchWmiHelpers.NicConnectionMatches(epasdId, parent, NicInstanceId));
+    }
+
+    [Fact]
+    public void NicConnectionMatches_DifferentVm_DoesNotMatch()
+    {
+        const string otherVm = "00000000-DEAD-BEEF-0000-000000000000";
+        var parent = $@"Msvm_SyntheticEthernetPortSettingData.InstanceID=""Microsoft:{otherVm}\\{PortGuid}""";
+        Assert.False(SwitchWmiHelpers.NicConnectionMatches(null, parent, NicInstanceId));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void NicConnectionMatches_EmptyNicInstanceId_IsFalse(string? nicId)
+    {
+        var parent = $@"...InstanceID=""Microsoft:{VmGuid}\\{PortGuid}""";
+        Assert.False(SwitchWmiHelpers.NicConnectionMatches("anything", parent, nicId));
+    }
+
+    [Fact]
+    public void NicConnectionMatches_BothCandidatesNullOrEmpty_IsFalse()
+    {
+        Assert.False(SwitchWmiHelpers.NicConnectionMatches(null, null, NicInstanceId));
+        Assert.False(SwitchWmiHelpers.NicConnectionMatches("", "", NicInstanceId));
+    }
+
+    [Fact]
+    public void NicConnectionMatches_UnrelatedEpasd_DoesNotMatch()
+    {
+        // A host/external port allocation (parented on the switch, not this SEPSD) must not correlate.
+        var parent  = @"Msvm_VirtualEthernetSwitchSettingData.InstanceID=""Microsoft:VirtualSystem\11112222-3333""";
+        var epasdId = @"Microsoft:11112222-3333-4444-5555-666677778888\AAAA";
+        Assert.False(SwitchWmiHelpers.NicConnectionMatches(epasdId, parent, NicInstanceId));
+    }
+
+    [Fact]
+    public void CollapseBackslashes_RemovesAllEscapingLevels()
+    {
+        Assert.Equal("Microsoft:ABCDEF", SwitchWmiHelpers.CollapseBackslashes(@"Microsoft:ABC\DEF"));
+        Assert.Equal("Microsoft:ABCDEF", SwitchWmiHelpers.CollapseBackslashes(@"Microsoft:ABC\\DEF"));
+        Assert.Equal("Microsoft:ABCDEF", SwitchWmiHelpers.CollapseBackslashes(@"Microsoft:ABC\\\\DEF"));
+        Assert.Equal("noslashes", SwitchWmiHelpers.CollapseBackslashes("noslashes"));
+    }
+
     // ── DecideHostVNicRepair (RepairHostVNic policy) ─────────────────────────────
 
     [Theory]

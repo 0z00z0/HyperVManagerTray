@@ -318,15 +318,20 @@ public sealed class HyperVManager : IDisposable
     }
 
     /// <summary>Finds the VM NIC's existing Ethernet port allocation (its switch connection), or null if
-    /// the NIC has never been connected. Matched by the allocation's <c>Parent</c> containing the NIC's
-    /// InstanceID — the same substring-of-InstanceID correlation <see cref="VmService"/> uses.</summary>
+    /// the NIC has never been connected. Correlated on the shared <c>&lt;vmguid&gt;\&lt;portguid&gt;</c>
+    /// identity via <see cref="SwitchWmiHelpers.NicConnectionMatches"/> — a backslash-escaping-proof match
+    /// that does NOT rely on a raw substring of the escaped <c>Parent</c> REF path (the issue #17 bug: a
+    /// raw match missed the already-connected NIC and drove <see cref="ApplySwitchCore"/> into the failing
+    /// "add a second Ethernet Connection" branch). A NIC connected to ANY switch is now found, so the
+    /// caller re-points the existing allocation instead.</summary>
     private static ManagementObject? FindNicConnection(ManagementScope scope, ManagementObject nic)
     {
         var nicInstanceId = nic["InstanceID"] as string ?? "";
         if (nicInstanceId.Length == 0) return null;
         foreach (ManagementObject epasd in Query(scope, "SELECT * FROM Msvm_EthernetPortAllocationSettingData"))
         {
-            if ((epasd["Parent"] as string ?? "").Contains(nicInstanceId, StringComparison.OrdinalIgnoreCase))
+            if (SwitchWmiHelpers.NicConnectionMatches(
+                    epasd["InstanceID"] as string, epasd["Parent"] as string, nicInstanceId))
                 return epasd;
             epasd.Dispose();
         }
