@@ -631,7 +631,13 @@ public partial class App : Application
     /// </summary>
     private void CreateDashboard(bool prime)
     {
-        _dashboard = new DashboardWindow(_config!, _monitor!, _hyperV!, _vm!);
+        // The dashboard's Connect / Start & Connect report a failed switch bind through the same balloon
+        // channel the tray's network actions use (issue #45), with suppression off for the same reason:
+        // it answers a button the user just clicked, and the dashboard is visible by definition when
+        // they click it, so the default suppress-when-visible would swallow the report.
+        _dashboard = new DashboardWindow(_config!, _monitor!, _hyperV!, _vm!,
+                                         (title, message, isError) =>
+                                             ShowBalloon(title, message, isError, suppressWhenDashboardVisible: false));
         _dashboard.Closed += (_, _) => _dashboard = null;
         if (prime) _dashboard.Prime();
     }

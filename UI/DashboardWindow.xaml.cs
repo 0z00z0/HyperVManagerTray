@@ -31,6 +31,10 @@ public sealed partial class DashboardWindow : Window
     private readonly NetworkMonitor _monitor;
     private readonly HyperVManager  _hyperV;   // Connect-VM-NIC / switch (PowerShell, Phase 1)
     private readonly VmService      _vm;       // status/metrics/power/IPs (WMI, event-driven)
+    // Tray balloon (title, message, isError) — owned by App, which holds the TaskbarIcon; the same
+    // channel TrayMenu/NetworkActions report through (issue #37), and passed with the same
+    // suppressWhenDashboardVisible:false semantics. See ConnectAsync for why suppression must be off.
+    private readonly Action<string, string, bool> _notify;
 
     private IReadOnlyList<VmStatus> _latest = [];
     // In-flight/failed power-op message per VM, overlaid on the card's state label (optimistic
@@ -87,12 +91,14 @@ public sealed partial class DashboardWindow : Window
         }
     }
 
-    public DashboardWindow(ConfigManager config, NetworkMonitor monitor, HyperVManager hyperV, VmService vm)
+    public DashboardWindow(ConfigManager config, NetworkMonitor monitor, HyperVManager hyperV, VmService vm,
+                           Action<string, string, bool> notify)
     {
         _config  = config;
         _monitor = monitor;
         _hyperV  = hyperV;
         _vm      = vm;
+        _notify  = notify;
 
         InitializeComponent();
         TitleText.Text = AppInfo.Name;   // issue #42 — never the MMC snap-in's name
@@ -870,11 +876,37 @@ public sealed partial class DashboardWindow : Window
         _                 => kind.ToString(),
     };
 
+    /// <summary>
+    /// "Connect" and the tail of "Start &amp; Connect": put the VM on the applied virtual switch, then open
+    /// its console. BOTH card buttons reach this — the standalone "Connect", and "Start &amp; Connect" via
+    /// <see cref="StartAndConnectAsync"/> — so both are covered by one fix, which is why issue #45 is
+    /// fixed here rather than at the two buttons.
+    ///
+    /// <para>The decision logic lives in <see cref="VmConnectFlow"/> — including the deliberate rule that
+    /// a failed bind is REPORTED but still connects — so it can be tested without a WinUI or Hyper-V
+    /// host. This method is only wiring, and is meant to stay that way: the bug it fixes (issue #45) was
+    /// precisely a <c>bool</c> quietly discarded in four lines of code-behind that nothing could test.</para>
+    /// </summary>
     private async Task ConnectAsync(VmTarget vm)
     {
-        var sw = _monitor.LastApplied?.VirtualSwitch;
-        if (!string.IsNullOrEmpty(sw)) await _hyperV.ApplySwitchAsync(vm.Name, vm.NicName, sw);
-        Shell.OpenVmConnect(vm.Name);
+        var result = await VmConnectFlow.RunAsync(
+            vm.Name,
+            _monitor.LastApplied?.VirtualSwitch,
+            sw     => _hyperV.ApplySwitchAsync(vm.Name, vm.NicName, sw),
+            // Same channel and same reasoning as the tray's manual network actions (App.InitTrayIcon):
+            // a balloon, NOT suppressed by a visible dashboard. The dashboard is by definition visible
+            // here — the user just clicked a button on it — so the default suppression would swallow
+            // this report entirely, which is the failure mode issue #37's FailureAnnouncer rule 2 was
+            // written about. A modal dialog was the alternative and is worse: it would block the console
+            // the user asked for behind an OK button.
+            message => _notify($"{AppInfo.Name} — {vm.Name}", message, true),
+            ()      => Shell.OpenVmConnect(vm.Name));
+
+        if (result.Error is not null)
+            UiActivityLog.Logger.LogWarning(result.Error, "Connect: switch bind threw for '{Vm}'", vm.Name);
+        else if (result.Bind == VmConnectFlow.BindStep.Failed)
+            UiActivityLog.Logger.LogWarning("Connect: could not confirm '{Vm}' on switch '{Switch}'; connecting anyway",
+                                            vm.Name, _monitor.LastApplied?.VirtualSwitch);
     }
 
     private async Task StartAndConnectAsync(VmTarget vm)

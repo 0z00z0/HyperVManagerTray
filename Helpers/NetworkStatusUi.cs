@@ -173,6 +173,28 @@ public static class NetworkStatusUi
     };
 
     /// <summary>
+    /// The Connect / Start &amp; Connect failure text (issue #45): the VM's adapter could not be confirmed
+    /// on the applied virtual switch, but the console is being opened anyway — see the connect-anyway
+    /// rule on <see cref="VmConnectFlow"/>.
+    ///
+    /// <para><b>Deliberately the same sentence as <see cref="FailureMessage"/>'s VmConnectFailed arm</b>
+    /// — same verb, same quoting, same "see switcher.log", and literally the same
+    /// <see cref="DescribeVms"/> renderer — because it is the same fact. It is a separate method only
+    /// because that arm reads its VM list off a <see cref="MatchResult"/> (an automatic apply pass over
+    /// N target VMs), whereas this one is a single VM the user just clicked, with no apply pass behind
+    /// it. Living here rather than in the flow keeps every word the user reads about the network in one
+    /// file, which is the rule <c>ManagedVmActions.cs:33</c> and <c>SettingsWindow.cs:112</c> both state
+    /// and the one issue #37 spent its effort restoring.</para>
+    ///
+    /// <para>The second sentence exists because the first one alone would be a lie by omission: the
+    /// console opens regardless, and a message that reports only the failure would leave the user
+    /// wondering whether the window that just appeared meant it had recovered.</para>
+    /// </summary>
+    public static string ConnectBindFailedMessage(string vmName, string switchName) =>
+        $"Could not connect {DescribeVms([vmName])} to virtual switch '{switchName}' — see switcher.log.\n\n" +
+        "Opening the VM console anyway — the VM is not on the intended network.";
+
+    /// <summary>
     /// The "Re-check network now" confirmation (issue #37, recommendation 5). The command previously
     /// completed with zero feedback of any kind, so the user could not tell whether it had run, matched,
     /// or failed. Always answers, success or failure.

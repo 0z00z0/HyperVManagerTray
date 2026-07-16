@@ -35,6 +35,11 @@
          toast), and only a balloon actually SHOWN may be latched as announced. State, but no IO and no
          WinUI — it consumes NetworkStatusUi.FailureMessage's output and only decides whether to say it. -->
     <Compile Include="..\Helpers\FailureAnnouncer.cs" Link="Linked\FailureAnnouncer.cs" />
+    <!-- Issue #45: the Connect / Start & Connect sequence, lifted out of DashboardWindow's code-behind
+         so the rule it exists to hold — a discarded/failed switch bind can never pass for success, and
+         the failure is reported before vmconnect steals focus — is testable at all. Side effects are
+         delegates, so this links with no WinUI and no live host; it depends only on NetworkStatusUi. -->
+    <Compile Include="..\Helpers\VmConnectFlow.cs"    Link="Linked\VmConnectFlow.cs" />
     <!-- Issues #34/#47: the managed-VM set arithmetic and copy behind the tray's Manage VMs list and
          Settings' add/remove. Pure (no WinUI), which is what lets it be linked and tested here. -->
     <Compile Include="..\Helpers\VmConfigUi.cs"       Link="Linked\VmConfigUi.cs" />
