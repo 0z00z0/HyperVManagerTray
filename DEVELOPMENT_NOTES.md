@@ -50,7 +50,28 @@ Windows exposes extra `NetworkInterface` objects like
 but are **not valid `Set-VMSwitch -NetAdapterName` targets** — binding to one hangs (see #6).
 
 **Fix:** `IsFilterLayerAdapter()` excludes anything whose name/description contains `-WFP `,
-`-NDIS `, or `LightWeight Filter`. `FriendlyAdapterName()` also strips those suffixes for display.
+`-NDIS `, or `LightWeight Filter`. `StripFilterSuffix()` also strips those suffixes for display
+(via `AdapterMatcher.DisplayNameResolver`).
+
+### 2a. The name the app *displays* is not `NetworkInterface.Description`  ⚠️ issue #32
+
+The "rename adapter" feature writes the PnP device's **`FriendlyName`** (`HKLM\SYSTEM\
+CurrentControlSet\Enum\<deviceInstanceId>`), which Windows surfaces as the NDIS
+`InterfaceDescription`. It does **not** affect `System.Net.NetworkInformation.NetworkInterface.
+Description` — a different property, from the IP Helper API, derived from the driver's `DeviceDesc`
+plus a `#N` dedupe suffix. The app renamed one string and displayed the other, so a rename was
+invisible in the app's own UI even though Windows showed it everywhere.
+
+**Fix:** `AdapterMatcher.DisplayNameResolver` resolves the device (Class-key `NetCfgInstanceId` →
+`DeviceInstanceID`) and reads its `FriendlyName`, falling back to `Description` when absent /
+ambiguous / unreadable. Two rules when touching this:
+
+- **Display only.** Rule matching (MAC + CIDR) and the picker's software-adapter gate
+  (`IsPickerPhysicalAdapter`) must keep reading the raw, un-renamable `NetworkInterface.Description`
+  — the display name is user-controllable, so gating on it would let a dock renamed "VPN dock" vanish
+  from its own list. `PhysicalAdapterInfo` therefore carries both `Description` and `DisplayName`.
+- **Cost.** Device resolution walks the whole net Class key — build one `DisplayNameResolver` per
+  enumeration, never one per adapter, and keep it off the UI thread.
 
 ### 2b. Windows Network Bridge (Multiplexor Driver) is another decoy  ⚠️ confirmed bug
 The Windows "Bridge Connections" feature (ncpa.cpl → select adapters → Bridge) creates a

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Models;
 
 namespace HyperVManagerTray.Services;
@@ -9,7 +10,7 @@ namespace HyperVManagerTray.Services;
 /// <summary>Result of evaluating config rules against the current host network state.</summary>
 public sealed record MatchResult(string RuleName, string VirtualSwitch, IReadOnlyList<string> TargetVms)
 {
-    public string HostAdapterName          { get; init; } = "—";  // human-readable description
+    public string HostAdapterName          { get; init; } = "—";  // display name (FriendlyName, else Description)
     public string HostAdapterInterfaceName { get; init; } = "—";  // OS interface alias used by Set-VMSwitch
     public string HostIp                   { get; init; } = "—";
     public string Gateway                  { get; init; } = "—";
@@ -18,22 +19,31 @@ public sealed record MatchResult(string RuleName, string VirtualSwitch, IReadOnl
 
 /// <summary>Network details of the current primary host adapter, used by "Add current network" feature.</summary>
 public sealed record CurrentNetworkInfo(
-    string AdapterDescription,
+    string AdapterDescription,   // DISPLAY name (FriendlyName when set, else Description) — issue #32
     string Mac,          // colon-separated, e.g. "AA:BB:CC:DD:EE:FF"
     string Ip,           // e.g. "10.0.0.45"
     string IpCidr,       // e.g. "10.0.0.0/23"
     bool   IsWireless);  // Wi-Fi (Msvm_WiFiPort) — the WMI bridge-bind path can't target it (issue #29)
 
 /// <summary>
-/// A physical NIC as offered in the "Rename network adapter" submenu (issue #15): its connection
-/// alias, its raw device description (the FriendlyName-derived string being renamed, e.g.
-/// "Realtek USB GbE Family Controller #2"), the InterfaceGuid used to resolve the PnP device, and MAC.
+/// A physical NIC as offered in the "Rename network adapter" list (issue #15): its connection alias,
+/// its raw device description, the name to DISPLAY for it, the InterfaceGuid used to resolve the PnP
+/// device, and MAC.
+///
+/// <para><b>Description vs DisplayName (issue #32).</b> These are two different strings and the
+/// distinction is load-bearing. <see cref="Description"/> is the raw
+/// <c>NetworkInterface.Description</c>: driver <c>DeviceDesc</c> + a <c>#N</c> dedupe suffix, NOT
+/// affected by the rename, and — critically — not user-controllable, which is why the picker's
+/// software-adapter gate (<c>IsPickerPhysicalAdapter</c>) tests it and must keep testing it.
+/// <see cref="DisplayName"/> is the device's <c>FriendlyName</c> when set (the string the rename
+/// actually writes) falling back to <see cref="Description"/>, and is for display only.</para>
 /// </summary>
 public sealed record PhysicalAdapterInfo(
     string InterfaceAlias,   // NetworkInterface.Name, e.g. "Ethernet 5"
-    string Description,      // NetworkInterface.Description (the string the rename changes)
+    string Description,      // raw NetworkInterface.Description — NOT the string the rename changes
     string InterfaceGuid,    // NetworkInterface.Id, e.g. "{BECDE8F3-...}"
-    string Mac);             // colon-separated, or "—"
+    string Mac,              // colon-separated, or "—"
+    string DisplayName);     // FriendlyName when present, else Description — DISPLAY ONLY (issue #32)
 
 /// <summary>
 /// Core rule-evaluation logic: inspects the host's live network adapters and decides which
@@ -84,8 +94,9 @@ public static class AdapterMatcher
             try   { mac = FormatMac(nic.GetPhysicalAddress().ToString()); }
             catch { mac = "—"; }
 
+            // Display name only — the rule this feeds matches on MAC + CIDR, never on this string.
             return new CurrentNetworkInfo(
-                AdapterDescription: FriendlyAdapterName(nic),
+                AdapterDescription: new DisplayNameResolver().Resolve(nic),
                 Mac:        mac,
                 Ip:         unicast.Address.ToString(),
                 IpCidr:     CalculateCidr(unicast),
@@ -123,6 +134,10 @@ public static class AdapterMatcher
     {
         var (physical, _) = SplitAdapters();
 
+        // Built once for the whole enumeration: it walks the network Class key in its constructor, so
+        // constructing it per adapter would repeat that walk N times (issue #32).
+        var displayNames = new DisplayNameResolver();
+
         var list = new List<PhysicalAdapterInfo>(physical.Count);
         foreach (var nic in physical)
         {
@@ -141,10 +156,10 @@ public static class AdapterMatcher
 
             var mac = FormatMac(BitConverter.ToString(macBytes).Replace("-", ""));
 
-            // Raw Description (not FriendlyAdapterName) — SplitAdapters already excluded the filter
-            // adapters whose suffix FriendlyAdapterName strips, so this is the real device string and
-            // exactly what the rename mutates.
-            list.Add(new PhysicalAdapterInfo(nic.Name, nic.Description, nic.Id, mac));
+            // Two DIFFERENT strings, deliberately (issue #32): the raw Description is kept because the
+            // picker gate above tests it and it is not user-controllable; DisplayName carries the
+            // FriendlyName the rename actually writes, and is what every UI surface shows.
+            list.Add(new PhysicalAdapterInfo(nic.Name, nic.Description, nic.Id, mac, displayNames.Resolve(nic)));
         }
         return list;
     }
@@ -166,6 +181,11 @@ public static class AdapterMatcher
     /// The <paramref name="name"/> (connection alias) is deliberately NOT tested against the markers:
     /// it is user-renamable, so a real physical NIC the user aliased e.g. "Office-VPN" would otherwise
     /// be wrongly hidden. Only the immutable device <paramref name="description"/> decides (finding 4).
+    /// For the same reason <paramref name="description"/> must stay the RAW
+    /// <c>NetworkInterface.Description</c> and must never be passed
+    /// <see cref="PhysicalAdapterInfo.DisplayName"/> (issue #32): the display name is the device's
+    /// FriendlyName, which this app's own rename lets the user set — renaming a dock to e.g. "VPN dock"
+    /// would then make it vanish from the very list it was renamed from.
     /// </summary>
     internal static bool IsPickerPhysicalAdapter(NetworkInterfaceType type, int macByteLength, string name, string description)
     {
@@ -299,7 +319,9 @@ public static class AdapterMatcher
 
         return new MatchResult(ruleName, virtualSwitch, targetVms)
         {
-            HostAdapterName          = nic is not null ? FriendlyAdapterName(nic) : "—",
+            // Display only (dashboard "HOST NETWORK → Adapter"). The rule was already matched on
+            // MAC/CIDR above, and Set-VMSwitch targets HostAdapterInterfaceName — not this string.
+            HostAdapterName          = nic is not null ? new DisplayNameResolver().Resolve(nic) : "—",
             HostAdapterInterfaceName = nic?.Name ?? "—",
             HostIp                   = ip,
             Gateway                  = gw,
@@ -457,17 +479,61 @@ public static class AdapterMatcher
     }
 
     /// <summary>
-    /// Returns a display-friendly adapter name by stripping the Windows filter-driver
-    /// suffix that appears in <see cref="NetworkInterface.Description"/> for some adapters,
-    /// e.g. "Lenovo USB Ethernet-WFP Native MAC Layer LightWeight Filter-0000" → "Lenovo USB Ethernet".
+    /// Resolves the name to DISPLAY for an adapter (issue #32): the device's <c>FriendlyName</c> — the
+    /// string the rename actually writes — falling back to the filter-suffix-stripped
+    /// <see cref="NetworkInterface.Description"/> when the device has no explicit FriendlyName, or when
+    /// it cannot be resolved safely (0 or &gt;1 matching devices) or read.
+    ///
+    /// <para><b>Cost.</b> Resolution walks the whole network Class key, so the entries are read ONCE
+    /// per enumeration in the constructor and reused for every adapter — never a walk per adapter.
+    /// Only the per-adapter <c>FriendlyName</c> read remains, which is a direct open of one known Enum
+    /// key. All of it is registry I/O and must stay off the UI thread: every construction site is
+    /// already inside a <c>Task.Run</c> (Settings, rename flow, tray) or on <c>NetworkMonitor</c>'s
+    /// background evaluation.</para>
+    ///
+    /// <para><b>Degrade safely.</b> Read-only throughout (never a write, no elevation needed), and
+    /// every failure — an unreadable Class key, an ambiguous device, a throwing Enum-key read — falls
+    /// back to the description rather than throwing or blanking. See
+    /// <see cref="AdapterNameRules.ChooseDisplayName"/> for the pure, unit-tested decision.</para>
     /// </summary>
-    private static string FriendlyAdapterName(NetworkInterface nic) => StripFilterSuffix(nic.Description);
+    private sealed class DisplayNameResolver
+    {
+        private readonly List<AdapterNameRules.ClassAdapterEntry> _entries;
+
+        public DisplayNameResolver()
+        {
+            // One Class-key walk for the whole enumeration. An unreadable key degrades to "no entries",
+            // which makes every Resolve() fall back to the description.
+            try   { _entries = AdapterDeviceRegistry.ReadClassAdapterEntries(); }
+            catch { _entries = []; }
+        }
+
+        public string Resolve(NetworkInterface nic)
+        {
+            string description;
+            try   { description = StripFilterSuffix(nic.Description); }
+            catch { description = string.Empty; }   // adapter removed mid-enumeration
+
+            try
+            {
+                var resolution = AdapterNameRules.ResolveDeviceInstanceId(nic.Id, _entries);
+                if (resolution.Success && resolution.DeviceInstanceId is not null)
+                {
+                    var (present, value) = AdapterDeviceRegistry.ReadFriendlyName(resolution.DeviceInstanceId);
+                    if (present) return AdapterNameRules.ChooseDisplayName(value, description);
+                }
+            }
+            catch { /* unresolvable/unreadable device — fall back to the description */ }
+
+            return AdapterNameRules.ChooseDisplayName(null, description);
+        }
+    }
 
     /// <summary>
     /// Strips the Windows filter-driver suffix from a raw adapter <c>Description</c> string, e.g.
     /// "Lenovo USB Ethernet-WFP Native MAC Layer LightWeight Filter-0000" → "Lenovo USB Ethernet".
-    /// Pure string logic extracted from <see cref="FriendlyAdapterName"/> so it can be unit-tested
-    /// without a live <see cref="NetworkInterface"/>. Returns the input unchanged when no marker is
+    /// Pure string logic used by <see cref="DisplayNameResolver"/> so it can be unit-tested without a
+    /// live <see cref="NetworkInterface"/>. Returns the input unchanged when no marker is
     /// found, or when a marker occurs at index 0 (nothing meaningful to keep as the base name).
     /// </summary>
     internal static string StripFilterSuffix(string description)

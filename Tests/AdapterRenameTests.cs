@@ -114,6 +114,112 @@ public class AdapterRenameTests
     public void IsNameUnique_TrueAgainstEmptyList()
         => Assert.True(AdapterNameRules.IsNameUnique("Anything", System.Array.Empty<string>()));
 
+    // ── ChooseDisplayName (which string the UI shows, issue #32) ─────────────────
+    //
+    // The bug: the rename writes the device FriendlyName, but every UI surface displayed
+    // NetworkInterface.Description — a different property that a FriendlyName write never changes — so
+    // a successful rename was invisible in the app. These tests pin the decision: FriendlyName wins
+    // when present, and EVERY unavailable case (absent / ambiguous / unreadable, all of which the
+    // caller signals as null) degrades to the description rather than throwing or blanking.
+
+    [Fact]
+    public void ChooseDisplayName_PrefersFriendlyNameOverDescription()
+        => Assert.Equal(
+            "Dell docking (Petterhaugen)",
+            AdapterNameRules.ChooseDisplayName(
+                "Dell docking (Petterhaugen)", "Realtek USB GbE Family Controller #2"));
+
+    [Fact]
+    public void ChooseDisplayName_FallsBackToDescriptionWhenFriendlyNameAbsent()
+        => Assert.Equal(
+            "Realtek USB GbE Family Controller #2",
+            AdapterNameRules.ChooseDisplayName(null, "Realtek USB GbE Family Controller #2"));
+
+    /// <summary>
+    /// A device resolving to 0 or &gt;1 entries, or an unreadable Enum key, reaches this method as a
+    /// null FriendlyName — indistinguishable from "no explicit FriendlyName", and handled identically.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ChooseDisplayName_FallsBackWhenFriendlyNameIsMissingOrBlank(string? friendlyName)
+        => Assert.Equal(
+            "Intel(R) Ethernet Connection",
+            AdapterNameRules.ChooseDisplayName(friendlyName, "Intel(R) Ethernet Connection"));
+
+    [Fact]
+    public void ChooseDisplayName_TrimsTheChosenFriendlyName()
+        => Assert.Equal("Office dock", AdapterNameRules.ChooseDisplayName("  Office dock  ", "Realtek"));
+
+    [Fact]
+    public void ChooseDisplayName_TrimsTheFallbackDescription()
+        => Assert.Equal("Realtek", AdapterNameRules.ChooseDisplayName(null, "  Realtek  "));
+
+    /// <summary>Unreachable in practice, but the display must never be blank.</summary>
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData(null, "")]
+    [InlineData("", "   ")]
+    public void ChooseDisplayName_NeverReturnsBlank(string? friendlyName, string? description)
+    {
+        var name = AdapterNameRules.ChooseDisplayName(friendlyName, description);
+        Assert.False(string.IsNullOrWhiteSpace(name));
+        Assert.Equal(AdapterNameRules.UnknownDisplayName, name);
+    }
+
+    /// <summary>
+    /// A FriendlyName equal to the factory description is still returned (the user is free to rename an
+    /// adapter to its own description) — the method never second-guesses an explicitly present value.
+    /// </summary>
+    [Fact]
+    public void ChooseDisplayName_ReturnsFriendlyNameEvenWhenEqualToDescription()
+        => Assert.Equal("Realtek", AdapterNameRules.ChooseDisplayName("Realtek", "Realtek"));
+
+    /// <summary>
+    /// End-to-end of the reported case: the resolved device has a FriendlyName, so the picker/tray show
+    /// it instead of the IP-Helper description that the rename provably never touched.
+    /// </summary>
+    [Fact]
+    public void ChooseDisplayName_ShowsRenamedNameForTheReportedAdapter()
+    {
+        var entries = new[]
+        {
+            new AdapterNameRules.ClassAdapterEntry(
+                "{BECDE8F3-29F7-41E4-9862-8097B2BB14EF}", @"USB\VID_0BDA&PID_8153\000002000000"),
+        };
+
+        var resolution = AdapterNameRules.ResolveDeviceInstanceId(
+            "{BECDE8F3-29F7-41E4-9862-8097B2BB14EF}", entries);
+        Assert.True(resolution.Success);
+
+        // Stands in for AdapterRenamer.ReadFriendlyName(resolution.DeviceInstanceId) => (true, "…").
+        var name = AdapterNameRules.ChooseDisplayName(
+            "Dell docking (Petterhaugen)", "Realtek USB GbE Family Controller #2");
+
+        Assert.Equal("Dell docking (Petterhaugen)", name);
+    }
+
+    /// <summary>An ambiguous device is never guessed at — the display falls back to the description.</summary>
+    [Fact]
+    public void ChooseDisplayName_FallsBackWhenDeviceResolutionIsAmbiguous()
+    {
+        var entries = new[]
+        {
+            new AdapterNameRules.ClassAdapterEntry("{AAAA0000-0000-0000-0000-000000000000}", @"USB\DEV\1"),
+            new AdapterNameRules.ClassAdapterEntry("{AAAA0000-0000-0000-0000-000000000000}", @"USB\DEV\2"),
+        };
+
+        var resolution = AdapterNameRules.ResolveDeviceInstanceId(
+            "{AAAA0000-0000-0000-0000-000000000000}", entries);
+        Assert.False(resolution.Success);
+
+        // Resolution failed, so the caller passes null — no FriendlyName is ever read.
+        Assert.Equal(
+            "Realtek USB GbE Family Controller #2",
+            AdapterNameRules.ChooseDisplayName(null, "Realtek USB GbE Family Controller #2"));
+    }
+
     // ── FriendlyNameApplied (write read-back verdict, issue #15) ─────────────────
 
     [Fact]
