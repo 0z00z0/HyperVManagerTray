@@ -1,7 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml.Controls;
 using HyperVManagerTray.Helpers;
-using HyperVManagerTray.Models;
 using HyperVManagerTray.Services;
 using ZeroZero.Brand.Core;
 using ZeroZero.Brand.WinUI;
@@ -14,30 +13,51 @@ namespace HyperVManagerTray.UI;
 /// H.NotifyIcon builds a native Win32 popup menu from <see cref="Flyout"/> on every right-click
 /// and invokes each item's <c>Command</c> (the XAML <c>Click</c>/<c>Opening</c> events do NOT
 /// fire for the native menu).  Items are created once with command bindings; <see cref="RefreshState"/>
-/// resyncs the dynamic parts (override list, startup check) right before the menu opens.
+/// resyncs the dynamic parts (override list, managed-VM list) right before the menu opens.
 /// </summary>
+/// <remarks>
+/// <para><b>The tray is the QUICK-COMMAND surface; Settings is the complete superset</b> (issue #34,
+/// Espen's decision). That is the rule this menu's shape follows, and the reason each omission below is
+/// deliberate rather than an oversight:</para>
+/// <list type="bullet">
+///   <item><b>No VM power verbs at all</b> — not even Start &amp; Connect. The dashboard is one LEFT-click
+///         away, is state-aware, shows progress and reports failures; a native Win32 menu can do none of
+///         those, and its power copies needed a cache-warm dance ("Loading VMs…") to even render. Dropping
+///         them removed the deepest nesting (VM Power ▶ VM ▶ verb) in one stroke.</item>
+///   <item><b>Repair host networking</b> → Settings → Maintenance: a recovery tool, not a quick command.</item>
+///   <item><b>Add current network</b> → Settings → Network: it is configuration, and it belongs beside the
+///         rules it creates. The live capture works identically from there.</item>
+/// </list>
+/// <para><b>Nesting is capped at two levels</b> (a top-level item, or one submenu of leaf items). The two
+/// submenus that remain are lists, not hierarchies.</para>
+/// <para><b>Unmanaged-VM discovery survives</b> and is what "Manage VMs" is built on — it is the only
+/// reason <see cref="VmService.GetCachedVmsSync"/> is read here at all now.</para>
+/// </remarks>
 internal sealed class TrayMenu
 {
     private readonly ConfigManager  _config;
-    private readonly NetworkMonitor _monitor;
-    private readonly HyperVManager  _hyperV;   // switch binding / host-vNIC repair (PowerShell, Phase 1)
-    private readonly VmService      _vm;       // VM status/power/IPs (WMI)
+    private readonly VmService      _vm;       // VM discovery (WMI) — feeds the Manage VMs list
     private readonly StartupManager _startup;
     private readonly UpdateChecker  _updateChecker;
-    // Tray balloon (title, message, isError) — owned by App, which holds the TaskbarIcon. Lets the
-    // manual network actions answer with the same non-blocking channel a failed apply uses (issue #37)
-    // rather than a modal dialog.
-    private readonly Action<string, string, bool> _notify;
+    private readonly NetworkActions _network;  // re-check / override (shared with Settings — issue #34)
+    private readonly ManagedVmActions _managedVms;
 
     // The override's transience is stated up front in the label (issue #37): it is undone by the next
     // network change, which the UI documented nowhere — the confirmation balloon repeats it after the
     // fact, but a user browsing the menu deserves to know before they click.
-    private readonly MenuFlyoutSubItem    _overrideMenu = new() { Text = "Override VM switch (until next network change)" };
-    private readonly MenuFlyoutSubItem    _vmPowerMenu  = new() { Text = "VM Power" };
+    private readonly MenuFlyoutSubItem _overrideMenu   = new() { Text = "Override VM switch (until next network change)" };
+    private readonly MenuFlyoutSubItem _manageVmsMenu  = new() { Text = "Manage VMs" };
 
     private MenuFlyoutItem? _updateBadge;
     private BrandAboutWindow? _aboutWindow;
     private SettingsWindow?   _settingsWindow;
+
+    // Everything the Settings window needs but this menu no longer uses itself. Held only to construct
+    // SettingsWindow lazily in ShowSettings — the tray is not the owner of these behaviours any more,
+    // it is merely where the window is opened from.
+    private readonly NetworkMonitor _monitor;
+    private readonly HyperVManager  _hyperV;
+    private readonly Action<string, string, bool> _notify;
 
     /// <summary>UI dispatcher — captured on the UI thread in the constructor.</summary>
     private readonly Microsoft.UI.Dispatching.DispatcherQueue _ui;
@@ -55,35 +75,26 @@ internal sealed class TrayMenu
         _startup       = startup;
         _updateChecker = updateChecker;
         _notify        = notify;
+        _network       = new NetworkActions(config, monitor, hyperV, notify);
+        _managedVms    = new ManagedVmActions(config, notify);
 
         _ui = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread()
             ?? throw new InvalidOperationException("TrayMenu must be created on the UI thread.");
 
         Flyout = new MenuFlyout();
 
-        // Tray menu holds QUICK ACTIONS only (issue #18). VM power + live network actions stay here;
-        // everything configuration-shaped (adapter rename, run-on-startup, log level, per-VM
-        // on-bridge-lost action, open config/log, reload, check-for-updates) moved into the
-        // Settings window. "Add current network as a bridged rule" stays: it captures the LIVE
-        // current network in one tap, which only makes sense from the tray.
-        Flyout.Items.Add(_vmPowerMenu);
+        // ── The quick commands (see the class remarks for what is deliberately NOT here) ──
+        Add("Re-check network now", () => _ = _network.ReCheckNetworkAsync());
+        Flyout.Items.Add(_overrideMenu);
+        Flyout.Items.Add(_manageVmsMenu);
         Flyout.Items.Add(new MenuFlyoutSeparator());
 
-        var vmNetworkMenu = new MenuFlyoutSubItem { Text = "VM Network" };
-        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Re-check network now", Command = new RelayCommand(() => { LogClick("Re-check network now"); _ = ReCheckNetworkAsync(); }) });
-        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Repair host networking (host offline, VM online)", Command = new RelayCommand(() => { LogClick("Repair host networking"); _ = RepairHostNetworkingAsync(); }) });
-        vmNetworkMenu.Items.Add(new MenuFlyoutSeparator());
-        vmNetworkMenu.Items.Add(_overrideMenu);
-        vmNetworkMenu.Items.Add(new MenuFlyoutSeparator());
-        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Add current network as a bridged rule", Command = new RelayCommand(() => { LogClick("Add current network as a bridged rule"); _ = AddCurrentAsBridged(); }) });
-        Flyout.Items.Add(vmNetworkMenu);
-        Flyout.Items.Add(new MenuFlyoutSeparator());
-
+        // The window group. A "Check for updates" item belongs in this group when it is added (issue
+        // #46) — it is a window-opening command like these, not a quick command, and the sibling app
+        // orders it here. Deliberately left to that issue rather than smuggled in with this restructure.
         Add("Settings…", ShowSettings);
-        Flyout.Items.Add(new MenuFlyoutSeparator());
-        Add("About…", ShowAbout);
-        Flyout.Items.Add(new MenuFlyoutSeparator());
-        Add("Exit", onExit);
+        Add("About…",    ShowAbout);
+        Add("Exit",      onExit);
 
         RefreshState();
     }
@@ -92,121 +103,56 @@ internal sealed class TrayMenu
     public void RefreshState()
     {
         RebuildOverrideMenu();
-        RebuildVmPowerMenu();
+        RebuildManageVmsMenu();
     }
 
-    private void RebuildVmPowerMenu()
-    {
-        _vmPowerMenu.Items.Clear();
+    // ── Manage VMs ──────────────────────────────────────────────────────────────
 
-        // ── Read from in-memory cache ONLY — never block the UI thread ────────────
-        // GetCachedVmsSync() returns null until the first background discovery completes.
-        // When null, show a placeholder and the cache pre-warm (started by App at launch)
-        // will call RefreshState() once data arrives.
+    /// <summary>
+    /// One flat, checkable list of every VM on the host: a checkmark means this app manages it. Clicking
+    /// an unmanaged VM starts managing it; clicking a managed one stops (after the single confirmation
+    /// <see cref="ManagedVmActions"/> owns).
+    ///
+    /// <para>This replaces the entire VM Power tree, and is a level shallower than what it replaces while
+    /// keeping the two config actions Espen pinned to the tray. The checkmarks are genuine
+    /// <see cref="ToggleMenuFlyoutItem"/>s — H.NotifyIcon's native-menu converter maps them to a checked
+    /// Win32 popup item. No state is held in the item: the whole menu is rebuilt from config on every
+    /// right-click, so a checkmark can never drift from what config.json says.</para>
+    /// </summary>
+    private void RebuildManageVmsMenu()
+    {
+        _manageVmsMenu.Items.Clear();
+
+        var managed = _config.Current.VirtualMachines.Select(v => v.Name).ToList();
+
+        // Read from the in-memory cache ONLY — never block the UI thread. GetCachedVmsSync() returns null
+        // until the first background discovery completes; App.PreWarmVmCacheAsync owns that and calls
+        // RefreshState() when the data lands.
         var allVms = _vm.GetCachedVmsSync();
 
         if (allVms is null)
         {
-            // Cache not yet populated (first few seconds after startup).
-            // Show managed-VM submenus from config (power ops only — no unmanaged section yet).
-            foreach (var vm in _config.Current.VirtualMachines)
-            {
-                var sub = new MenuFlyoutSubItem { Text = vm.Name };
-                AddPowerItems(sub, vm.Name, vm.NicName);
-                _vmPowerMenu.Items.Add(sub);
-            }
+            // Cache still warming (the first few seconds after startup). The managed VMs are known from
+            // config alone, so offer un-managing them; the unmanaged ones simply aren't discovered yet.
+            foreach (var name in managed) _manageVmsMenu.Items.Add(VmItem(name, isManaged: true, nicName: ""));
 
-            if (_vmPowerMenu.Items.Count == 0)
-                _vmPowerMenu.Items.Add(new MenuFlyoutItem
-                    { Text = "Loading VMs…", IsEnabled = false });
-
-            // No background refresh needed here — App.PreWarmVmCacheAsync() owns that.
+            if (_manageVmsMenu.Items.Count == 0)
+                _manageVmsMenu.Items.Add(new MenuFlyoutItem { Text = "Loading VMs…", IsEnabled = false });
             return;
         }
 
-        // ── Cache is populated — build the full menu ───────────────────────────
-        var configNames = new HashSet<string>(_config.Current.VirtualMachines
-            .Select(v => v.Name), StringComparer.OrdinalIgnoreCase);
+        var nicByVm = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var d in allVms) nicByVm[d.Name] = d.NicName;
 
-        // Managed VMs (in config) — full power submenu + Remove from config
-        foreach (var vm in _config.Current.VirtualMachines)
-        {
-            var name = vm.Name;
-            var sub  = new MenuFlyoutSubItem { Text = vm.Name };
-            AddPowerItems(sub, name, vm.NicName);
-            sub.Items.Add(new MenuFlyoutSeparator());
-            sub.Items.Add(Item("Remove from config…", async () =>
-            {
-                if (!NativeMethods.Confirm(
-                        $"Remove {name} from config.json?\n\nThis only removes the app's management of this VM — it does not delete the VM.",
-                        "Remove VM from Config"))
-                    return;
+        foreach (var name in managed)
+            _manageVmsMenu.Items.Add(VmItem(name, isManaged: true, nicName: ""));
 
-                try
-                {
-                    await Task.Run(() => _config.RemoveVmFromConfig(name)).ConfigureAwait(false);
-                    NativeMethods.Info($"{name} removed from config.", AppName);
-                }
-                catch (Exception ex)
-                {
-                    NativeMethods.Error($"Failed to remove VM from config:\n{ex.Message}", AppName);
-                }
-            }));
-            _vmPowerMenu.Items.Add(sub);
-        }
+        foreach (var name in VmConfigUi.UnmanagedVms(allVms.Select(d => d.Name), managed))
+            _manageVmsMenu.Items.Add(VmItem(name, isManaged: false,
+                nicName: nicByVm.TryGetValue(name, out var nic) ? nic : ""));
 
-        // Unmanaged VMs (discovered but not in config) — limited submenu
-        var unmanaged = allVms
-            .Where(d => !configNames.Contains(d.Name))
-            .OrderBy(d => d.Name)
-            .ToList();
-
-        if (unmanaged.Count > 0 && _vmPowerMenu.Items.Count > 0)
-            _vmPowerMenu.Items.Add(new MenuFlyoutSeparator());
-
-        foreach (var vm in unmanaged)
-        {
-            var name    = vm.Name;
-            var nicName = vm.NicName;
-            var sub     = new MenuFlyoutSubItem { Text = $"{name} (unmanaged)" };
-
-            // Filter the limited unmanaged action set by state too (issue #30, finding 2).
-            var uState = StateOf(name);
-            var uShape = VmStateUi.ClassifyShape(uState);
-            var uAllowed = VmStateUi.AllowedVerbs(uState);
-            if (uShape == VmStateUi.Shape.None)
-            {
-                sub.Items.Add(PowerItem("Start",    name, VmOpKind.Start));
-                sub.Items.Add(PowerItem("Shutdown", name, VmOpKind.Shutdown));
-                sub.Items.Add(Item("Connect",  () => { Shell.OpenVmConnect(name); return Task.CompletedTask; }));
-            }
-            else
-            {
-                if (uAllowed.Contains(VmOpKind.Start))    sub.Items.Add(PowerItem("Start",    name, VmOpKind.Start));
-                if (uAllowed.Contains(VmOpKind.Shutdown)) sub.Items.Add(PowerItem("Shutdown", name, VmOpKind.Shutdown));
-                if (VmStateUi.CanConnect(uState))
-                    sub.Items.Add(Item("Connect", () => { Shell.OpenVmConnect(name); return Task.CompletedTask; }));
-            }
-            sub.Items.Add(new MenuFlyoutSeparator());
-            sub.Items.Add(Item("Add to config…", async () =>
-            {
-                try
-                {
-                    await Task.Run(() => _config.AddVmToConfig(name, nicName)).ConfigureAwait(false);
-                    NativeMethods.Info(
-                        $"Added \"{name}\" to config.\nReload to manage it fully.",
-                        AppName);
-                }
-                catch (Exception ex)
-                {
-                    NativeMethods.Error($"Failed to add VM to config:\n{ex.Message}", AppName);
-                }
-            }));
-            _vmPowerMenu.Items.Add(sub);
-        }
-
-        if (_vmPowerMenu.Items.Count == 0)
-            _vmPowerMenu.Items.Add(new MenuFlyoutItem { Text = "(no VMs found)", IsEnabled = false });
+        if (_manageVmsMenu.Items.Count == 0)
+            _manageVmsMenu.Items.Add(new MenuFlyoutItem { Text = "(no VMs found)", IsEnabled = false });
 
         // Kick off a background cache refresh so the *next* menu open is up-to-date.
         _ = Task.Run(async () =>
@@ -216,101 +162,34 @@ internal sealed class TrayMenu
         });
     }
 
-    private MenuFlyoutItem Item(string text, Func<Task> action)
-        => new() { Text = text, Command = new RelayCommand(() => { LogClick(text); _ = action(); }) };
-
-    /// <summary>A menu item that fires a VM power action — synchronous, non-blocking (see <see cref="VmService.BeginPowerAction"/>).</summary>
-    private MenuFlyoutItem PowerItem(string text, string vmName, VmOpKind kind)
-        => new() { Text = text, Command = new RelayCommand(() =>
-           {
-               UiActivityLog.Logger.LogInformation("Tray: {Command} '{Vm}'", text, vmName);
-               _vm.BeginPowerAction(vmName, kind, VmOpOrigin.Tray);
-           }) };
-
-    /// <summary>The current mapped state of a VM from VmService's cached snapshot, or null if unknown
-    /// (cache still warming). No WMI — a pure read of <see cref="VmService.GetCachedStatusesSync"/>.</summary>
-    private string? StateOf(string vmName) =>
-        _vm.GetCachedStatusesSync()
-           ?.FirstOrDefault(x => x.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase))?.State;
-
-    /// <summary>
-    /// The power-action set for a managed VM, filtered to the verbs valid in its current state
-    /// (issue #30, finding 2) so the menu no longer offers e.g. Shutdown on a stopped VM (which just
-    /// failed silently). When no recognised state snapshot exists yet (cache warming / "Unknown"), the
-    /// full legacy set is shown rather than an empty menu; a transitional state shows a disabled hint.
-    /// </summary>
-    private void AddPowerItems(MenuFlyoutSubItem sub, string vmName, string nicName)
+    /// <summary>One VM in the Manage VMs list. Checked ⇒ managed ⇒ clicking un-manages it, and vice versa.</summary>
+    private ToggleMenuFlyoutItem VmItem(string vmName, bool isManaged, string nicName)
     {
-        var state = StateOf(vmName);
-        var shape = VmStateUi.ClassifyShape(state);
-
-        if (shape == VmStateUi.Shape.None)
+        var item = new ToggleMenuFlyoutItem { Text = vmName, IsChecked = isManaged };
+        item.Command = new RelayCommand(() =>
         {
-            // State not yet known — keep the full set so actions aren't hidden during the warm-up.
-            sub.Items.Add(PowerItem("Start",       vmName, VmOpKind.Start));
-            sub.Items.Add(Item("Start && Connect", () => StartAndConnect(vmName, nicName)));
-            sub.Items.Add(PowerItem("Shutdown",    vmName, VmOpKind.Shutdown));
-            sub.Items.Add(PowerItem("Pause",       vmName, VmOpKind.Pause));
-            sub.Items.Add(PowerItem("Resume",      vmName, VmOpKind.Resume));
-            sub.Items.Add(PowerItem("Save",        vmName, VmOpKind.Save));
-            return;
-        }
-
-        var allowed = VmStateUi.AllowedVerbs(state);
-        if (allowed.Contains(VmOpKind.Start))
-        {
-            sub.Items.Add(PowerItem("Start",       vmName, VmOpKind.Start));
-            sub.Items.Add(Item("Start && Connect", () => StartAndConnect(vmName, nicName)));
-        }
-        if (allowed.Contains(VmOpKind.Resume))   sub.Items.Add(PowerItem("Resume",   vmName, VmOpKind.Resume));
-        if (allowed.Contains(VmOpKind.Shutdown)) sub.Items.Add(PowerItem("Shutdown", vmName, VmOpKind.Shutdown));
-        if (allowed.Contains(VmOpKind.Pause))    sub.Items.Add(PowerItem("Pause",    vmName, VmOpKind.Pause));
-        if (allowed.Contains(VmOpKind.Save))     sub.Items.Add(PowerItem("Save",     vmName, VmOpKind.Save));
-        // A running VM can be attached to without a power change.
-        if (VmStateUi.CanConnect(state))
-            sub.Items.Add(Item("Connect", () => { Shell.OpenVmConnect(vmName); return Task.CompletedTask; }));
-
-        if (sub.Items.Count == 0)
-            sub.Items.Add(new MenuFlyoutItem
-            {
-                Text      = shape == VmStateUi.Shape.Transition ? $"({state}…)" : "(no actions available)",
-                IsEnabled = false,
-            });
+            UiActivityLog.Logger.LogInformation(
+                "Tray: Manage VMs → {Action} '{Vm}'", isManaged ? "stop managing" : "manage", vmName);
+            // Fire-and-forget is correct here: the native menu is already gone by the time either flow
+            // shows its dialog, and both report their own outcome.
+            _ = isManaged ? _managedVms.RemoveAsync(vmName) : _managedVms.AddAsync(vmName, nicName);
+        });
+        return item;
     }
 
-    // Cold boot under host load can legitimately take a while; long enough to cover that without
-    // hanging the tray menu's "Start && Connect" item indefinitely if the VM is unusually slow to
-    // report in. Same value as DashboardWindow.StartAndConnectTimeout — kept local since VmService is
-    // the actual shared logic (see WaitUntilRunningAsync) and a shared constant here would be
-    // over-engineering for a single TimeSpan literal.
-    private static readonly TimeSpan StartAndConnectTimeout = TimeSpan.FromSeconds(45);
-
-    private async Task StartAndConnect(string vmName, string nicName)
-    {
-        // BeginPowerAction is fire-and-forget; WaitUntilRunningAsync replaces the old flat 2.5s guess
-        // with an actual readiness wait (event-driven off VmService.StatusesChanged — see its doc
-        // comment). On timeout it proceeds anyway rather than silently doing nothing.
-        _vm.BeginPowerAction(vmName, VmOpKind.Start, VmOpOrigin.Tray);
-        var readiness = await _vm.WaitUntilRunningAsync(vmName, StartAndConnectTimeout);
-        // Skip the connect if the Start actually failed (issue #30, finding 6); a timeout still proceeds.
-        if (readiness == VmService.StartReadiness.Failed) return;
-        var sw = _monitor.LastApplied?.VirtualSwitch;
-        if (!string.IsNullOrEmpty(sw)) await _hyperV.ApplySwitchAsync(vmName, nicName, sw);
-    }
-
-    // ── Dynamic submenus ────────────────────────────────────────────────────────
+    // ── Override VM switch ──────────────────────────────────────────────────────
 
     private void RebuildOverrideMenu()
     {
         _overrideMenu.Items.Clear();
 
-        var switches = new HashSet<string> { _config.Current.Fallback.VirtualSwitch };
-        foreach (var rule in _config.Current.Rules) switches.Add(rule.VirtualSwitch);
-        var orderedSwitches = switches.Order().ToList();
+        var switches = VmConfigUi.OverrideSwitchNames(
+            _config.Current.Fallback.VirtualSwitch,
+            _config.Current.Rules.Select(r => r.VirtualSwitch));
 
         foreach (var vm in _config.Current.VirtualMachines)
         {
-            foreach (var sw in orderedSwitches)
+            foreach (var sw in switches)
             {
                 var vmName = vm.Name;
                 var swName = sw;
@@ -320,204 +199,19 @@ internal sealed class TrayMenu
                     Command = new RelayCommand(() =>
                     {
                         UiActivityLog.Logger.LogInformation("Tray: Override switch '{Vm}' → '{Switch}'", vmName, swName);
-                        _ = OverrideSwitchAsync(vmName, swName);
+                        _ = _network.OverrideSwitchAsync(vmName, swName);
                     }),
                 });
             }
         }
+
+        // A managed VM is required for an override to mean anything — say so rather than showing an
+        // empty submenu that reads as broken.
+        if (_overrideMenu.Items.Count == 0)
+            _overrideMenu.Items.Add(new MenuFlyoutItem { Text = "(no managed VMs)", IsEnabled = false });
     }
 
-    // ── Actions ─────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// "Re-check network now" — re-evaluates the rules and ALWAYS answers with the result (issue #37,
-    /// recommendation 5). This command previously fired <c>ForceEvaluateAsync</c> and returned, giving
-    /// the user no way to tell whether it had run, matched, or failed.
-    /// </summary>
-    private async Task ReCheckNetworkAsync()
-    {
-        try
-        {
-            var result = await _monitor.ForceEvaluateAsync();
-            if (result is null)
-            {
-                // Busy/disposed/threw — we genuinely don't know the outcome, so say that rather than
-                // report a re-check that may never have run.
-                _notify($"{AppName} — network", "Could not re-check the network right now — see switcher.log.", true);
-                return;
-            }
-
-            var message = NetworkStatusUi.ReCheckMessage(
-                result.RuleName, result.VirtualSwitch, result.ApplyStatus,
-                result.HostAdapterName, result.FailedVms);
-            _notify($"{AppName} — network", message, NetworkStatusUi.IsFailure(result.ApplyStatus));
-        }
-        catch (Exception ex)
-        {
-            UiActivityLog.Logger.LogWarning(ex, "Re-check network failed");
-            _notify($"{AppName} — network", $"Re-check failed: {ex.Message}", true);
-        }
-    }
-
-    /// <summary>
-    /// "Override VM switch" — forces one VM onto one switch and confirms what it did, including the
-    /// override's transience (issue #37, recommendation 5). Previously this silently no-opped when the
-    /// VM wasn't in config and never confirmed anything in any case.
-    /// </summary>
-    private async Task OverrideSwitchAsync(string vmName, string switchName)
-    {
-        try
-        {
-            var outcome = await _monitor.ManualOverrideAsync(vmName, switchName);
-            var (message, isError) = outcome switch
-            {
-                NetworkMonitor.OverrideOutcome.Applied =>
-                    (NetworkStatusUi.OverrideAppliedMessage(vmName, switchName), false),
-                NetworkMonitor.OverrideOutcome.NotConfigured =>
-                    (NetworkStatusUi.OverrideNotConfiguredMessage(vmName), true),
-                _ =>
-                    (NetworkStatusUi.OverrideFailedMessage(vmName, switchName), true),
-            };
-            _notify($"{AppName} — {vmName}", message, isError);
-        }
-        catch (Exception ex)
-        {
-            UiActivityLog.Logger.LogWarning(ex, "Override switch failed for {Vm}", vmName);
-            _notify($"{AppName} — {vmName}", $"Override failed: {ex.Message}", true);
-        }
-    }
-
-    private async Task AddCurrentAsBridged()
-    {
-        // GetCurrentNetworkInfo enumerates all NICs (GetAllNetworkInterfaces + GetIPProperties) and can
-        // block for hundreds of ms; this runs from a tray command on the UI thread, so offload it to the
-        // thread pool to keep the UI responsive (issue #29, finding 3).
-        var info = await Task.Run(AdapterMatcher.GetCurrentNetworkInfo);
-        if (info is null)
-        {
-            NativeMethods.Warn("No active network adapter with an IPv4 address was found.", AppName);
-            return;
-        }
-
-        // A Wi-Fi adapter surfaces as Msvm_WiFiPort, which the switch-binding path never targets, so a
-        // rule bound to it could never take effect (issue #29, finding 5). Reject it up front with an
-        // explanation rather than silently saving a rule that will never bridge.
-        if (info.IsWireless)
-        {
-            NativeMethods.Warn(
-                $"\"{info.AdapterDescription}\" is a Wi-Fi adapter.\n\n" +
-                "Bridging a Hyper-V switch onto a wireless adapter isn't supported — the switch can only " +
-                "bind to a wired (Ethernet) adapter, such as a USB-Ethernet dock. No rule was added.",
-                AppName);
-            return;
-        }
-
-        var normNew   = AdapterMatcher.NormalizeMac(info.Mac);
-        var duplicate = _config.Current.Rules.FirstOrDefault(r =>
-            r.Conditions.AdapterMac is not null &&
-            AdapterMatcher.NormalizeMac(r.Conditions.AdapterMac) == normNew);
-        if (duplicate is not null)
-        {
-            NativeMethods.Info($"This adapter is already covered by rule \"{duplicate.Name}\".\n\nEdit config.json to update it.", AppName);
-            return;
-        }
-
-        var fallbackSwitch = _config.Current.Fallback.VirtualSwitch;
-        var bridgedSwitch  = _config.Current.Rules
-            .Select(r => r.VirtualSwitch)
-            .Where(s => s != fallbackSwitch)
-            .OrderBy(s => s.Contains("bridge", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
-            .FirstOrDefault() ?? "Bridged";
-
-        // Ask for a memorable name ("Home", "Office", "Coffee shop …") instead of silently using
-        // the raw adapter description (e.g. "Intel(R) Wi-Fi 6 AX201 160MHz") as the rule name —
-        // that says nothing about WHERE the network is. Pre-filled with the adapter description as
-        // a convenient starting point; Cancel here aborts the whole "add rule" flow.
-        var defaultName = info.AdapterDescription.Length > 40 ? info.AdapterDescription[..40].TrimEnd() : info.AdapterDescription;
-        var name = await TextPromptWindow.ShowAsync(
-            "Add Current Network as Bridged",
-            $"Name this network (adapter: {info.AdapterDescription}):",
-            defaultName);
-        if (name is null) return;
-
-        if (!NativeMethods.Confirm(
-                $"Add the following rule to config.json?\n\n" +
-                $"  Name    :  {name}\n" +
-                $"  Adapter :  {info.AdapterDescription}\n" +
-                $"  MAC     :  {info.Mac}\n" +
-                $"  Network :  {info.IpCidr}\n" +
-                $"  Switch  :  {bridgedSwitch}",
-                "Add Current Network as Bridged"))
-            return;
-
-        var rule = new NetworkRule
-        {
-            Name          = name,
-            Priority      = _config.Current.Rules.Count > 0 ? _config.Current.Rules.Max(r => r.Priority) + 10 : 10,
-            Conditions    = new RuleConditions { AdapterMac = info.Mac, IpCidr = info.IpCidr },
-            VirtualSwitch = bridgedSwitch,
-            TargetVms     = _config.Current.Fallback.TargetVms.ToList(),
-        };
-
-        _ = Task.Run(() =>
-        {
-            try
-            {
-                _config.AddBridgedRule(rule);
-                // Apply the new rule AND report whether it actually took effect — a rule that saves
-                // fine but fails to bind would otherwise look like a success (issue #37).
-                _ = ReCheckNetworkAsync();
-            }
-            catch (Exception ex)
-            {
-                NativeMethods.Error($"Failed to save rule:\n{ex.Message}", AppName);
-            }
-        });
-    }
-
-    /// <summary>
-    /// Manual escape hatch for the "host offline but VM online" failure: collapses any duplicate
-    /// host vNIC on each configured bridged switch back to one (see
-    /// <see cref="HyperVManager.RepairHostVNicAsync"/>) and reports the outcome.
-    /// </summary>
-    private async Task RepairHostNetworkingAsync()
-    {
-        try
-        {
-            var switches = _config.Current.RuleSwitches.ToList();
-
-            if (switches.Count == 0)
-            {
-                NativeMethods.Info("No bridged switches are configured — nothing to repair.", AppName);
-                return;
-            }
-
-            var repaired = new List<string>();
-            bool anyError = false;
-            foreach (var sw in switches)
-            {
-                var state = await _hyperV.RepairHostVNicAsync(sw).ConfigureAwait(false);
-                if (state is HyperVManager.HostVNicState.Repaired or HyperVManager.HostVNicState.Reshared)
-                    repaired.Add(sw);
-                else if (state == HyperVManager.HostVNicState.Error)
-                    anyError = true;
-            }
-
-            if (repaired.Count > 0)
-                NativeMethods.Info(
-                    $"Repaired host networking on: {string.Join(", ", repaired)}.\n\n" +
-                    "A duplicate host network adapter was collapsed back to one — your wired connection should return within a few seconds.",
-                    AppName);
-            else if (anyError)
-                NativeMethods.Warn("Could not repair host networking. See the log file for details.", AppName);
-            else
-                NativeMethods.Info("Host networking looks healthy — nothing to repair.", AppName);
-        }
-        catch (Exception ex)
-        {
-            NativeMethods.Warn($"Repair failed:\n{ex.Message}", AppName);
-        }
-    }
+    // ── Update badge ────────────────────────────────────────────────────────────
 
     private async Task<bool> CheckForUpdatesAsync()
     {
@@ -556,6 +250,8 @@ internal sealed class TrayMenu
         Flyout.Items.Insert(1, new MenuFlyoutSeparator());
     }
 
+    // ── Windows ─────────────────────────────────────────────────────────────────
+
     /// <summary>
     /// Opens the consolidated Settings window (issue #18) — a reused singleton, mirroring the About
     /// window, so repeated clicks re-activate the one window instead of stacking duplicates.
@@ -572,7 +268,7 @@ internal sealed class TrayMenu
             }
 
             UiActivityLog.Logger.LogInformation("Window: Settings opened");
-            _settingsWindow = new SettingsWindow(_config, _startup, _updateChecker);
+            _settingsWindow = new SettingsWindow(_config, _startup, _updateChecker, _monitor, _hyperV, _notify);
             _settingsWindow.Closed += (_, _) =>
             {
                 UiActivityLog.Logger.LogInformation("Window: Settings closed");
@@ -583,8 +279,6 @@ internal sealed class TrayMenu
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────────
-
-    private const string AppName = AppInfo.Name;
 
     private void ShowAbout()
     {

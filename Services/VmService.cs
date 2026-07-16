@@ -102,8 +102,9 @@ public sealed class VmService : IDisposable
     private volatile IReadOnlyDictionary<string, string> _vmIps =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     private volatile List<DiscoveredVm>? _discovered;
-    // Last per-VM status snapshot (state + metrics), exposed so the tray VM-Power submenu can filter
-    // its items by the VM's current state without a WMI call of its own (issue #30, finding 2).
+    // Last per-VM status snapshot (state + metrics). Published to the dashboard via StatusesChanged and
+    // awaited by WaitUntilRunningAsync; it no longer has a sync accessor, because the tray VM-Power
+    // submenu that needed one to state-filter its items (issue #30, finding 2) is gone (issue #34).
     private volatile IReadOnlyList<VmStatus>? _statuses;
     private readonly Dictionary<string, long> _memMax = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (long Bytes, DateTime At)> _vhd = new(StringComparer.OrdinalIgnoreCase);
@@ -135,11 +136,16 @@ public sealed class VmService : IDisposable
     public string? GetCachedVmIp(string vmName) =>
         _vmIps.TryGetValue(vmName, out var ip) ? ip : null;
 
+    /// <summary>
+    /// Every VM discovered on the host (managed or not), or null before the first refresh. Read from the
+    /// UI thread with no WMI.
+    ///
+    /// <para>Its one consumer is the tray's "Manage VMs" list (issue #34) — which is the whole reason the
+    /// <c>_discovered</c> cache, <c>ReadDiscovered</c> and <see cref="DiscoveredVm"/> still earn their WMI
+    /// read on each refresh: discovering UNMANAGED VMs exists solely to offer them for management. If that
+    /// list ever leaves the tray, revisit this cache rather than leaving it to cost a read for nobody.</para>
+    /// </summary>
     public List<DiscoveredVm>? GetCachedVmsSync() => _discovered;
-
-    /// <summary>Last per-VM status snapshot (state + metrics), or null before the first refresh. Read
-    /// from the UI thread with no WMI — used to filter the tray VM-Power submenu by state (finding 2).</summary>
-    public IReadOnlyList<VmStatus>? GetCachedStatusesSync() => _statuses;
 
     // ── Metrics subscription (dashboard open/close) ──────────────────────────────
 

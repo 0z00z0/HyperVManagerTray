@@ -3,9 +3,16 @@ using HyperVManagerTray.Models;
 namespace HyperVManagerTray.Helpers;
 
 /// <summary>
-/// Pure state → UI decisions for the VM power controls, shared by the dashboard cards and the tray
-/// VM-Power submenu (issue #30). WMI-free and side-effect-free, so it is unit-testable without a live
-/// host. Centralises three things the audit flagged as scattered/duplicated:
+/// Pure state → UI decisions for the VM power controls (issue #30). WMI-free and side-effect-free, so it
+/// is unit-testable without a live host.
+///
+/// <para>The dashboard cards are now its ONLY consumer: issue #34 removed every power verb from the tray,
+/// on the grounds that a native Win32 menu cannot show progress or report an outcome, while the dashboard
+/// — one left-click away — does both. What follows therefore describes the dashboard alone; the "tray menu
+/// no longer offers every verb" framing below is the history that produced these rules, not a live second
+/// caller.</para>
+///
+/// <para>Centralises three things the audit flagged as scattered/duplicated:</para>
 /// <list type="bullet">
 ///   <item>which coarse <see cref="Shape"/> a VM state maps to (drives the card layout, including a
 ///   distinct <see cref="Shape.Transition"/> that renders no power buttons — finding 3);</item>

@@ -3,7 +3,16 @@ namespace HyperVManagerTray.Models;
 /// <summary>A VM power operation the user (or a rule) requested.</summary>
 public enum VmOpKind { Start, Resume, Pause, Save, Shutdown }
 
-/// <summary>Where a <see cref="VmOpKind"/> request originated — recorded in vm-power.log (issue #20).</summary>
+/// <summary>
+/// Where a <see cref="VmOpKind"/> request originated — recorded in vm-power.log (issue #20).
+///
+/// <para><see cref="Tray"/> has had NO producer since issue #34 removed every power verb from the tray
+/// menu (the dashboard is one click away, is state-aware, and can report an outcome — a native Win32 menu
+/// can do none of that). It is kept rather than deleted for two reasons: existing vm-power.log files are
+/// full of <c>origin=Tray</c> lines that a reader will want to interpret, and the members are only ever
+/// rendered BY NAME into a log — never persisted, serialised or matched by ordinal — so a dead member
+/// costs nothing, while renumbering the live ones to drop it would buy nothing.</para>
+/// </summary>
 public enum VmOpOrigin { Tray, Dashboard, Auto }
 
 /// <summary>Lifecycle phase of a <see cref="VmOpKind"/>.</summary>

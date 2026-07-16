@@ -30,6 +30,9 @@
          SwitchBindOutcome enum below — deliberately NOT on HyperVManager.cs, which is the live-host
          WMI mutator and must never be linked into the test assembly. -->
     <Compile Include="..\Helpers\NetworkStatusUi.cs"  Link="Linked\NetworkStatusUi.cs" />
+    <!-- Issues #34/#47: the managed-VM set arithmetic and copy behind the tray's Manage VMs list and
+         Settings' add/remove. Pure (no WinUI), which is what lets it be linked and tested here. -->
+    <Compile Include="..\Helpers\VmConfigUi.cs"       Link="Linked\VmConfigUi.cs" />
     <!-- The three-name outcome enum HyperVManager returns. Pure vocabulary, its own file precisely so
          linking it here drags in no System.Management/WMI. -->
     <Compile Include="..\Services\SwitchBindOutcome.cs" Link="Linked\SwitchBindOutcome.cs" />

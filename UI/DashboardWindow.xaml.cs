@@ -589,8 +589,9 @@ public sealed partial class DashboardWindow : Window
     /// <summary>
     /// The zero-VMs card (issue #38). Same Border idiom as a real VM card so the section still reads as
     /// a populated list rather than a rendering failure, and it names the ONE next action that matters.
-    /// Deliberately points at the tray icon rather than a specific menu item: issue #34 is relocating
-    /// the VM Power menu, and a signpost that names a menu path is a signpost that goes stale.
+    /// Deliberately points at the tray icon rather than a specific menu item — a signpost that names a
+    /// menu path is a signpost that goes stale, which issue #34 then promptly demonstrated by replacing
+    /// the VM Power menu with "Manage VMs". This card needed no edit for that, which is the point.
     /// </summary>
     private static Border BuildEmptyStateCard() => new()
     {
