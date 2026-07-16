@@ -1,3 +1,4 @@
+using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Services;
 using Xunit;
 
@@ -17,6 +18,14 @@ public class AdapterRenameReuseTests
     private static PhysicalAdapterInfo Adapter(string guid, string display, string? description = null) =>
         new("Ethernet", description ?? "Raw Factory Description", guid, "AA:BB:CC:DD:EE:FF", display);
 
+    /// <summary>A list the caller says still describes the host.</summary>
+    private static AdapterMatcher.KnownAdapters Current(params PhysicalAdapterInfo[] adapters) =>
+        new(adapters, IsCurrent: true);
+
+    /// <summary>A list the caller says the host has moved on from.</summary>
+    private static AdapterMatcher.KnownAdapters Stale(params PhysicalAdapterInfo[] adapters) =>
+        new(adapters, IsCurrent: false);
+
     // ── When the caller's list may stand in for a live sweep ─────────────────────
 
     /// <summary>Settings never populated an inventory (host unreachable, or the read has not landed).
@@ -26,29 +35,47 @@ public class AdapterRenameReuseTests
     public void NoInventory_FallsBackToALiveSweep()
     {
         Assert.False(AdapterMatcher.CanRenameFromKnownAdapters(null, GuidA));
-        Assert.False(AdapterMatcher.CanRenameFromKnownAdapters([], GuidA));
+        Assert.False(AdapterMatcher.CanRenameFromKnownAdapters(Current(), GuidA));
     }
 
     [Fact]
-    public void InventoryContainingTheAdapter_MayBeReused()
+    public void CurrentInventoryContainingTheAdapter_MayBeReused()
     {
-        IReadOnlyList<PhysicalAdapterInfo> known = [Adapter(GuidA, "Office dock"), Adapter(GuidB, "Home dock")];
-
-        Assert.True(AdapterMatcher.CanRenameFromKnownAdapters(known, GuidA));
+        Assert.True(AdapterMatcher.CanRenameFromKnownAdapters(
+            Current(Adapter(GuidA, "Office dock"), Adapter(GuidB, "Home dock")), GuidA));
     }
 
     /// <summary>
-    /// The load-bearing clause. A non-empty list that does not contain the adapter being renamed is not a
-    /// slightly-stale view of this host — it describes a DIFFERENT device set (read before a dock swap).
-    /// Answering a uniqueness check from it would compare the new name against names no longer present,
-    /// and let two adapters end up sharing one. Non-empty is not the same as fresh.
+    /// <b>The load-bearing clause, and the one the membership test could never stand in for.</b> This is
+    /// the dock swap: Settings read [Ethernet, Dock LAN]; the user unplugged that dock and plugged in
+    /// another. Nothing was renamed, so nothing THIS APP did marks the list stale — only the host knows,
+    /// and it says so through NetworkChange. The adapter being renamed (Ethernet) is still right there in
+    /// the list, so every membership test passes; what has changed is the set of names the new one must be
+    /// unique AGAINST. Reusing it here is how the rename dialog accepts a description a present adapter is
+    /// already carrying (§5.5, issue #32).
+    /// </summary>
+    [Fact]
+    public void StaleInventory_IsNotReused_EvenWhenItContainsTheAdapter()
+    {
+        var adapters = new[] { Adapter(GuidA, "Ethernet"), Adapter(GuidB, "Dock LAN") };
+
+        // Same list, same subject — the ONLY difference is what the caller knows about the host since.
+        Assert.True(AdapterMatcher.CanRenameFromKnownAdapters(Current(adapters), GuidA));
+        Assert.False(AdapterMatcher.CanRenameFromKnownAdapters(Stale(adapters), GuidA));
+    }
+
+    /// <summary>
+    /// Second line of defence, not the test (see the gate's remarks): the flow's only call site builds its
+    /// rename buttons FROM this list, so the subject is present by construction and this clause is a
+    /// tautology on the real path. It stays because a list declared current that nevertheless lacks the
+    /// adapter describes a host the caller does not have, and "I cannot see the subject" is never grounds
+    /// to trust the comparands.
     /// </summary>
     [Fact]
     public void InventoryWithoutTheAdapter_IsNotReused()
     {
-        IReadOnlyList<PhysicalAdapterInfo> known = [Adapter(GuidA, "Office dock"), Adapter(GuidB, "Home dock")];
-
-        Assert.False(AdapterMatcher.CanRenameFromKnownAdapters(known, GuidC));
+        Assert.False(AdapterMatcher.CanRenameFromKnownAdapters(
+            Current(Adapter(GuidA, "Office dock"), Adapter(GuidB, "Home dock")), GuidC));
     }
 
     /// <summary>Interface GUIDs compare case-insensitively everywhere else in this app; a casing
@@ -56,9 +83,8 @@ public class AdapterRenameReuseTests
     [Fact]
     public void GuidMatching_IsCaseInsensitive()
     {
-        IReadOnlyList<PhysicalAdapterInfo> known = [Adapter(GuidA.ToUpperInvariant(), "Office dock")];
-
-        Assert.True(AdapterMatcher.CanRenameFromKnownAdapters(known, GuidA.ToLowerInvariant()));
+        Assert.True(AdapterMatcher.CanRenameFromKnownAdapters(
+            Current(Adapter(GuidA.ToUpperInvariant(), "Office dock")), GuidA.ToLowerInvariant()));
     }
 
     // ── What the uniqueness check compares ───────────────────────────────────────
@@ -108,5 +134,34 @@ public class AdapterRenameReuseTests
     public void OtherAdapterDisplayNames_SoleAdapterYieldsNothing()
     {
         Assert.Empty(AdapterMatcher.OtherAdapterDisplayNames([Adapter(GuidA, "Office dock")], GuidA));
+    }
+
+    // ── The harm the currency clause prevents, end to end ────────────────────────
+
+    /// <summary>
+    /// Ties the gate to the thing it protects. Settings read [Ethernet, Dock LAN] and the user then swapped
+    /// docks — so the host now carries [Ethernet, Dock LAN 2] while the snapshot still says otherwise. The
+    /// user renames Ethernet to "Dock LAN 2".
+    ///
+    /// <para>This is what makes the currency clause more than tidiness: the uniqueness check downstream is
+    /// working perfectly. Given the stale comparands it CORRECTLY reports the name as free, because in that
+    /// list it is. The only defence against two adapters ending up with one description is refusing to hand
+    /// it those comparands in the first place.</para>
+    /// </summary>
+    [Fact]
+    public void RenamingToASwappedInDocksName_IsOnlyCaughtBecauseTheStaleListIsRefused()
+    {
+        var beforeTheSwap = new[] { Adapter(GuidA, "Ethernet"), Adapter(GuidB, "Dock LAN") };
+        var onTheHostNow  = new[] { Adapter(GuidA, "Ethernet"), Adapter(GuidC, "Dock LAN 2") };
+
+        // The gate refuses the stale list, so the flow sweeps live and compares against the real host.
+        Assert.False(AdapterMatcher.CanRenameFromKnownAdapters(Stale(beforeTheSwap), GuidA));
+        Assert.False(AdapterNameRules.IsNameUnique(
+            "Dock LAN 2", AdapterMatcher.OtherAdapterDisplayNames(onTheHostNow, GuidA)));
+
+        // Had it been reused, the collision would have been invisible: the name is genuinely absent from
+        // the pre-swap list, so nothing further down the flow could have caught it.
+        Assert.True(AdapterNameRules.IsNameUnique(
+            "Dock LAN 2", AdapterMatcher.OtherAdapterDisplayNames(beforeTheSwap, GuidA)));
     }
 }

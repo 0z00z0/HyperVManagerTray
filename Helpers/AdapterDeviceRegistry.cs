@@ -57,8 +57,20 @@ internal static class AdapterDeviceRegistry
 
     /// <summary>
     /// Resolves a NIC's InterfaceGuid (from <c>NetworkInterface.Id</c>) to exactly one PnP
-    /// <c>DeviceInstanceID</c>, or an abort reason. Read-only. See
-    /// <see cref="AdapterNameRules.ResolveDeviceInstanceId"/> for the (pure, unit-tested) matching.
+    /// <c>DeviceInstanceID</c>, or an abort reason, <b>always from a fresh walk of the Class key</b>.
+    /// Read-only. See <see cref="AdapterNameRules.ResolveDeviceInstanceId"/> for the (pure, unit-tested)
+    /// matching.
+    ///
+    /// <para><b>Use this for anything you will WRITE to; use <see cref="ClassEntryCache.Resolve"/> for
+    /// display.</b> The two compute the identical <see cref="AdapterNameRules.DeviceResolution"/> and
+    /// differ in exactly one respect — the cache may answer from a walk taken earlier — which is why the
+    /// rule for choosing has to be written down rather than inferred. A cached hit can name a
+    /// <c>DeviceInstanceID</c> the host has since stopped using (an adapter re-installed under a new Enum
+    /// key), and the rename flow hands this result straight to
+    /// <c>AdapterRenamer.WriteFriendlyName</c> — a device-mutating registry write. Stale is a cosmetic
+    /// wobble for one; for the other it is a write aimed at the wrong device. So the walk here is not an
+    /// oversight to be optimised away with "the cache already has this": it is the difference between the
+    /// two, and it is the whole reason both exist.</para>
     /// </summary>
     internal static AdapterNameRules.DeviceResolution ResolveDevice(string interfaceGuid)
         => AdapterNameRules.ResolveDeviceInstanceId(interfaceGuid, ReadClassAdapterEntries());

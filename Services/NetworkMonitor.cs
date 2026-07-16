@@ -245,6 +245,79 @@ public sealed class NetworkMonitor : IDisposable
         }
     }
 
+    /// <summary>
+    /// Re-derives the DISPLAY strings of the currently-published result from the host and republishes it —
+    /// no bind, no VM reconnect, no autostart, no bridge transition. For a caller that changed how the host
+    /// DESCRIBES itself without changing anything the rules act on; today that is exactly one caller, the
+    /// adapter rename.
+    ///
+    /// <para><b>Why this is needed at all (issue #49 regression).</b> A rename writes only
+    /// <c>adapterNames</c>, which <see cref="ConfigManager.NonNetworkProperties"/> correctly excludes from
+    /// <see cref="ConfigReloadedEventArgs.AffectsNetwork"/> — so <see cref="OnConfigReloaded"/> stands down,
+    /// exactly as #49 intended. What #49 could not see is that the re-evaluation it suppressed was doing a
+    /// SECOND job on the side: it re-derived <see cref="MatchResult.HostAdapterName"/> from a fresh
+    /// FriendlyName read and republished it through <see cref="SwitchApplied"/>. With the fan-out gone, so
+    /// was the refresh, and the dashboard's adapter row kept the old name until an unrelated
+    /// <c>NetworkChange</c> happened by. A rename with the restart box ticked self-heals (the device cycle
+    /// fires that event itself); the far more common deferred choice never did.</para>
+    ///
+    /// <para><b>Why this is not the fan-out coming back.</b> The fan-out #49 removed was this monitor
+    /// reaching <see cref="HyperVManager.UpdateSwitchBindingAsync"/> — a cosmetic config write moving a
+    /// real VM's switch. This path cannot: it evaluates (a pure, read-only host inspection) and then does
+    /// nothing but hand the result to <see cref="MatchResult.WithRefreshedDisplayFrom"/>, which is a record
+    /// <c>with</c>-expression over display strings and is structurally incapable of touching a switch. The
+    /// apply path is not merely not called — it is not reachable from here. And a disagreement between the
+    /// fresh evaluation and the confirmed outcome publishes NOTHING (see that method): a rename must never
+    /// be the reason a real network change gets acted on, or reported, early.</para>
+    /// </summary>
+    public async Task RefreshDisplayAsync()
+    {
+        // Nothing has been applied yet, so there is no display to refresh — and no result to publish that
+        // would not be an invention. The first evaluation will read the new name anyway.
+        if (_lastApplied is null) return;
+
+        bool acquired;
+        // Shares _evalLock with the apply path deliberately: this republishes _lastApplied, and a
+        // republish racing an apply pass could put a display-refreshed copy of the PREVIOUS outcome back
+        // after the new one landed. The 5 s bound matches ForceEvaluateAsync; giving up is safe here in a
+        // way it is not there, because an evaluation is in flight precisely when it is holding this lock —
+        // and every path out of it publishes a freshly-derived HostAdapterName of its own.
+        try { acquired = await _evalLock.WaitAsync(TimeSpan.FromSeconds(5)); }
+        catch (ObjectDisposedException) { return; }
+        if (!acquired) return;
+
+        try
+        {
+            if (_lastApplied is not { } confirmed) return;
+
+            // Same off-thread enumeration as ForceEvaluateAsync, for the same reason: the caller is the
+            // Settings UI thread and AdapterMatcher.Evaluate can block for hundreds of ms.
+            var fresh = await Task.Run(() => AdapterMatcher.Evaluate(_config.Current));
+
+            if (confirmed.WithRefreshedDisplayFrom(fresh) is not { } refreshed)
+            {
+                // The host disagrees with the outcome we are holding. That is a real change (or an
+                // unretried failure), which the debounced evaluate/apply path owns — not a rename.
+                _logger.LogDebug("Display refresh: the host no longer confirms the published outcome — leaving it to the apply pass");
+                return;
+            }
+
+            _logger.LogDebug("Display refresh: adapter now displays as '{Adapter}'", refreshed.HostAdapterName);
+            _lastApplied = refreshed;
+            SwitchApplied?.Invoke(this, refreshed);
+        }
+        catch (Exception ex)
+        {
+            // A cosmetic refresh must never take the app down, and never turn a completed rename into a
+            // failure report: the caller invokes this fire-and-forget after the write is already verified.
+            _logger.LogError(ex, "Error refreshing the network display");
+        }
+        finally
+        {
+            _evalLock.Release();
+        }
+    }
+
     /// <summary>Outcome of <see cref="ManualOverrideAsync"/> (issue #37) — the override previously
     /// returned void and gave the user no confirmation, and silently did nothing at all when the VM was
     /// not in config.</summary>

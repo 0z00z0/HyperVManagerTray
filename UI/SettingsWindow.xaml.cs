@@ -5,6 +5,7 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using System.Net.NetworkInformation;
 using Windows.Graphics;
 using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Models;
@@ -44,6 +45,10 @@ internal sealed partial class SettingsWindow : Window
     private readonly UpdateChecker    _updateChecker;
     private readonly AdapterRenameFlow _renameFlow;
     private readonly DispatcherQueue  _ui;
+
+    // Held (not just handed to NetworkActions) for one narrow job: after a rename, asking the monitor to
+    // re-derive and republish the adapter's DISPLAY name. See the ctor's onRenamed.
+    private readonly NetworkMonitor   _monitor;
 
     // The live network commands and the managed-VM add/remove, shared verbatim with the tray (issue #34):
     // this window is the COMPLETE surface, so it holds both the actions the tray also offers as quick
@@ -101,12 +106,27 @@ internal sealed partial class SettingsWindow : Window
     // fully-functional degraded state — see HostInventory's remarks).
     private HostInventory.Snapshot? _inventory;
 
-    // True from the moment a rename changes an adapter's description until the re-read it triggers lands
-    // (issue #50). ONLY the adapter list is affected — a rename touches no switch, VM or NIC name — but
-    // this flag is deliberately not consulted by the pickers anyway: it exists solely to stop
-    // _inventory.Adapters being handed to the rename flow while it holds a name the host no longer has.
-    // Nothing downgrades while it is set; the flow simply enumerates live, as it did before the cache.
-    private bool _adaptersStale;
+    // The generation _inventory was READ at (see HostReadGeneration), so "may the rename flow reuse its
+    // adapters?" is answered by comparing it against the generation now, rather than by a bool that
+    // whichever read landed last would have cleared. -1 = nothing published yet; the generation starts at
+    // 0, so it can never compare current.
+    //
+    // This replaced a bool _adaptersStale that only this app's own renames ever set (issue #50). Two
+    // things were wrong with that. It could not order itself against an in-flight read — a read that
+    // started BEFORE a rename could land after it and clear the flag, republishing a pre-rename snapshot
+    // as trustworthy. And it never learned about staleness the app did not cause: swap docks with Settings
+    // open and nothing renames, so the flag stays false and the flow is handed a list describing a host
+    // that no longer exists — which is the list the rename dialog checks its new name for uniqueness
+    // against (§5.5, issue #32).
+    private int _inventoryGeneration = -1;
+
+    // Bumped by everything that can change the host's adapter set or their display names: this app's own
+    // renames and device restarts, and the host's own NetworkChange events. See HostReadGeneration.
+    private readonly HostReadGeneration _hostReads = new();
+
+    // Held so the subscription can be dropped in OnClosed — NetworkChange is a static event, and a window
+    // that stays subscribed after it closes is both a leak and a background host read nobody is watching.
+    private readonly NetworkAddressChangedEventHandler _onHostNetworkChanged;
 
     // One callback per control that wants live values, registered as the control is built. The callbacks
     // capture their controls, so a list that is not cleared when its controls are replaced grows forever
@@ -141,6 +161,7 @@ internal sealed partial class SettingsWindow : Window
         _config        = config;
         _startup       = startup;
         _updateChecker = updateChecker;
+        _monitor       = monitor;
 
         InitializeComponent();
         Title = $"{AppInfo.Name} — Settings";
@@ -148,17 +169,44 @@ internal sealed partial class SettingsWindow : Window
         _ui = DispatcherQueue.GetForCurrentThread()
             ?? throw new InvalidOperationException("SettingsWindow must be created on the UI thread.");
         // Hand the rename flow the adapters this window already enumerated instead of letting it sweep
-        // the host again per click (issue #50) — but only while they are known-good: the accessor is
-        // read at click time (the inventory arrives async, after this ctor), and yields null while a
-        // rename's re-read is in flight, which the flow answers by enumerating live.
+        // the host again per click (issue #50) — together with the verdict on whether they still describe
+        // the host, which is the only part of this the flow cannot work out for itself. The accessor is
+        // read at click time (the inventory arrives async, after this ctor); on any "not current" the flow
+        // enumerates live, which is the fallback #50 always specified and which now actually gets reached.
         _renameFlow = new AdapterRenameFlow(
             _config, _ui,
-            knownAdapters: () => _adaptersStale ? null : _inventory?.Adapters,
+            knownAdapters: () => _inventory is { } inv
+                ? new AdapterMatcher.KnownAdapters(inv.Adapters, _hostReads.IsCurrent(_inventoryGeneration))
+                : null,
             onRenamed: () =>
             {
-                _adaptersStale = true;
-                LoadHostInventoryAsync();   // clears the flag and refreshes the rows when it lands
-            });
+                // The rename changed a DisplayName this snapshot holds, so it describes the host as it was
+                // a moment ago. Re-read: that both restores a reusable list and puts the new description on
+                // the rename rows.
+                _hostReads.Invalidate();
+                LoadHostInventoryAsync();
+
+                // Nothing else republishes the new name (issue #49 regression). The rename's config write
+                // touches only adapterNames, which is correctly classified as not affecting the network, so
+                // no re-evaluation runs — and the re-evaluation was what re-derived the dashboard's adapter
+                // row from the host. Display only: this cannot re-bind a switch (see RefreshDisplayAsync).
+                _ = _monitor.RefreshDisplayAsync();
+            },
+            onDeviceRestarting: () =>
+                // The flow is about to take the adapter down. Distrust reads from here — but do NOT start
+                // one, which would race the disable and sample a host that is missing this very adapter.
+                // The onRenamed above runs again once the cycle is done, and reads then.
+                _hostReads.Invalidate());
+
+        // The host changes without this app's help, and that staleness is the kind that costs a wrong
+        // answer: swap docks with Settings open, rename an adapter to the new dock's description, and a
+        // uniqueness check run against the pre-swap list accepts a name a present adapter already carries.
+        // Invalidate ONLY — no re-read. Correctness needs nothing more (the rename flow falls back to a
+        // live sweep, exactly as it did before the cache), and a re-read here would put an unbounded
+        // burst of WMI enumerations behind an event that arrives in storms during the dock transitions
+        // this app exists for. NetworkMonitor debounces that event for the same reason.
+        _onHostNetworkChanged = (_, _) => _hostReads.Invalidate();
+        NetworkChange.NetworkAddressChanged += _onHostNetworkChanged;
         _network    = new NetworkActions(config, monitor, hyperV, notify);
         _managedVms = new ManagedVmActions(config, notify);
 
@@ -203,6 +251,11 @@ internal sealed partial class SettingsWindow : Window
         _closed = true;
         if (_startupToggle is not null) _startupToggle.Toggled         -= OnStartupToggled;
         if (_logLevelCombo is not null) _logLevelCombo.SelectionChanged -= OnLogLevelChanged;
+
+        // NetworkChange is a static event: without this a closed window stays subscribed for the life of
+        // the process, and every dock transition keeps ticking a generation nobody reads. Before the rect
+        // save below, which has its own early return.
+        NetworkChange.NetworkAddressChanged -= _onHostNetworkChanged;
 
         try
         {
@@ -361,21 +414,43 @@ internal sealed partial class SettingsWindow : Window
     /// makes ONE adapter enumeration rather than one per feature that wants the list). Nothing here can
     /// fail loudly: HostInventory never throws, and an empty snapshot simply leaves every picker
     /// suggestion-less — i.e. exactly the free-text box each one replaced.</para>
+    ///
+    /// <para><b>Which read wins is decided by when it STARTED, not when it lands.</b> This method has two
+    /// independent callers — a rename, and <see cref="BuildSections"/> via
+    /// <see cref="RefreshValuesFromConfig"/>, i.e. every add-VM / stop-managing / add-current-network — with
+    /// no sequencing between them, so two reads are routinely in flight and they can complete in either
+    /// order. The generation token taken here is what makes that safe: a read that began before something
+    /// changed the host is discarded when it lands, however late, instead of republishing a pre-change
+    /// snapshot over a post-change one and declaring it trustworthy.</para>
     /// </summary>
-    private void LoadHostInventoryAsync() => Task.Run(() =>
+    private void LoadHostInventoryAsync()
     {
-        var snapshot = HostInventory.Read();
-        _ui.TryEnqueue(() =>
+        // Taken HERE, before the read starts — the whole point. Read inside the continuation it would just
+        // be "the generation now", which is the tautology this replaced.
+        var token = _hostReads.BeginRead();
+
+        Task.Run(() =>
         {
-            if (_closed) return;
-            _inventory = snapshot;
-            // This read post-dates any rename that asked for it (HostInventory.Read re-reads each
-            // adapter's FriendlyName), so the adapter list is trustworthy again — and re-applying the
-            // snapshot rebuilds the rename rows, which is what puts the new description on screen.
-            _adaptersStale = false;
-            ApplyInventory(snapshot);
+            var snapshot = HostInventory.Read();
+            _ui.TryEnqueue(() =>
+            {
+                if (_closed) return;
+
+                // Something invalidated the host between this read starting and it landing — a rename, a
+                // device restart, a dock swap. It describes a host that no longer exists, and there is no
+                // half of it worth keeping: publishing it would rebuild the rename rows from a superseded
+                // adapter set (during a device restart, one that is missing the adapter entirely) and stamp
+                // it with the current generation, which is exactly the assertion this window must not make.
+                // Dropping it loses nothing: every invalidation is either followed by its own read, or is a
+                // NetworkChange, whose only claim on this window is to stop the flow reusing the old list.
+                if (!_hostReads.IsCurrent(token)) return;
+
+                _inventory           = snapshot;
+                _inventoryGeneration = token;
+                ApplyInventory(snapshot);
+            });
         });
-    });
+    }
 
     /// <summary>
     /// Pushes a snapshot into every registered picker. UI thread only. Each consumer is guarded

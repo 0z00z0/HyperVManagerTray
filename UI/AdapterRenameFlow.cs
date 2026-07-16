@@ -38,39 +38,60 @@ internal sealed class AdapterRenameFlow
 
     private readonly ConfigManager _config;
     private readonly DispatcherQueue _ui;
-    private readonly Func<IReadOnlyList<PhysicalAdapterInfo>?>? _knownAdapters;
+    private readonly Func<AdapterMatcher.KnownAdapters?>? _knownAdapters;
     private readonly Action? _onRenamed;
+    private readonly Action? _onDeviceRestarting;
 
     /// <param name="knownAdapters">
-    /// The adapters the CALLER already enumerated, or null/empty for "I have none" (issue #50). Settings
-    /// passes its cached <c>HostInventory</c> snapshot — the very list this flow's only call site built
-    /// its own rename buttons from — so a rename click stops re-running the NIC sweep that produced it.
+    /// The adapters the CALLER already enumerated AND its verdict on whether they still describe the host,
+    /// or null for "I have none" (issue #50). Settings passes its cached <c>HostInventory</c> snapshot —
+    /// the very list this flow's only call site built its own rename buttons from — so a rename click stops
+    /// re-running the NIC sweep that produced it.
     ///
     /// <para><b>Why a delegate and not the list.</b> This flow is constructed in the Settings ctor, and
     /// the inventory arrives later, off a background thread. A list captured at construction would be
-    /// permanently null; the delegate is read at click time, when the answer exists.</para>
+    /// permanently null; the delegate is read at click time, when the answer exists — and, just as
+    /// importantly, when its CURRENCY can still be judged.</para>
     ///
-    /// <para><b>Why it may return null, and why that is not a degraded corner.</b> Null means "nothing
-    /// trustworthy in hand" — the host read never landed, OR a rename since made it stale (see
-    /// <paramref name="onRenamed"/>) — and this flow answers it by enumerating live, exactly as it always
-    /// did. The caller decides; this flow never assumes a cache is fresh because it is non-empty.</para>
+    /// <para><b>Why the currency rides along.</b> Only the caller can know it: it is a fact about what has
+    /// happened to the host since the read, which nothing in the list itself records (see
+    /// <see cref="AdapterMatcher.CanRenameFromKnownAdapters"/>). This flow decides nothing about freshness
+    /// and never infers it from the list being non-empty; it asks, and on any "no" it enumerates live,
+    /// exactly as it did before the cache existed.</para>
     /// </param>
     /// <param name="onRenamed">
-    /// Called on the UI thread after a FriendlyName write has been verified on disk, so the caller can
-    /// re-read the host (issue #50). This is what keeps <paramref name="knownAdapters"/> honest: a rename
-    /// changes the very DisplayName the snapshot holds, so a cache that outlived it would feed the NEXT
-    /// rename's uniqueness check a name that no longer exists — and let a second adapter take a name the
-    /// first one already has. That is issue #32's failure mode (a display name asserted from a stale
-    /// read), and it is the one thing reusing the cache could reintroduce.
+    /// Called on the UI thread once an adapter's description on this host has actually changed — the
+    /// FriendlyName write verified on disk, and (when the user asked for one) the device cycle that makes
+    /// it live already finished. The caller is expected to re-read the host.
+    ///
+    /// <para>This is what keeps <paramref name="knownAdapters"/> honest for the staleness THIS APP causes:
+    /// a rename changes the very DisplayName the snapshot holds, so a cache that outlived it would feed the
+    /// NEXT rename's uniqueness check a name that no longer exists. It is deliberately NOT the whole story
+    /// — the host changes on its own too, and a caller that treats this callback as its only staleness
+    /// signal still hands out a stale list after a dock swap.</para>
+    /// </param>
+    /// <param name="onDeviceRestarting">
+    /// Called on the UI thread immediately BEFORE this flow disables the device, telling the caller that
+    /// any host read in flight is now worthless — <b>without</b> asking for a new one, which is the whole
+    /// point.
+    ///
+    /// <para>A restart takes the adapter down and back up, and every enumeration in this app filters on
+    /// <c>OperationalStatus == Up</c>, so a read that samples the host mid-cycle simply does not see the
+    /// adapter — and a caller that trusted it would rebuild its list WITHOUT the adapter it just renamed,
+    /// then feed that list to the next rename's uniqueness check. Re-reading here would race the very
+    /// disable that makes reading wrong; the caller is told to distrust, and <paramref name="onRenamed"/>
+    /// asks for the re-read afterwards, when the answer can be right.</para>
     /// </param>
     public AdapterRenameFlow(ConfigManager config, DispatcherQueue ui,
-                             Func<IReadOnlyList<PhysicalAdapterInfo>?>? knownAdapters = null,
-                             Action? onRenamed = null)
+                             Func<AdapterMatcher.KnownAdapters?>? knownAdapters = null,
+                             Action? onRenamed = null,
+                             Action? onDeviceRestarting = null)
     {
-        _config        = config;
-        _ui            = ui;
-        _knownAdapters = knownAdapters;
-        _onRenamed     = onRenamed;
+        _config             = config;
+        _ui                 = ui;
+        _knownAdapters      = knownAdapters;
+        _onRenamed          = onRenamed;
+        _onDeviceRestarting = onDeviceRestarting;
     }
 
     /// <summary>
@@ -159,7 +180,7 @@ internal sealed class AdapterRenameFlow
         // answer — never enumerated, or stale since a rename (see the ctor's onRenamed).
         var known = _knownAdapters?.Invoke();
         var all   = AdapterMatcher.CanRenameFromKnownAdapters(known, adapter.InterfaceGuid)
-            ? known!
+            ? known!.Value.Adapters
             // GetPhysicalAdapters enumerates all NICs and can block for hundreds of ms; the awaits above
             // resume on the UI thread, so run it on the thread pool to keep the UI responsive
             // (issue #29, finding 3 — mirrors SettingsWindow.LoadAdaptersAsync).
@@ -300,29 +321,32 @@ internal sealed class AdapterRenameFlow
     /// </summary>
     private void ApplyDeviceRestart(string deviceInstanceId, string appliedName, bool restartNow)
     {
-        // The adapter's display name on this host has just changed, and it changed for BOTH write paths —
-        // this method is the one point they converge on, and it is reached only after WriteFriendlyName
-        // re-read the value from disk and matched it. So this is the earliest moment the change is a
-        // fact, and the only one worth telling the caller about. Announced before the restart branch
-        // below, not inside it: the name is already on disk either way, and a caller that re-reads only
-        // when the user opted into a restart would keep a stale list for the far more common deferred
-        // choice. Fire-and-forget by contract (Settings kicks off a background host read) — a throw here
-        // must not turn a completed rename into a failure report, and this method has an outcome to show.
-        try   { _onRenamed?.Invoke(); }
-        catch (Exception ex)
-        {
-            UiActivityLog.Logger.LogWarning(
-                "Rename flow: the post-rename refresh callback threw for '{Name}': {Error}", appliedName, ex.Message);
-        }
-
+        // BOTH branches announce the rename — the name is on disk either way, and a caller that re-read
+        // only when the user opted into a restart would keep a stale list for the far more common deferred
+        // choice. But they announce it at DIFFERENT moments, and that is the point: a re-read is only worth
+        // anything once it can see the truth, and a device restart is precisely a window in which it
+        // cannot. So each branch calls Notify at the first instant a read would be right for it.
         if (!restartNow)
         {
-            // Honest "saved", not "applied": the write is verified on disk (WriteFriendlyName throws
-            // otherwise), but nothing has re-read it into NDIS yet.
+            // Nothing is being cycled, so the host is readable right now and the write is already verified
+            // on disk (WriteFriendlyName throws otherwise). Announce immediately.
+            Notify(_onRenamed, "post-rename refresh");
+
+            // Honest "saved", not "applied": the write is verified on disk, but nothing has re-read it
+            // into NDIS yet.
             UiActivityLog.Logger.LogInformation("Rename flow: device restart declined in dialog — description '{Name}' saved, not yet live", appliedName);
             Show(AdapterNameRules.DescribeDeferredOutcome(appliedName));
             return;
         }
+
+        // The adapter is about to go DOWN and back up, and every enumeration in this app filters on
+        // OperationalStatus == Up — so for the duration of the cycle the host truthfully reports that this
+        // adapter does not exist. Tell the caller to distrust reads NOW, before the disable, so a read
+        // already in flight cannot land as a fresh-looking snapshot with this adapter missing from it and
+        // leave the rows (and the next rename's uniqueness check) short an adapter until Settings is
+        // reopened. Deliberately not a re-read request: a read started here would race the disable below
+        // and hit the exact hole this closes.
+        Notify(_onDeviceRestarting, "pre-restart invalidation");
 
         UiActivityLog.Logger.LogInformation("Rename flow: restarting device to apply description '{Name}'", appliedName);
         _ = Task.Run(() =>
@@ -347,8 +371,32 @@ internal sealed class AdapterRenameFlow
             UiActivityLog.Logger.LogInformation(
                 "Rename flow: verified outcome for description '{Name}' — {Outcome}", appliedName, outcome.Kind);
 
-            _ui.TryEnqueue(() => Show(outcome));
+            // The cycle is over and the adapter is back, so NOW a read sees the renamed adapter. Announced
+            // even when the outcome needs attention: the device was disabled and re-enabled either way, so
+            // the caller's list is stale regardless of what the verification concluded, and leaving it
+            // un-refreshed on the failure path is how a bad list outlives the error box that reported it.
+            _ui.TryEnqueue(() =>
+            {
+                Notify(_onRenamed, "post-restart refresh");
+                Show(outcome);
+            });
         });
+    }
+
+    /// <summary>
+    /// Invokes one of this flow's caller callbacks. Fire-and-forget by contract — the callbacks kick off
+    /// background host reads — so a throw is logged and swallowed: by the time any of them run, the write
+    /// is verified on disk and the rename HAS happened. Letting a refresh callback turn a completed rename
+    /// into a failure report would be a lie about the device, which is the one thing this flow must never
+    /// tell (issue #15).
+    /// </summary>
+    private static void Notify(Action? callback, string what)
+    {
+        try   { callback?.Invoke(); }
+        catch (Exception ex)
+        {
+            UiActivityLog.Logger.LogWarning("Rename flow: the {What} callback threw: {Error}", what, ex.Message);
+        }
     }
 
     /// <summary>
