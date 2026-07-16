@@ -32,6 +32,16 @@ namespace HyperVManagerTray.Helpers;
 /// <para><b>Ordering matters.</b> The warning is raised BEFORE vmconnect launches. vmconnect takes
 /// foreground focus; a balloon raised after it would appear behind/alongside a window that has just
 /// grabbed the user's attention, which is how a report becomes a report nobody reads.</para>
+///
+/// <para><b>Which is why <paramref name="warn"/> is awaited, not called (code review, 2026-07-16).</b>
+/// This paragraph used to be false. <c>warn</c> was an <c>Action</c> bound to <c>App.ShowBalloon</c>,
+/// whose entire body is <c>_ui.TryEnqueue(…)</c> — so it QUEUED the balloon for a later dispatcher turn
+/// and returned immediately, while <c>launchVmConnect</c> is <c>Process.Start(UseShellExecute: true)</c>
+/// and ran synchronously on the same turn. vmconnect started first, every time; the ordering this class
+/// documents as its reason for existing was the one thing it did not do. The tests passed only because
+/// they hand it synchronous delegates, so they asserted an order production never produced — a green
+/// test for a false claim. Making <c>warn</c> a <see cref="Func{T, TResult}"/> that is awaited puts the
+/// report genuinely ahead of the launch and gives the tests something real to assert.</para>
 /// </summary>
 public static class VmConnectFlow
 {
@@ -67,14 +77,19 @@ public static class VmConnectFlow
     /// <summary>
     /// Runs the sequence. <paramref name="appliedSwitch"/> is <c>NetworkMonitor.LastApplied?.VirtualSwitch</c>;
     /// <paramref name="applySwitchAsync"/> is <c>HyperVManager.ApplySwitchAsync</c> curried with the VM and
-    /// its adapter name; <paramref name="warn"/> shows the message to the user; <paramref name="launchVmConnect"/>
-    /// starts vmconnect.exe.
+    /// its adapter name; <paramref name="launchVmConnect"/> starts vmconnect.exe.
+    ///
+    /// <para><paramref name="warn"/> shows the message to the user, and its task must not complete until
+    /// the report is actually on screen — see the ordering note on the class. A caller whose report
+    /// channel merely queues (as <c>App.ShowBalloon</c>'s does) is responsible for waiting for that queue
+    /// to drain; returning <c>Task.CompletedTask</c> from a fire-and-forget notify silently restores the
+    /// bug this signature exists to prevent.</para>
     /// </summary>
     public static async Task<Result> RunAsync(
         string  vmName,
         string? appliedSwitch,
         Func<string, Task<bool>> applySwitchAsync,
-        Action<string>           warn,
+        Func<string, Task>       warn,
         Action                   launchVmConnect)
     {
         ArgumentNullException.ThrowIfNull(applySwitchAsync);
@@ -113,9 +128,10 @@ public static class VmConnectFlow
             return new Result(BindStep.Confirmed, Warning: null, Launched: true, Error: null);
         }
 
-        // Report BEFORE launching — see the ordering note on the class.
+        // Report BEFORE launching — see the ordering note on the class. Awaited, so the report is on
+        // screen before vmconnect takes the foreground, rather than merely having been queued.
         var message = NetworkStatusUi.ConnectBindFailedMessage(vmName, appliedSwitch);
-        warn(message);
+        await warn(message);
         launchVmConnect();
         return new Result(BindStep.Failed, message, Launched: true, Error: error);
     }
