@@ -33,6 +33,12 @@
     <Compile Include="..\Helpers\AppInfo.cs"          Link="Linked\AppInfo.cs" />
     <!-- Pure config↔UI mapping for the Settings window (issue #18). Only depends on LogLevel; no WinUI. -->
     <Compile Include="..\Helpers\SettingsOptions.cs"  Link="Linked\SettingsOptions.cs" />
+    <!-- Pure Settings-window placement + row-layout arithmetic (issue #31): saved-vs-default choice,
+         clamping a rect onto a connected monitor, the derived minimum size, and the row-stacking
+         decision. Numbers only — no Win32, no XAML. Required by the linked NativeMethods.cs and
+         ConfigManager.cs, which both use WindowRect. The WinUI panel that consumes the stacking
+         decision (UI\SettingRowPanel.cs) is deliberately NOT linked. -->
+    <Compile Include="..\Helpers\WindowPlacement.cs"  Link="Linked\WindowPlacement.cs" />
     <!-- Pure adapter-rename rules (validation, uniqueness, GUID→device resolution, display-name
          choice). No Win32 deps, so it links cleanly; the device-mutating AdapterRenamer.cs is
          deliberately NOT linked. -->

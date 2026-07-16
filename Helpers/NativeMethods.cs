@@ -52,16 +52,49 @@ internal static class NativeMethods
             var info    = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
 
             if (GetMonitorInfo(monitor, ref info))
-            {
-                double scale = 1.0;
-                if (GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, out uint dpiX, out _) == 0 && dpiX != 0)
-                    scale = dpiX / 96.0;
-
-                return (info.rcWork, scale);
-            }
+                return (info.rcWork, GetMonitorScale(monitor));
         }
 
         return (GetPrimaryWorkArea(), 1.0);
+    }
+
+    /// <summary>Effective DPI scale of <paramref name="monitor"/> (1.0 if the query fails).</summary>
+    private static double GetMonitorScale(IntPtr monitor)
+        => GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, out uint dpiX, out _) == 0 && dpiX != 0
+            ? dpiX / 96.0
+            : 1.0;
+
+    /// <summary>
+    /// Fits a saved window rect (physical px) onto a currently-connected monitor — the one nearest the
+    /// rect's centre (issue #31). A rect saved on a monitor that has since been unplugged would
+    /// otherwise place the window entirely offscreen and unreachable; this pulls it back onto the
+    /// nearest connected screen.
+    ///
+    /// <para>Minimums are taken in DIP and scaled by the DPI of the monitor the rect actually lands on
+    /// — NOT the cursor's monitor — because on a mixed-DPI desktop those differ, and a rect saved on
+    /// the 100 % external screen must not be floored using the 175 % laptop's scale.</para>
+    ///
+    /// <para>The arithmetic itself lives in <see cref="WindowPlacement.ClampToWorkArea"/> (pure,
+    /// unit-tested); this only resolves which monitor's work area and scale to clamp against. On a
+    /// <c>GetMonitorInfo</c> failure the rect is returned unchanged at scale 1.0 rather than mangled —
+    /// the caller's placement is best-effort by contract.</para>
+    /// </summary>
+    /// <returns>The clamped rect in physical px, plus the DPI scale of the monitor it landed on.</returns>
+    internal static (int X, int Y, int W, int H, double Scale) ClampRectToNearestMonitor(
+        int x, int y, int w, int h, int minWidthDip = 0, int minHeightDip = 0)
+    {
+        var center  = new POINT { X = x + w / 2, Y = y + h / 2 };
+        var monitor = MonitorFromPoint(center, MONITOR_DEFAULTTONEAREST);
+        var info    = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+        if (!GetMonitorInfo(monitor, ref info))
+            return (x, y, w, h, 1.0);
+
+        double scale = GetMonitorScale(monitor);
+        var work = info.rcWork;
+        var r    = WindowPlacement.ClampToWorkArea(
+            new WindowRect(x, y, w, h), work.Left, work.Top, work.Right, work.Bottom,
+            (int)Math.Round(minWidthDip * scale), (int)Math.Round(minHeightDip * scale));
+        return (r.X, r.Y, r.Width, r.Height, scale);
     }
 
     private static RECT GetPrimaryWorkArea()
