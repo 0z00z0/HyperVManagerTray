@@ -240,6 +240,72 @@ public static class NetworkStatusUi
         $"{vmName} is not a managed VM, so its network adapter is unknown. Nothing was changed.\n\n" +
         "Start managing it from the tray's Manage VMs list, then try again.";
 
+    // ── "Repair host networking" (issue #51) ────────────────────────────────────
+    //
+    // These four were composed inline in NetworkActions and shown as blocking modals, beside a Re-check
+    // button that answered the same kind of question with a balloon. They are reports of a command's
+    // outcome, so they are balloons now, and their text lives here for the same reason every sibling's
+    // does: the claim a message makes is the thing worth unit-testing, and it must not be re-derived at
+    // whichever surface happens to show it. See docs/DISPLAY-VOCABULARY.md.
+
+    /// <summary>Nothing to repair because no bridged switch is configured — a statement about the CONFIG,
+    /// not about the host, which was never inspected. Says so rather than implying a clean bill of health
+    /// the app has not earned (issue #37).</summary>
+    public static string RepairNoSwitchesMessage() =>
+        "No bridged switches are configured, so there was nothing to repair. No rule names a switch to check.";
+
+    /// <summary>The repair succeeded on <paramref name="switches"/> — a VERIFIED outcome:
+    /// <c>RepairHostVNicAsync</c> reports Repaired/Reshared only for a collapse it confirmed.</summary>
+    public static string RepairedMessage(IReadOnlyList<string> switches) =>
+        $"Repaired host networking on {DescribeSwitches(switches)}. A duplicate host network adapter was " +
+        "collapsed back to one — your wired connection should return within a few seconds.";
+
+    /// <summary>The repair was attempted and did not confirm. A failure, so it is announced as one.</summary>
+    public static string RepairFailedMessage() =>
+        "Could not repair host networking — see switcher.log. Nothing was changed.";
+
+    /// <summary>Every configured switch was inspected and none had a duplicate host vNIC.
+    ///
+    /// <para>"Nothing needed repairing", not "your network is fine": this command looks for exactly one
+    /// fault — a duplicated host vNIC — and finding none says nothing about any other reason the network
+    /// might be down. Claiming the broader thing is what issue #37 exists to prevent.</para></summary>
+    public static string RepairNothingToDoMessage() =>
+        "Nothing needed repairing — no duplicate host network adapter was found on any configured switch.";
+
+    // ── "Add current network" (issue #51) ───────────────────────────────────────
+
+    /// <summary>No adapter to capture — the command cannot proceed and says why.</summary>
+    public static string AddRuleNoAdapterMessage() =>
+        "No active network adapter with an IPv4 address was found, so there is no current network to add.";
+
+    /// <summary>
+    /// The Wi-Fi rejection (issue #29, finding 5). Shortened from its modal wording for the balloon —
+    /// which truncates — but the two facts that make it actionable both survive: bridging cannot target
+    /// a wireless adapter at all, and NOTHING was saved. A rejection that lost the second half would read
+    /// as a rule the user still has.
+    /// </summary>
+    public static string AddRuleWirelessMessage(string adapterDescription) =>
+        $"\"{adapterDescription}\" is a Wi-Fi adapter. A Hyper-V switch can only bridge onto a wired " +
+        "(Ethernet) adapter, such as a USB-Ethernet dock — so no rule was added.";
+
+    /// <summary>This adapter's MAC already has a rule. Points at the rule, which is on screen in the
+    /// editor this command lives beside.</summary>
+    public static string AddRuleDuplicateMessage(string ruleName) =>
+        $"This adapter is already covered by rule \"{ruleName}\", so no rule was added. Edit that rule to update it.";
+
+    /// <summary>The rule could not be written. Names the error and states that nothing was saved.</summary>
+    public static string AddRuleSaveFailedMessage(string error) =>
+        $"Could not save the rule: {error}. Nothing was changed.";
+
+    /// <summary>Renders a switch-name list the way <see cref="DescribeVms"/> renders VMs, so the two
+    /// report channels read alike.</summary>
+    private static string DescribeSwitches(IReadOnlyList<string> switches) => switches.Count switch
+    {
+        0 => "the configured switches",
+        1 => $"'{switches[0]}'",
+        _ => $"{string.Join(", ", switches.Take(switches.Count - 1).Select(s => $"'{s}'"))} and '{switches[^1]}'",
+    };
+
     /// <summary>Renders a failed-VM list for a one-line message: "'a'", "'a' and 'b'", "'a', 'b' and 'c'".
     /// Falls back to a neutral phrase for an empty list so a message never reads "Could not connect  to …".</summary>
     private static string DescribeVms(IReadOnlyList<string> vms) => vms.Count switch

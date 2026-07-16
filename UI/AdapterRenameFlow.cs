@@ -38,11 +38,39 @@ internal sealed class AdapterRenameFlow
 
     private readonly ConfigManager _config;
     private readonly DispatcherQueue _ui;
+    private readonly Func<IReadOnlyList<PhysicalAdapterInfo>?>? _knownAdapters;
+    private readonly Action? _onRenamed;
 
-    public AdapterRenameFlow(ConfigManager config, DispatcherQueue ui)
+    /// <param name="knownAdapters">
+    /// The adapters the CALLER already enumerated, or null/empty for "I have none" (issue #50). Settings
+    /// passes its cached <c>HostInventory</c> snapshot — the very list this flow's only call site built
+    /// its own rename buttons from — so a rename click stops re-running the NIC sweep that produced it.
+    ///
+    /// <para><b>Why a delegate and not the list.</b> This flow is constructed in the Settings ctor, and
+    /// the inventory arrives later, off a background thread. A list captured at construction would be
+    /// permanently null; the delegate is read at click time, when the answer exists.</para>
+    ///
+    /// <para><b>Why it may return null, and why that is not a degraded corner.</b> Null means "nothing
+    /// trustworthy in hand" — the host read never landed, OR a rename since made it stale (see
+    /// <paramref name="onRenamed"/>) — and this flow answers it by enumerating live, exactly as it always
+    /// did. The caller decides; this flow never assumes a cache is fresh because it is non-empty.</para>
+    /// </param>
+    /// <param name="onRenamed">
+    /// Called on the UI thread after a FriendlyName write has been verified on disk, so the caller can
+    /// re-read the host (issue #50). This is what keeps <paramref name="knownAdapters"/> honest: a rename
+    /// changes the very DisplayName the snapshot holds, so a cache that outlived it would feed the NEXT
+    /// rename's uniqueness check a name that no longer exists — and let a second adapter take a name the
+    /// first one already has. That is issue #32's failure mode (a display name asserted from a stale
+    /// read), and it is the one thing reusing the cache could reintroduce.
+    /// </param>
+    public AdapterRenameFlow(ConfigManager config, DispatcherQueue ui,
+                             Func<IReadOnlyList<PhysicalAdapterInfo>?>? knownAdapters = null,
+                             Action? onRenamed = null)
     {
-        _config = config;
-        _ui     = ui;
+        _config        = config;
+        _ui            = ui;
+        _knownAdapters = knownAdapters;
+        _onRenamed     = onRenamed;
     }
 
     /// <summary>
@@ -125,16 +153,19 @@ internal sealed class AdapterRenameFlow
                         && !string.IsNullOrEmpty(existing.OriginalFriendlyName);
         string? savedOriginal = canReset ? existing!.OriginalFriendlyName : null;
 
-        // GetPhysicalAdapters enumerates all NICs and can block for hundreds of ms; the awaits above
-        // resume on the UI thread, so run it on the thread pool to keep the UI responsive
-        // (issue #29, finding 3 — mirrors SettingsWindow.LoadAdaptersAsync).
-        // DisplayName, not Description (issue #32): the uniqueness check compares the candidate against
-        // the OTHER adapters' names, and the name being written is a FriendlyName — so the comparands
-        // must be the other adapters' FriendlyNames too, which is what DisplayName carries.
-        var others = (await Task.Run(AdapterMatcher.GetPhysicalAdapters))
-            .Where(p => !p.InterfaceGuid.Equals(adapter.InterfaceGuid, StringComparison.OrdinalIgnoreCase))
-            .Select(p => p.DisplayName)
-            .ToList();
+        // The comparands for the dialog's uniqueness check. Prefer the caller's list: this flow's only
+        // call site builds its rename buttons FROM that list, so re-sweeping every NIC here re-derived
+        // what the click already had in hand (issue #50). Fall back to a live sweep whenever it cannot
+        // answer — never enumerated, or stale since a rename (see the ctor's onRenamed).
+        var known = _knownAdapters?.Invoke();
+        var all   = AdapterMatcher.CanRenameFromKnownAdapters(known, adapter.InterfaceGuid)
+            ? known!
+            // GetPhysicalAdapters enumerates all NICs and can block for hundreds of ms; the awaits above
+            // resume on the UI thread, so run it on the thread pool to keep the UI responsive
+            // (issue #29, finding 3 — mirrors SettingsWindow.LoadAdaptersAsync).
+            : await Task.Run(AdapterMatcher.GetPhysicalAdapters);
+
+        var others = AdapterMatcher.OtherAdapterDisplayNames(all, adapter.InterfaceGuid);
 
         var result = await RenameAdapterWindow.ShowAsync(adapter.DisplayName, others, savedOriginal, canReset);
         if (result is null)
@@ -269,6 +300,21 @@ internal sealed class AdapterRenameFlow
     /// </summary>
     private void ApplyDeviceRestart(string deviceInstanceId, string appliedName, bool restartNow)
     {
+        // The adapter's display name on this host has just changed, and it changed for BOTH write paths —
+        // this method is the one point they converge on, and it is reached only after WriteFriendlyName
+        // re-read the value from disk and matched it. So this is the earliest moment the change is a
+        // fact, and the only one worth telling the caller about. Announced before the restart branch
+        // below, not inside it: the name is already on disk either way, and a caller that re-reads only
+        // when the user opted into a restart would keep a stale list for the far more common deferred
+        // choice. Fire-and-forget by contract (Settings kicks off a background host read) — a throw here
+        // must not turn a completed rename into a failure report, and this method has an outcome to show.
+        try   { _onRenamed?.Invoke(); }
+        catch (Exception ex)
+        {
+            UiActivityLog.Logger.LogWarning(
+                "Rename flow: the post-rename refresh callback threw for '{Name}': {Error}", appliedName, ex.Message);
+        }
+
         if (!restartNow)
         {
             // Honest "saved", not "applied": the write is verified on disk (WriteFriendlyName throws
