@@ -10,11 +10,60 @@
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
 
+            <!-- ─────────────────────────────────────────────────────────────────────────────
+                 Brand typeface: Cascadia Mono (issue #44), matching the sibling app's treatment.
+
+                 The .ttf is NOT bundled here: the ZeroZero.Brand.WinUI ProjectReference ships it as
+                 Content into this app's output under Assets\Fonts\ (the same file BrandAboutWindow
+                 already references), so ms-appx:///Assets/Fonts/… resolves for this unpackaged app
+                 with no per-app asset copy. Verified present in bin\…\win-x64\Assets\Fonts\.
+
+                 Per 0z0-design/design-language.md: Cascadia Mono is the studio's UI/body/heading
+                 face — monospace throughout, not just for code, and a deliberate brand choice.
+
+                 FALLBACK: the URI names a font FILE that ships beside the exe, so this does not
+                 depend on Cascadia Mono being installed on the target machine. The family name
+                 after '#' is the in-file family, not a system lookup. Should the file ever go
+                 missing, XAML silently falls back to the default UI font — degraded, never blank. -->
+            <FontFamily x:Key="BrandFont">ms-appx:///Assets/Fonts/CascadiaMono.ttf#Cascadia Mono</FontFamily>
+
+            <!-- Templated-control content resolves these two theme resources rather than the implicit
+                 TextBlock style below, so without them ComboBox items, Button captions, ToggleSwitch
+                 On/Off, NumberBox and TextBox text would all stay in the default sans while bare
+                 TextBlocks switched — the split the sibling app hit. A FontFamily resource cannot take
+                 another resource as its value, hence the repeated literal URI. -->
+            <FontFamily x:Key="ContentControlThemeFontFamily">ms-appx:///Assets/Fonts/CascadiaMono.ttf#Cascadia Mono</FontFamily>
+            <FontFamily x:Key="ControlContentThemeFontFamily">ms-appx:///Assets/Fonts/CascadiaMono.ttf#Cascadia Mono</FontFamily>
+
+            <!-- Density trim (the sibling app's v1.5.2 lesson, applied up-front rather than as a
+                 follow-up). Cascadia Mono is a fixed-advance face at ~0.586 em/char — measurably wider
+                 than the default sans for the same string — so 14 px control content read oversized
+                 next to the Settings rows' explicit 13 px headers and 11 px descriptions.
+
+                 This also keeps issue #31's minimum-size arithmetic honest: at 14 px the Log-level
+                 combo's widest item ("Trace — most verbose") measures ~209 DIP and would burst its
+                 declared MinWidth of 200, making the real widest control exceed the 288 that
+                 WindowPlacement.SettingRowWidestFixedControl derives the 702 floor from. At 12.5 it
+                 measures ~191 DIP and stays inside its MinWidth, so every settings control remains
+                 bounded by its DECLARED minimum and 288 (150 + 8 + 130) is still the true widest.
+
+                 Dashboard text is unaffected — those TextBlocks set explicit FontSize. -->
+            <x:Double x:Key="ControlContentThemeFontSize">12.5</x:Double>
+
+            <!-- Default chrome typeface for every TextBlock without an explicit Style. TextBlock has no
+                 control template, so an implicit style is safe here (it only sets the font). The keyed
+                 styles below repeat the setter, since a keyed style opts out of the implicit one. -->
+            <Style TargetType="TextBlock">
+                <Setter Property="FontFamily" Value="{StaticResource BrandFont}"/>
+            </Style>
+
             <Style x:Key="LabelStyle" TargetType="TextBlock">
+                <Setter Property="FontFamily" Value="{StaticResource BrandFont}"/>
                 <Setter Property="FontSize" Value="12"/>
                 <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/>
             </Style>
             <Style x:Key="ValueStyle" TargetType="TextBlock">
+                <Setter Property="FontFamily" Value="{StaticResource BrandFont}"/>
                 <Setter Property="FontSize" Value="12"/>
                 <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}"/>
                 <Setter Property="TextTrimming" Value="CharacterEllipsis"/>

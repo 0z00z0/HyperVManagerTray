@@ -784,6 +784,27 @@ public sealed partial class DashboardWindow : Window
         return (val, bar);
     }
 
+    /// <summary>
+    /// Horizontal padding of a card's action buttons. Trimmed 8 → 6 when the brand mono face landed
+    /// (issue #44), because this non-wrapping row is the one place the dashboard's fixed 320 DIP width
+    /// genuinely binds. The worst case is a Running VM — "Shut down" + "Pause" + "Save" + "Connect":
+    ///
+    ///   available = 320 - Root padding (20+20) - card padding (10+10) - card border (1+1) = 258 DIP
+    ///   captions at 11 px Cascadia Mono (0.586 em/char, measured from the shipped .ttf) = 161.1
+    ///   button chrome = (6 + 6 padding + 1 + 1 border) × 4 = 56;  spacing = 6 × 3 gaps = 18
+    ///   total = 235.1 DIP  → ~23 DIP of slack
+    ///
+    /// At the previous padding of 8 the same row measured ~251 of 258 — it still fitted, but on ~7 DIP
+    /// of slack, less than a single character, with no margin for the difference between that measure
+    /// and DirectWrite's own. The trim restores the ~25 DIP the row had in the default sans (~233 of
+    /// 258), i.e. this keeps the row's density where it was rather than making it tighter.
+    ///
+    /// The font size is deliberately NOT reduced: at 11 px these captions are already small, and
+    /// shrinking text is a worse trade than shaving padding. If a future verb set overflows anyway,
+    /// the fix is to let the row wrap, not to shrink it further.
+    /// </summary>
+    private const double CardButtonPaddingX = 6;
+
     private StackPanel BuildButtons(VmTarget vm, VmStatus? s)
     {
         var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(0, 2, 0, 0) };
@@ -796,7 +817,7 @@ public sealed partial class DashboardWindow : Window
         {
             Content  = text,
             FontSize = 11,
-            Padding  = new Thickness(8, 3, 8, 3),
+            Padding  = new Thickness(CardButtonPaddingX, 3, CardButtonPaddingX, 3),
             Command  = new RelayCommand(() =>
             {
                 UiActivityLog.Logger.LogInformation("Dashboard: {Command} '{Vm}'", text, vm.Name);
@@ -809,7 +830,7 @@ public sealed partial class DashboardWindow : Window
         {
             Content  = text,
             FontSize = 11,
-            Padding  = new Thickness(8, 3, 8, 3),
+            Padding  = new Thickness(CardButtonPaddingX, 3, CardButtonPaddingX, 3),
             Command  = new RelayCommand(() =>
             {
                 UiActivityLog.Logger.LogInformation("Dashboard: {Command} '{Vm}'", text, vm.Name);
