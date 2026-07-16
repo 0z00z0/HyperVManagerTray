@@ -23,17 +23,19 @@ public class ConfigManagerTests : IDisposable
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    /// <summary>Mirrors ConfigManager's own write options, so a temp config is byte-shaped like a real one.</summary>
+    private static readonly JsonSerializerOptions WriteOpts = new()
+    {
+        WriteIndented          = true,
+        PropertyNamingPolicy   = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        Converters             = { new JsonStringEnumConverter() }
+    };
+
     private static string WriteTempConfig(AppConfig cfg)
     {
         var path = Path.Combine(Path.GetTempPath(), $"hvmt_test_{Guid.NewGuid():N}.json");
-        var writeOpts = new JsonSerializerOptions
-        {
-            WriteIndented          = true,
-            PropertyNamingPolicy   = JsonNamingPolicy.CamelCase,
-            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-            Converters             = { new JsonStringEnumConverter() }
-        };
-        File.WriteAllText(path, JsonSerializer.Serialize(cfg, writeOpts));
+        File.WriteAllText(path, JsonSerializer.Serialize(cfg, WriteOpts));
         return path;
     }
 
@@ -964,26 +966,194 @@ public class ConfigManagerTests : IDisposable
     }
 
     /// <summary>
-    /// A rect write must NOT raise ConfigReloaded: the NetworkMonitor subscribes to it and would
-    /// schedule a network re-evaluation — which can move a VM's switch — every time the user closed the
-    /// Settings window. Current must still be refreshed, though.
+    /// #31's regression test, kept at its INTENT rather than its old mechanism (issue #49). What #31
+    /// actually needed was that closing the Settings window can never schedule a network re-evaluation —
+    /// which can move a VM's switch. It achieved that by suppressing ConfigReloaded entirely
+    /// (<c>raiseReloaded: false</c>); the event now fires for every write and carries
+    /// <see cref="ConfigReloadedEventArgs.AffectsNetwork"/> instead, so the assertion moves from "the
+    /// event didn't fire" to "the event said the network is not involved" — the same guarantee, made by
+    /// the data instead of by a parameter each mutator had to remember to pass. Current must still be
+    /// refreshed, as before.
     /// </summary>
     [Fact]
-    public void SaveSettingsWindowRect_DoesNotRaiseConfigReloaded()
+    public void SaveSettingsWindowRect_DoesNotAffectTheNetwork()
     {
         var path = WriteTempConfig(new AppConfig());
         using var mgr = MakeManager(path);
 
-        int reloads = 0;
-        mgr.ConfigReloaded += (_, _) => reloads++;
+        var affected = new List<bool>();
+        mgr.ConfigReloaded += (_, e) => affected.Add(e.AffectsNetwork);
 
         mgr.SaveSettingsWindowRect(new WindowRect(120, 80, 1000, 800));
-        Assert.Equal(0, reloads);
+        Assert.Equal([false], affected);
         Assert.Equal(120, mgr.Current.SettingsWindowX);
 
-        // …while a real, subscriber-relevant change still does.
+        // …while a change the NetworkMonitor actually acts on still says so.
+        mgr.AddBridgedRule(new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "Bridged" });
+        Assert.Equal([false, true], affected);
+    }
+
+    // ── The config-write → network-re-evaluation fan-out (issue #49) ───────────
+
+    /// <summary>
+    /// The whole point: setting the log level must not re-evaluate the network. It used to — a full NIC
+    /// enumeration plus a registry Class-key walk, on a path that reaches UpdateSwitchBindingAsync — so
+    /// changing a logging preference could move a real VM's switch.
+    /// </summary>
+    [Fact]
+    public void UpdateLogLevel_DoesNotAffectTheNetwork()
+    {
+        var path = WriteTempConfig(new AppConfig { LogLevel = LogLevel.Debug });
+        using var mgr = MakeManager(path);
+
+        var affected = new List<bool>();
+        mgr.ConfigReloaded += (_, e) => affected.Add(e.AffectsNetwork);
+
         mgr.UpdateLogLevel(LogLevel.Warning);
-        Assert.Equal(1, reloads);
+
+        Assert.Equal([false], affected);          // the event fires — it just says "not your problem"
+        Assert.Equal(LogLevel.Warning, mgr.Current.LogLevel);
+    }
+
+    /// <summary>The rename flow's adapter-name bookkeeping (issue #15) is likewise nothing the monitor
+    /// reads — and it ran the fan-out twice per rename.</summary>
+    [Fact]
+    public void UpsertAdapterName_DoesNotAffectTheNetwork()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        var affected = new List<bool>();
+        mgr.ConfigReloaded += (_, e) => affected.Add(e.AffectsNetwork);
+
+        mgr.UpsertAdapterName(new AdapterNameOverride
+        {
+            DeviceInstanceId     = "USB\\VID_0BDA&PID_8153\\000002000000",
+            OriginalFriendlyName = "Realtek USB GbE",
+            CurrentFriendlyName  = "Dock LAN",
+        });
+
+        Assert.Equal([false], affected);
+    }
+
+    /// <summary>
+    /// The direction that must never break. Each case changes exactly one field the NetworkMonitor reads
+    /// — established by reading every <c>_config.Current</c> access it makes: AdapterMatcher.Evaluate
+    /// (Rules + Fallback), ApplyAsync (VirtualMachines' NicName, and a matched rule's AutoStart/TargetVms)
+    /// and ScheduleDisconnectActions (VirtualMachines' bridge-lost action, which can pause/save/shut down
+    /// a VM). Every one MUST re-evaluate. A false here is not a performance regression — it is a VM left
+    /// on the wrong switch, or none, with nothing said.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(NetworkRelevantEdits))]
+    public void AffectsNetwork_IsTrue_ForEveryFieldTheMonitorConsumes(string _, AppConfig before, AppConfig after)
+        => Assert.True(ConfigManager.AffectsNetwork(before, after));
+
+    public static TheoryData<string, AppConfig, AppConfig> NetworkRelevantEdits()
+    {
+        static AppConfig Base() => new()
+        {
+            VirtualMachines = [new VmTarget { Name = "Dev", NicName = "Network Adapter",
+                                              OnBridgeLostAction = "pause", OnBridgeLostDelaySeconds = 30 }],
+            Rules           = [new NetworkRule { Name = "Office", Priority = 1, VirtualSwitch = "Bridged",
+                                                 TargetVms = ["Dev"], AutoStart = false,
+                                                 Conditions = new RuleConditions { IpCidr = "10.0.0.0/24" } }],
+            Fallback        = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Dev"] },
+        };
+
+        static AppConfig With(Action<AppConfig> edit) { var c = Base(); edit(c); return c; }
+
+        return new TheoryData<string, AppConfig, AppConfig>
+        {
+            // ── Rules: AdapterMatcher.Evaluate walks these to pick the switch ──
+            { "rule added",        Base(), With(c => c.Rules.Add(new NetworkRule { Name = "Home", Priority = 2, VirtualSwitch = "Bridged2" })) },
+            { "rule removed",      Base(), With(c => c.Rules.Clear()) },
+            { "rule name",         Base(), With(c => c.Rules[0].Name = "Office2") },
+            { "rule priority",     Base(), With(c => c.Rules[0].Priority = 5) },
+            { "rule switch",       Base(), With(c => c.Rules[0].VirtualSwitch = "Bridged2") },
+            // AutoStart and TargetVms START VMs — ApplyAsync reads both off the matched rule.
+            { "rule autostart",    Base(), With(c => c.Rules[0].AutoStart = true) },
+            { "rule target VMs",   Base(), With(c => c.Rules[0].TargetVms = ["Dev", "Build"]) },
+            { "rule CIDR",         Base(), With(c => c.Rules[0].Conditions!.IpCidr = "192.168.1.0/24") },
+            { "rule MAC",          Base(), With(c => c.Rules[0].Conditions!.AdapterMac = "AA:BB:CC:DD:EE:FF") },
+
+            // ── Fallback: the other half of Evaluate ──
+            { "fallback switch",   Base(), With(c => c.Fallback.VirtualSwitch = "NAT Switch") },
+            { "fallback targets",  Base(), With(c => c.Fallback.TargetVms = ["Dev", "Build"]) },
+
+            // ── VirtualMachines: ApplyAsync binds vm.NicName; ScheduleDisconnectActions can stop the VM ──
+            { "VM added",          Base(), With(c => c.VirtualMachines.Add(new VmTarget { Name = "Build", NicName = "Network Adapter" })) },
+            { "VM removed",        Base(), With(c => c.VirtualMachines.Clear()) },
+            { "VM name",           Base(), With(c => c.VirtualMachines[0].Name = "Dev2") },
+            // The one the issue calls out by name: a NIC-name edit changes what ApplySwitchAsync binds.
+            { "VM NIC name",       Base(), With(c => c.VirtualMachines[0].NicName = "Network Adapter 2") },
+            { "VM bridge-lost",    Base(), With(c => c.VirtualMachines[0].OnBridgeLostAction = "shutdown") },
+            { "VM bridge delay",   Base(), With(c => c.VirtualMachines[0].OnBridgeLostDelaySeconds = 5) },
+        };
+    }
+
+    /// <summary>An identical config is not a change — the only case that may legitimately skip.</summary>
+    [Fact]
+    public void AffectsNetwork_IsFalse_ForAnIdenticalConfig()
+    {
+        var a = new AppConfig { Rules = [new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "S" }] };
+        var b = new AppConfig { Rules = [new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "S" }] };
+        Assert.False(ConfigManager.AffectsNetwork(a, b));
+    }
+
+    /// <summary>
+    /// The tripwire, and the most important test here. It fails the moment ANY property is added to
+    /// <see cref="AppConfig"/>, forcing whoever adds it to decide — in
+    /// <see cref="ConfigManager.NonNetworkProperties"/> and here — whether the NetworkMonitor reads it.
+    ///
+    /// <para>Both sides are asserted on purpose. Asserting only the network set would let a new field be
+    /// waved through by dropping it into the exclusion list, which is exactly the decision that must not
+    /// be made silently: an unclassified field excluded by accident is a change the monitor never
+    /// re-evaluates for, and that failure is invisible until a VM has no network.</para>
+    /// </summary>
+    [Fact]
+    public void NonNetworkProperties_ClassifiesEveryAppConfigProperty()
+    {
+        var all = typeof(AppConfig).GetProperties()
+            .Select(p => JsonNamingPolicy.CamelCase.ConvertName(p.Name))
+            .OrderBy(n => n, StringComparer.Ordinal);
+
+        // Read by the NetworkMonitor (transitively) — so a change to any of these must re-evaluate.
+        string[] network = ["fallback", "ruleSwitches", "rules", "virtualMachines"];
+
+        Assert.Equal(
+            network.Concat(ConfigManager.NonNetworkProperties).OrderBy(n => n, StringComparer.Ordinal),
+            all);
+    }
+
+    /// <summary>
+    /// A hand-edit to config.json is classified by the same rule as an in-app write — the debounced
+    /// watcher path raises the same event. Editing <c>logLevel</c> by hand must no more move a VM's
+    /// switch than the Settings combo that writes the same field.
+    /// </summary>
+    [Fact]
+    public async Task FileEdit_RaisesConfigReloaded_ClassifiedLikeAnInAppWrite()
+    {
+        var path = WriteTempConfig(new AppConfig { LogLevel = LogLevel.Debug });
+        using var mgr = MakeManager(path);
+
+        var affected = new List<bool>();
+        using var seen = new SemaphoreSlim(0);
+        mgr.ConfigReloaded += (_, e) => { affected.Add(e.AffectsNetwork); seen.Release(); };
+
+        // A cosmetic hand-edit…
+        File.WriteAllText(path, JsonSerializer.Serialize(new AppConfig { LogLevel = LogLevel.Error }, WriteOpts));
+        Assert.True(await seen.WaitAsync(TimeSpan.FromSeconds(10)), "the file watcher never fired");
+        Assert.Equal([false], affected);
+
+        // …and one the monitor must act on.
+        File.WriteAllText(path, JsonSerializer.Serialize(new AppConfig
+        {
+            LogLevel = LogLevel.Error,
+            Rules    = [new NetworkRule { Name = "Office", Priority = 1, VirtualSwitch = "Bridged" }],
+        }, WriteOpts));
+        Assert.True(await seen.WaitAsync(TimeSpan.FromSeconds(10)), "the file watcher never fired");
+        Assert.Equal([false, true], affected);
     }
 
     // ── Load outcome (issue #39) ──────────────────────────────────────────────

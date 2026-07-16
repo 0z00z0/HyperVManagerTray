@@ -359,9 +359,19 @@ internal sealed partial class SettingsWindow : Window
     /// Pushes a snapshot into every registered picker. UI thread only. Each consumer is guarded
     /// individually — one picker throwing must not leave the rest unpopulated — and the whole pass runs
     /// with the re-entrancy guard held, because populating a control's items raises the very
-    /// SelectionChanged/TextChanged handlers that commit to config: without this, merely enumerating the
-    /// host would write config.json, and a config write raises ConfigReloaded, which re-evaluates the
-    /// network and can move a VM's switch. Opening Settings must not touch the network.
+    /// SelectionChanged/TextChanged handlers that commit to config. Merely enumerating the host would
+    /// otherwise write config.json.
+    ///
+    /// <para>And it would write the WRONG thing, which is why this guard stays even though issue #49
+    /// removed the harm it was originally justified by. Its comment used to cite the fan-out — "a config
+    /// write raises ConfigReloaded, which re-evaluates the network and can move a VM's switch" — and that
+    /// is now fixed at the cause: the reload is classified, and a NIC-name write that changes nothing
+    /// never reaches the NetworkMonitor. But the write itself was never the harmless half. Assigning
+    /// <c>ItemsSource</c> CLEARS the combo's Text and resets its selection before
+    /// <see cref="SuggestionCombo"/> restores it, so an unguarded SelectionChanged commits the empty
+    /// string that exists in between — persisting a blank NIC name over the user's real one, from nothing
+    /// but a background host enumeration finishing. That is a data-loss bug in its own right, and this
+    /// guard is what prevents it.</para>
     /// </summary>
     private void ApplyInventory(HostInventory.Snapshot snapshot) => WithUpdatingSuppressed(() =>
     {
