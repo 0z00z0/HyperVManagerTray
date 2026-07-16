@@ -60,10 +60,12 @@ internal sealed class NetworkActions
                 return;
             }
 
-            var message = NetworkStatusUi.ReCheckMessage(
-                result.RuleName, result.VirtualSwitch, result.ApplyStatus,
-                result.HostAdapterName, result.FailedVms);
-            _notify($"{AppName} — network", message, NetworkStatusUi.IsFailure(result.ApplyStatus));
+            // This command owns the report for the pass it just ran: ForceEvaluateAsync marks the result
+            // UserInitiated, which stands the automatic failure balloon down (App.NotifyIfApplyFailed),
+            // so a failing re-check answers once here instead of firing two toasts.
+            _notify($"{AppName} — network",
+                    NetworkStatusUi.ReCheckMessage(result),
+                    NetworkStatusUi.IsFailure(result.ApplyStatus));
         }
         catch (Exception ex)
         {
@@ -81,6 +83,10 @@ internal sealed class NetworkActions
     {
         try
         {
+            // As with Re-check, this command owns the report: ManualOverrideAsync marks its result
+            // UserInitiated so the automatic balloon stands down. It has to be this path — only here is
+            // the NotConfigured outcome visible (no apply pass ever runs for it), and only here is it
+            // known that the user asked for an override rather than a rule having fired.
             var outcome = await _monitor.ManualOverrideAsync(vmName, switchName);
             var (message, isError) = outcome switch
             {
@@ -161,7 +167,26 @@ internal sealed class NetworkActions
     /// most useful — beside "Add rule", which was until now the strictly worse path (a blank rule with a
     /// hand-typed MAC, the field most likely to be mistyped).</para>
     /// </summary>
+    /// <para><b>Top-level try/catch, like its three siblings.</b> This is invoked from an
+    /// <c>async void</c> handler, so an escaping exception becomes a stowed exception on the
+    /// DispatcherQueue and tears down the whole tray process — taking the network monitor and any
+    /// pending bridge-lost timers with it. It is not a theoretical risk here:
+    /// <see cref="TextPromptWindow.ShowAsync"/> constructs a Window and does native monitor placement in
+    /// its constructor, which is precisely the failure class <c>SafeInit</c> exists to contain.</para>
     public async Task AddCurrentAsBridgedAsync()
+    {
+        try
+        {
+            await AddCurrentAsBridgedCoreAsync();
+        }
+        catch (Exception ex)
+        {
+            UiActivityLog.Logger.LogWarning(ex, "Add current network failed");
+            NativeMethods.Warn($"Could not add the current network:\n{ex.Message}", AppName);
+        }
+    }
+
+    private async Task AddCurrentAsBridgedCoreAsync()
     {
         // GetCurrentNetworkInfo enumerates all NICs (GetAllNetworkInterfaces + GetIPProperties) and can
         // block for hundreds of ms; this runs from a UI command, so offload it to the thread pool to keep

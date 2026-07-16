@@ -162,21 +162,52 @@ public class NetworkStatusUiTests
 
     // ── Failure balloon ──────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// An applied result, with the description and the interface alias deliberately DIFFERENT so a
+    /// message that names the wrong one is caught. On a real host these two are never interchangeable:
+    /// "Realtek USB GbE Family Controller" is the driver description (which two docked adapters can
+    /// share), "Ethernet 5" is the OS alias the bind actually targets.
+    /// </summary>
+    private static MatchResult Result(
+        SwitchApplyStatus status, IReadOnlyList<string>? failedVms = null, string rule = "Office LAN") =>
+        new(rule, "Bridged", ["vDev"])
+        {
+            HostAdapterName          = "Realtek USB GbE Family Controller",
+            HostAdapterInterfaceName = "Ethernet 5",
+            ApplyStatus              = status,
+            FailedVms                = failedVms ?? [],
+        };
+
     [Fact]
     public void FailureMessage_BindFailedNamesSwitchAdapterAndLog()
     {
-        var msg = FailureMessage(SwitchApplyStatus.BindFailed, "Bridged", "Realtek USB GbE", []);
+        var msg = FailureMessage(Result(SwitchApplyStatus.BindFailed));
 
         Assert.NotNull(msg);
         Assert.Contains("Bridged", msg);
-        Assert.Contains("Realtek USB GbE", msg);
+        Assert.Contains("Ethernet 5", msg);
         Assert.Contains("switcher.log", msg);
+    }
+
+    /// <summary>
+    /// The bind-failure balloon must name the adapter the bind TARGETED — the OS interface alias — not
+    /// the driver description. Two adapters can share a description, so naming it sends the user to
+    /// check a string that need not identify the one that failed; and this is the single message read
+    /// when the network is down. The description-vs-alias split is what docs/STYLE.md pins.
+    /// </summary>
+    [Fact]
+    public void FailureMessage_BindFailedNamesTheInterfaceAliasNotTheDescription()
+    {
+        var msg = FailureMessage(Result(SwitchApplyStatus.BindFailed))!;
+
+        Assert.Contains("Ethernet 5", msg);
+        Assert.DoesNotContain("Realtek USB GbE Family Controller", msg);
     }
 
     [Fact]
     public void FailureMessage_VmConnectFailedNamesTheFailedVms()
     {
-        var msg = FailureMessage(SwitchApplyStatus.VmConnectFailed, "Bridged", "Realtek USB GbE", ["vDev", "vBuild"]);
+        var msg = FailureMessage(Result(SwitchApplyStatus.VmConnectFailed, ["vDev", "vBuild"]));
 
         Assert.NotNull(msg);
         Assert.Contains("vDev", msg);
@@ -188,7 +219,7 @@ public class NetworkStatusUiTests
     [Fact]
     public void FailureMessage_VmConnectFailedWithNoNamesStillReads()
     {
-        var msg = FailureMessage(SwitchApplyStatus.VmConnectFailed, "Bridged", "Realtek USB GbE", []);
+        var msg = FailureMessage(Result(SwitchApplyStatus.VmConnectFailed));
 
         Assert.NotNull(msg);
         Assert.DoesNotContain("''", msg);
@@ -200,7 +231,7 @@ public class NetworkStatusUiTests
     [InlineData(SwitchApplyStatus.Applied)]
     [InlineData(SwitchApplyStatus.NotEvaluated)]
     public void FailureMessage_NonFailureHasNoMessage(SwitchApplyStatus status) =>
-        Assert.Null(FailureMessage(status, "Bridged", "Realtek USB GbE", []));
+        Assert.Null(FailureMessage(Result(status)));
 
     // Every status IsFailure reports must have a message, and no other status may have one — the balloon
     // and the red rendering must never disagree about whether something failed.
@@ -209,7 +240,7 @@ public class NetworkStatusUiTests
     {
         foreach (var status in Enum.GetValues<SwitchApplyStatus>())
         {
-            var msg = FailureMessage(status, "Bridged", "Realtek USB GbE", ["vDev"]);
+            var msg = FailureMessage(Result(status, ["vDev"]));
             Assert.Equal(IsFailure(status), msg is not null);
         }
     }
@@ -219,7 +250,7 @@ public class NetworkStatusUiTests
     [Fact]
     public void ReCheckMessage_SuccessReportsRuleAndSwitch()
     {
-        var msg = ReCheckMessage("Office LAN", "Bridged", SwitchApplyStatus.Applied, "Realtek USB GbE", []);
+        var msg = ReCheckMessage(Result(SwitchApplyStatus.Applied));
 
         Assert.Contains("Office LAN", msg);
         Assert.Contains("Bridged", msg);
@@ -228,7 +259,7 @@ public class NetworkStatusUiTests
     [Fact]
     public void ReCheckMessage_FailureReportsBothTheResultAndTheFailure()
     {
-        var msg = ReCheckMessage("Office LAN", "Bridged", SwitchApplyStatus.BindFailed, "Realtek USB GbE", []);
+        var msg = ReCheckMessage(Result(SwitchApplyStatus.BindFailed));
 
         Assert.Contains("Office LAN", msg);
         Assert.Contains("bind", msg);
@@ -241,7 +272,7 @@ public class NetworkStatusUiTests
     {
         foreach (var status in Enum.GetValues<SwitchApplyStatus>())
         {
-            var msg = ReCheckMessage("Office LAN", "Bridged", status, "Realtek USB GbE", ["vDev"]);
+            var msg = ReCheckMessage(Result(status, ["vDev"]));
             Assert.False(string.IsNullOrWhiteSpace(msg), $"Re-check said nothing for {status}.");
         }
     }
@@ -250,7 +281,7 @@ public class NetworkStatusUiTests
     [Fact]
     public void ReCheckMessage_UnconfirmedResultSaysSo()
     {
-        var msg = ReCheckMessage("Office LAN", "Bridged", SwitchApplyStatus.NotEvaluated, "Realtek USB GbE", []);
+        var msg = ReCheckMessage(Result(SwitchApplyStatus.NotEvaluated));
 
         Assert.Contains("could not be confirmed", msg);
     }
@@ -341,4 +372,109 @@ public class NetworkStatusUiTests
         Assert.Equal("Realtek USB GbE", applied.HostAdapterName);   // the evaluated fields survive
         Assert.Equal(TrayIconState.Failed, IconFor(applied.ApplyStatus, bridgedTarget: true));
     }
+
+    // ── The skip guard: when may a confirmed outcome be carried forward? ──────────
+    //
+    // NetworkMonitor skips the apply pass — and carries the previous ApplyStatus forward — only when
+    // MatchResult.ConfirmsSameOutcomeFor holds. The predicate it replaced compared switch + target VMs
+    // ONLY, which was unsound in two opposite directions; both are pinned below.
+
+    /// <summary>An applied outcome for a rule on a given host adapter — the "last confirmed" state.</summary>
+    private static MatchResult Applied(string rule, string adapter, string sw = "Bridged", string vm = "vDev") =>
+        new(rule, sw, [vm])
+        {
+            HostAdapterInterfaceName = adapter,
+            ApplyStatus              = SwitchApplyStatus.Applied,
+        };
+
+    /// <summary>A freshly evaluated result (no outcome of its own yet) — what a NetworkChange produces.</summary>
+    private static MatchResult Evaluated(string rule, string adapter, string sw = "Bridged", string vm = "vDev") =>
+        new(rule, sw, [vm]) { HostAdapterInterfaceName = adapter };
+
+    // The baseline: genuinely nothing changed, so the pass is skippable.
+    [Fact]
+    public void ConfirmsSameOutcomeFor_TrueWhenTheConfirmedApplyStillDescribesTheNewResult() =>
+        Assert.True(Applied("Office LAN", "Ethernet 5")
+            .ConfirmsSameOutcomeFor(Evaluated("Office LAN", "Ethernet 5")));
+
+    /// <summary>
+    /// FALSE SUCCESS. Two rules — an office dock and a home dock — name the SAME switch and the SAME
+    /// VMs but different host adapters. Moving between docks must re-apply: the switch has to be
+    /// re-bound to the adapter that is actually present. The old switch+VMs guard passed here, skipped
+    /// the rebind, left the switch on the absent office adapter, and carried "Applied" forward — a green
+    /// icon over a VM with no network. The outcome depends on the adapter, so the guard must test it.
+    /// </summary>
+    [Fact]
+    public void ConfirmsSameOutcomeFor_FalseWhenTheHostAdapterChanged() =>
+        Assert.False(Applied("Office dock", "Ethernet 5")
+            .ConfirmsSameOutcomeFor(Evaluated("Home dock", "Ethernet 7")));
+
+    // The adapter alone is enough to break it, even for the very same rule (dock re-enumerated to a new
+    // alias): this must not depend on the rule name also having changed.
+    [Fact]
+    public void ConfirmsSameOutcomeFor_FalseWhenOnlyTheHostAdapterChanged() =>
+        Assert.False(Applied("Office LAN", "Ethernet 5")
+            .ConfirmsSameOutcomeFor(Evaluated("Office LAN", "Ethernet 7")));
+
+    // A different rule is a different intent even when it resolves identically — and the skip path runs
+    // none of the per-rule side effects (autoStart most concretely), so it must not be taken.
+    [Fact]
+    public void ConfirmsSameOutcomeFor_FalseWhenOnlyTheRuleChanged() =>
+        Assert.False(Applied("Office dock", "Ethernet 5")
+            .ConfirmsSameOutcomeFor(Evaluated("Home dock", "Ethernet 5")));
+
+    /// <summary>
+    /// STUCK FAILURE. A failed bind clears the skip-cache specifically so the next NetworkChange retries
+    /// it — but if a failed status satisfies the guard, the apply pass is never re-entered, the cleared
+    /// cache is never read, and the red icon is pinned for the session even after the host heals. A
+    /// failure is a snapshot of ONE attempt, never a durable truth: it can never authorise a skip.
+    /// </summary>
+    [Theory]
+    [InlineData(SwitchApplyStatus.BindFailed)]
+    [InlineData(SwitchApplyStatus.VmConnectFailed)]
+    [InlineData(SwitchApplyStatus.NotEvaluated)]
+    public void ConfirmsSameOutcomeFor_FalseForAnyUnconfirmedStatus_SoTheRetryStaysReachable(
+        SwitchApplyStatus status)
+    {
+        var last = Applied("Office LAN", "Ethernet 5") with { ApplyStatus = status };
+
+        Assert.False(last.ConfirmsSameOutcomeFor(Evaluated("Office LAN", "Ethernet 5")),
+            $"{status} authorised a skip — the apply pass would never be re-entered and the retry is unreachable.");
+    }
+
+    /// <summary>
+    /// Enumerates the enum rather than listing cases, mirroring
+    /// <see cref="IconFor_OnlyAppliedEverRendersAsSuccess"/>: a status added later must not quietly
+    /// become skippable. Only a confirmed Applied may ever be carried forward.
+    /// </summary>
+    [Fact]
+    public void ConfirmsSameOutcomeFor_OnlyAppliedIsEverCarriedForward()
+    {
+        foreach (var status in Enum.GetValues<SwitchApplyStatus>())
+        {
+            var last = Applied("Office LAN", "Ethernet 5") with { ApplyStatus = status };
+            Assert.Equal(status == SwitchApplyStatus.Applied,
+                         last.ConfirmsSameOutcomeFor(Evaluated("Office LAN", "Ethernet 5")));
+        }
+    }
+
+    [Fact]
+    public void ConfirmsSameOutcomeFor_FalseWhenTheSwitchChanged() =>
+        Assert.False(Applied("Office LAN", "Ethernet 5", sw: "Bridged")
+            .ConfirmsSameOutcomeFor(Evaluated("Office LAN", "Ethernet 5", sw: "Default Switch")));
+
+    [Fact]
+    public void ConfirmsSameOutcomeFor_FalseWhenTheTargetVmsChanged() =>
+        Assert.False(Applied("Office LAN", "Ethernet 5", vm: "vDev")
+            .ConfirmsSameOutcomeFor(Evaluated("Office LAN", "Ethernet 5", vm: "vBuild")));
+
+    /// <summary>
+    /// Casing must NOT force a re-apply. Hyper-V switch names, Windows interface aliases and VM names
+    /// are all case-insensitive, so an ordinal guard would rebind — a real VM network drop — over
+    /// nothing but a casing difference between the config and the host.
+    /// </summary>
+    [Fact]
+    public void ConfirmsSameOutcomeFor_IgnoresCasingOnEveryField() =>
+        Assert.True(Applied("Office LAN", "Ethernet 5", sw: "Bridged", vm: "DevBox")
+            .ConfirmsSameOutcomeFor(Evaluated("OFFICE lan", "ETHERNET 5", sw: "BRIDGED", vm: "devbox")));
 }

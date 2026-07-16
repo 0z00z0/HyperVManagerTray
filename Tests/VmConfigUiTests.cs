@@ -1,4 +1,5 @@
 using HyperVManagerTray.Helpers;
+using HyperVManagerTray.Models;
 using Xunit;
 
 namespace HyperVManagerTray.Tests;
@@ -162,5 +163,68 @@ public class VmConfigUiTests
     {
         var msg = VmConfigUi.WriteFailedMessage("DevBox", "The process cannot access the file");
         Assert.Contains("The process cannot access the file", msg);
+    }
+
+    // ── FindManagedVm: the one lookup behind "is this VM ours?" ───────────────────
+
+    private static readonly VmTarget[] Managed =
+    [
+        new() { Name = "DevBox",  NicName = "Network Adapter" },   // as the "Add VM" picker stores it
+        new() { Name = "vBuild",  NicName = "NIC 2" },
+    ];
+
+    [Fact]
+    public void FindManagedVm_FindsTheVmAndItsNic()
+    {
+        var vm = VmConfigUi.FindManagedVm(Managed, "DevBox");
+
+        Assert.NotNull(vm);
+        Assert.Equal("Network Adapter", vm.NicName);
+    }
+
+    /// <summary>
+    /// THE defect. The two surfaces that name a VM disagree on casing BY CONSTRUCTION: issue #47's
+    /// "Start managing a VM" prompt takes free text ("devbox"), while issue #41's "Add VM" picker
+    /// carries Hyper-V's exact casing ("DevBox"). An ordinal compare never matched them, so a rule
+    /// targeting a VM the app's own picker added landed in failedVms → VmConnectFailed → a permanently
+    /// red icon and a VM that was never reconnected.
+    /// </summary>
+    [Theory]
+    [InlineData("devbox")]   // typed into the free-text "Start managing a VM" prompt
+    [InlineData("DEVBOX")]
+    [InlineData("DevBox")]   // exactly as the picker sources it from the host
+    public void FindManagedVm_MatchesRegardlessOfCasing(string typed)
+    {
+        var vm = VmConfigUi.FindManagedVm(Managed, typed);
+
+        Assert.NotNull(vm);
+        Assert.Equal("Network Adapter", vm.NicName);   // resolved the NIC, so the VM can be reconnected
+    }
+
+    // A genuinely unmanaged VM must still be reported as such — the casing fix must not make the lookup
+    // match things it shouldn't.
+    [Fact]
+    public void FindManagedVm_ReturnsNullForAVmThisAppDoesNotManage() =>
+        Assert.Null(VmConfigUi.FindManagedVm(Managed, "SomeoneElsesVm"));
+
+    [Fact]
+    public void FindManagedVm_HandlesAnEmptyOrNullManagedSet()
+    {
+        Assert.Null(VmConfigUi.FindManagedVm([], "DevBox"));
+        Assert.Null(VmConfigUi.FindManagedVm(null, "DevBox"));
+    }
+
+    /// <summary>
+    /// The lookup and the add-picker must agree on identity: a VM the picker considers already managed
+    /// (so does NOT offer to add) must be findable by the monitor. If these two drift, one surface says
+    /// "already managed" while the other says "not a managed VM" for the same name.
+    /// </summary>
+    [Fact]
+    public void FindManagedVm_AgreesWithUnmanagedVmsAboutIdentity()
+    {
+        var offered = VmConfigUi.UnmanagedVms(["devbox"], Managed.Select(v => v.Name));
+
+        Assert.Empty(offered);                                        // the picker: already managed
+        Assert.NotNull(VmConfigUi.FindManagedVm(Managed, "devbox"));  // the monitor must agree
     }
 }

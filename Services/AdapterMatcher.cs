@@ -38,6 +38,55 @@ public sealed record MatchResult(string RuleName, string VirtualSwitch, IReadOnl
     /// pass — populated when <see cref="ApplyStatus"/> is
     /// <see cref="NetworkStatusUi.SwitchApplyStatus.VmConnectFailed"/>, so the balloon can name them.</summary>
     public IReadOnlyList<string> FailedVms { get; init; } = [];
+
+    /// <summary>
+    /// True when this pass was triggered by an explicit user command (tray "Re-check network now",
+    /// "Override VM switch") rather than by a <c>NetworkChange</c> event. The command's own call site
+    /// reports the outcome to the user, so the automatic failure balloon stands down — see
+    /// <see cref="NetworkStatusUi.FailureMessage"/> and <c>App.NotifyIfApplyFailed</c>. Defaults to
+    /// false: an automatic pass has nobody watching, which is exactly why that balloon exists.
+    /// </summary>
+    public bool UserInitiated { get; init; }
+
+    /// <summary>
+    /// True when THIS result — an outcome the app already applied and confirmed — is still the true
+    /// outcome for <paramref name="next"/>, a freshly evaluated result. When it holds,
+    /// <c>NetworkMonitor</c> may skip the apply pass and carry this outcome forward; when it does not,
+    /// the apply pass MUST run.
+    ///
+    /// <para><b>Why each clause is load-bearing.</b> The predicate this replaced compared only
+    /// <see cref="VirtualSwitch"/> and <see cref="TargetVms"/>, which is unsound in two opposite
+    /// directions:</para>
+    /// <list type="bullet">
+    /// <item><description><see cref="ApplyStatus"/> must be <see cref="NetworkStatusUi.SwitchApplyStatus.Applied"/>:
+    /// only a CONFIRMED success is a durable fact that can still be true later. A failure is a snapshot
+    /// of one attempt — the host may have healed since, and a VM that was merely mid-boot may now be up.
+    /// Letting a failed status satisfy this guard made the retry path unreachable: the bind-failure
+    /// handler clears the skip-cache precisely so the next event retries, but that event hit the guard
+    /// and never re-entered the apply pass, so the cleared cache was never read and the red icon was
+    /// pinned for the session.</description></item>
+    /// <item><description><see cref="HostAdapterInterfaceName"/> must match: the outcome depends on the
+    /// adapter the switch is bound to, not just on the switch's name. Two rules (an office dock and a
+    /// home dock, different NICs) can name the same switch and the same VMs; without this clause,
+    /// moving between them skipped the rebind, left the switch bound to the now-absent adapter, and
+    /// carried the old <c>Applied</c> forward — a green icon over a VM with no network.</description></item>
+    /// <item><description><see cref="RuleName"/> must match: a different rule is a different intent even
+    /// when it resolves to the same switch and adapter. It also gates per-rule side effects the skip
+    /// path does not run at all — most concretely <c>autoStart</c>, which would be silently missed when
+    /// a rule swap was mistaken for "nothing changed".</description></item>
+    /// </list>
+    ///
+    /// <para>Every comparison is <see cref="StringComparison.OrdinalIgnoreCase"/>, matching the rest of
+    /// the app: Hyper-V switch names, Windows interface aliases and VM names are all case-insensitive,
+    /// and an ordinal compare here would force a redundant rebind (a real VM network drop) on nothing
+    /// but a casing difference.</para>
+    /// </summary>
+    public bool ConfirmsSameOutcomeFor(MatchResult next) =>
+        ApplyStatus == NetworkStatusUi.SwitchApplyStatus.Applied &&
+        string.Equals(RuleName, next.RuleName, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(VirtualSwitch, next.VirtualSwitch, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(HostAdapterInterfaceName, next.HostAdapterInterfaceName, StringComparison.OrdinalIgnoreCase) &&
+        TargetVms.SequenceEqual(next.TargetVms, StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>Network details of the current primary host adapter, used by "Add current network" feature.</summary>
