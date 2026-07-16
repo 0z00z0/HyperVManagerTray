@@ -20,6 +20,14 @@
     <!-- Pure state→UI decisions for VM power controls (issue #30). Depends only on VmOperation. -->
     <Compile Include="..\Helpers\VmStateUi.cs"        Link="Linked\VmStateUi.cs" />
     <Compile Include="..\Models\VmOperation.cs"       Link="Linked\VmOperation.cs" />
+    <!-- Pure outcome→UI decisions for the switch-apply path (issue #37): the rule that a failed bind
+         can never render as a success colour. Depends only on TrayIconState (IconGenerator.cs) and the
+         SwitchBindOutcome enum below — deliberately NOT on HyperVManager.cs, which is the live-host
+         WMI mutator and must never be linked into the test assembly. -->
+    <Compile Include="..\Helpers\NetworkStatusUi.cs"  Link="Linked\NetworkStatusUi.cs" />
+    <!-- The three-name outcome enum HyperVManager returns. Pure vocabulary, its own file precisely so
+         linking it here drags in no System.Management/WMI. -->
+    <Compile Include="..\Services\SwitchBindOutcome.cs" Link="Linked\SwitchBindOutcome.cs" />
     <Compile Include="..\Helpers\IconGenerator.cs"    Link="Linked\IconGenerator.cs" />
     <Compile Include="..\Helpers\NativeMethods.cs"    Link="Linked\NativeMethods.cs" />
     <Compile Include="..\Helpers\AppInfo.cs"          Link="Linked\AppInfo.cs" />

@@ -59,11 +59,18 @@ public sealed class HyperVManager : IDisposable
     /// Connects a VM's NIC to the given virtual switch, but only if it isn't already there. Re-applying
     /// an unchanged connection briefly bounces the VM's network, so the "already on that switch" case is
     /// a no-op (e.g. on every app launch, where the in-session guards start empty).
+    ///
+    /// <para><b>Returns true only when the NIC is confirmed to be on <paramref name="switchName"/></b> —
+    /// whether this call moved it there or it was already there. False means the reconnect could not be
+    /// performed (switch/VM/NIC not found, or the WMI modify failed) and the VM is NOT on that switch.
+    /// Before issue #37 this returned <c>void</c> and swallowed every failure into a log line, so
+    /// <see cref="NetworkMonitor"/> had no way to tell the UI that a reconnect had failed.</para>
     /// </summary>
-    public Task ApplySwitchAsync(string vmName, string nicName, string switchName) =>
+    public Task<bool> ApplySwitchAsync(string vmName, string nicName, string switchName) =>
         WithLock(() => ApplySwitchCore(vmName, nicName, switchName));
 
-    private void ApplySwitchCore(string vmName, string nicName, string switchName)
+    /// <summary>Performs the VM-NIC reconnect; true = the NIC is now on <paramref name="switchName"/>.</summary>
+    private bool ApplySwitchCore(string vmName, string nicName, string switchName)
     {
         try
         {
@@ -71,15 +78,15 @@ public sealed class HyperVManager : IDisposable
             var scope = _scope!;
 
             using var sw = FindSwitch(scope, switchName);
-            if (sw is null) { _logger.LogError("ApplySwitchAsync: switch '{Switch}' not found", switchName); return; }
+            if (sw is null) { _logger.LogError("ApplySwitchAsync: switch '{Switch}' not found", switchName); return false; }
             var switchPath = sw.Path.Path;
             var switchId   = sw["Name"] as string ?? "";   // switch GUID, embedded in a connection's HostResource path
 
             using var vmSettings = FindVmSettings(scope, vmName);
-            if (vmSettings is null) { _logger.LogError("ApplySwitchAsync: VM '{Vm}' not found", vmName); return; }
+            if (vmSettings is null) { _logger.LogError("ApplySwitchAsync: VM '{Vm}' not found", vmName); return false; }
 
             using var nic = FindSyntheticNic(vmSettings, nicName);
-            if (nic is null) { _logger.LogError("ApplySwitchAsync: NIC '{Nic}' on VM '{Vm}' not found", nicName, vmName); return; }
+            if (nic is null) { _logger.LogError("ApplySwitchAsync: NIC '{Nic}' on VM '{Vm}' not found", nicName, vmName); return false; }
 
             using var connection = FindNicConnection(scope, nic);
 
@@ -89,7 +96,7 @@ public sealed class HyperVManager : IDisposable
                 SwitchWmiHelpers.ConnectionTargetsSwitch(connection["HostResource"] as string[], switchId))
             {
                 _logger.LogInformation("VM {Vm} already on '{Switch}' — no reconnect", vmName, switchName);
-                return;
+                return true;   // already where the caller wants it — a success, not a failure
             }
 
             if (connection is not null)
@@ -108,8 +115,11 @@ public sealed class HyperVManager : IDisposable
             }
 
             _logger.LogInformation("Switch applied: {Vm} → {Switch}", vmName, switchName);
+            return true;
         }
-        catch (Exception ex) { _logger.LogError(ex, "ApplySwitchAsync error"); }
+        // AddVmResource/ModifyVmResource throw via CheckJob on a WMI failure — the reconnect did NOT
+        // happen, so this must report false rather than let the caller assume success (issue #37).
+        catch (Exception ex) { _logger.LogError(ex, "ApplySwitchAsync error"); return false; }
     }
 
     /// <summary>
@@ -141,24 +151,6 @@ public sealed class HyperVManager : IDisposable
                 RepairHostVNicCore(switchName);
             return outcome;
         });
-
-    /// <summary>
-    /// Outcome of an <see cref="UpdateSwitchBindingAsync"/> attempt (issue #29, finding 1). The
-    /// distinction matters to the caller's skip-cache: a failed bind was previously indistinguishable
-    /// from an already-bound no-op (both returned <c>false</c>), so <see cref="NetworkMonitor"/> cached
-    /// the target adapter as bound and never retried. Only <see cref="Bound"/>/<see cref="AlreadyBound"/>
-    /// mean the switch is now on the requested adapter; <see cref="Failed"/> must leave the cache clear
-    /// so the next network change retries.
-    /// </summary>
-    public enum SwitchBindOutcome
-    {
-        /// <summary>A real rebind was performed (external uplink re-pointed or added).</summary>
-        Bound,
-        /// <summary>The switch was already External + sharing + on this adapter — nothing changed.</summary>
-        AlreadyBound,
-        /// <summary>The bind could not be performed (adapter absent, switch/port not found, or an error).</summary>
-        Failed,
-    }
 
     /// <summary>Performs the bind and reports its <see cref="SwitchBindOutcome"/> — only <see cref="SwitchBindOutcome.Bound"/> did real work.</summary>
     private SwitchBindOutcome UpdateSwitchBindingCore(string switchName, string adapterName)

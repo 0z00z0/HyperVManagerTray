@@ -4,23 +4,32 @@ using System.Drawing.Imaging;
 
 namespace HyperVManagerTray.Helpers;
 
-/// <summary>Three tray icon states reflected as the glyph colour.</summary>
+/// <summary>
+/// Four tray icon states reflected as the glyph colour.
+///
+/// <para>The grey/red split is load-bearing (issue #37): <see cref="Unknown"/> means the app has not
+/// established where the VMs are, <see cref="Failed"/> means it tried and did not get there. Both are
+/// honest non-success states, but they call for different user reactions, so they are not merged —
+/// and neither may ever be rendered as <see cref="Bridged"/>. See
+/// <see cref="NetworkStatusUi.IconFor"/>, which is the only thing that should choose between these.</para>
+/// </summary>
 public enum TrayIconState
 {
-    Unknown,  // grey  — startup / no data yet
-    Bridged,  // green — VM on physical LAN
-    Fallback, // blue  — VM on Default Switch / NAT
+    Unknown,  // grey  — startup / no data yet: the state is not established
+    Bridged,  // green — CONFIRMED: VM on physical LAN
+    Fallback, // blue  — CONFIRMED: VM on Default Switch / NAT
+    Failed,   // red   — the switch bind or a VM-NIC reconnect FAILED (issue #37)
 }
 
 /// <summary>
 /// Generates the tray icon at runtime (no image assets): a minimalist "virtual machine" glyph —
 /// a hollow monitor/display with two content bars and a stand — drawn in a single muted colour
 /// on a fully transparent background.  The colour signals state (grey = unknown, green = bridged
-/// to physical LAN, blue = NAT/fallback); the transparent background lets the same icon read on
-/// both light and dark taskbars.  Colours are intentionally medium-luminance, not vivid, so the
-/// glyph's edges stay crisp against either backdrop.
+/// to physical LAN, blue = NAT/fallback, red = the apply failed); the transparent background lets the
+/// same icon read on both light and dark taskbars.  Colours are intentionally medium-luminance, not
+/// vivid, so the glyph's edges stay crisp against either backdrop.
 ///
-/// Three multi-size .ico files are written next to the exe and swapped on state changes; writing
+/// Four multi-size .ico files are written next to the exe and swapped on state changes; writing
 /// to disk lets H.NotifyIcon reload them and avoids the GDI handle leak of Bitmap.GetHicon().
 ///
 /// Icon version: v5 — the restyled HyperVManagerTray product glyph (the 0z0-guideline product
@@ -36,6 +45,7 @@ internal static class IconGenerator
     private const string UnknownFile  = "icon-unknown-v5.ico";
     private const string BridgedFile  = "icon-bridged-v5.ico";
     private const string FallbackFile = "icon-fallback-v5.ico";
+    private const string FailedFile   = "icon-failed-v5.ico";   // issue #37
 
     // Frame sizes baked into each .ico.  64/48 are picked by Windows on 4K (200 %+ DPI)
     // without upscaling; 32/24/20/16 cover 100–150 % tray DPI.
@@ -46,6 +56,10 @@ internal static class IconGenerator
     private static readonly Color GlyphUnknown  = Color.FromArgb(255, 0x8C, 0x8C, 0x8C);  // muted grey
     private static readonly Color GlyphBridged  = Color.FromArgb(255, 0x35, 0x9E, 0x6A);  // muted green
     private static readonly Color GlyphFallback = Color.FromArgb(255, 0x3B, 0x7E, 0xC4);  // muted blue
+    // Muted red (issue #37) — same medium-luminance treatment as the other three so the glyph edges
+    // stay crisp on a white taskbar, but unmistakably a different hue from the green/blue "confirmed"
+    // colours AND from the grey "don't know yet".
+    private static readonly Color GlyphFailed   = Color.FromArgb(255, 0xC4, 0x45, 0x3B);
 
     /// <summary>
     /// Returns the path to the .ico for the given state, generating it on first call.
@@ -56,6 +70,7 @@ internal static class IconGenerator
         {
             TrayIconState.Bridged  => BridgedFile,
             TrayIconState.Fallback => FallbackFile,
+            TrayIconState.Failed   => FailedFile,
             _                      => UnknownFile,
         };
         var icoPath = Path.Combine(outputDirectory, file);
@@ -68,6 +83,7 @@ internal static class IconGenerator
     {
         TrayIconState.Bridged  => GlyphBridged,
         TrayIconState.Fallback => GlyphFallback,
+        TrayIconState.Failed   => GlyphFailed,
         _                      => GlyphUnknown,
     };
 
