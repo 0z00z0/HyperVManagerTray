@@ -75,6 +75,35 @@ public sealed class AppConfig
     /// </summary>
     public LogLevel LogLevel { get; set; } = LogLevel.Debug;
 
+    #region Settings window placement (issue #31)
+
+    // The Settings window's last on-screen rect, in PHYSICAL SCREEN PIXELS (what AppWindow.Position /
+    // AppWindow.Size report and consume — not DIPs), so it reopens where the user left it.
+    //
+    // Kept here in config.json rather than a second store: this app already has exactly one settings
+    // file, and WinUIEx's PersistenceId is not an option — it persists through
+    // Windows.Storage.ApplicationData, which an unpackaged app like this one does not have.
+    //
+    // All four are nullable and only honoured as a complete set (WindowPlacement.TryGetSavedRect):
+    // absent (a fresh install, or a config written before this existed) means "no saved rect — use the
+    // default centred on the cursor's monitor". They serialise through the same reflection-based
+    // JsonSerializer as every other property here: camelCase on write (settingsWindowX, …),
+    // case-insensitive on read, and omitted entirely while null (DefaultIgnoreCondition.WhenWritingNull).
+
+    /// <summary>Left edge of the Settings window at last close (physical px); null = never saved.</summary>
+    public int? SettingsWindowX { get; set; }
+
+    /// <summary>Top edge of the Settings window at last close (physical px); null = never saved.</summary>
+    public int? SettingsWindowY { get; set; }
+
+    /// <summary>Width of the Settings window at last close (physical px); null = never saved.</summary>
+    public int? SettingsWindowWidth { get; set; }
+
+    /// <summary>Height of the Settings window at last close (physical px); null = never saved.</summary>
+    public int? SettingsWindowHeight { get; set; }
+
+    #endregion
+
     /// <summary>
     /// The distinct, non-empty virtual-switch names referenced by the rules — the set of
     /// bridged switches whose host vNICs may need repair.  Used by both the startup self-heal

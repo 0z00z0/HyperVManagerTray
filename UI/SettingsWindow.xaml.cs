@@ -35,10 +35,8 @@ namespace HyperVManagerTray.UI;
 /// </summary>
 internal sealed partial class SettingsWindow : Window
 {
-    // First-open size (DIPs, scaled to the monitor and capped to its work area). A comfortable
-    // reading width for the settings cards — never oversized on a large/ultrawide screen.
-    private const int DefaultWidth  = 720;
-    private const int DefaultHeight = 760;
+    // Sizing lives in WindowPlacement (Helpers) — derived from this window's real chrome and content
+    // rather than picked round, and unit-tested there without a GUI. See issue #31.
 
     private readonly ConfigManager    _config;
     private readonly StartupManager   _startup;
@@ -120,11 +118,31 @@ internal sealed partial class SettingsWindow : Window
         Margin       = new Thickness(0, 8, 0, 0),
     });
 
+    /// <summary>
+    /// Tears down the window's handlers and persists its final on-screen rect to config.json (issue
+    /// #31).  <see cref="_closed"/> is set FIRST so nothing this triggers can rebuild a window that is
+    /// going away, and the whole save is guarded: nothing may throw out of a <c>Closed</c> handler, and
+    /// a lost window rect is cosmetic — never worth taking the app down for.
+    /// </summary>
     private void OnClosed(object sender, WindowEventArgs e)
     {
         _closed = true;
         if (_startupToggle is not null) _startupToggle.Toggled         -= OnStartupToggled;
         if (_logLevelCombo is not null) _logLevelCombo.SelectionChanged -= OnLogLevelChanged;
+
+        try
+        {
+            // Only a restored window has a meaningful rect. A minimized one reports a position of
+            // roughly (-32000,-32000), and a maximized one a size that is really the screen's — saving
+            // either would reopen the window somewhere the user never put it.
+            if (AppWindow.Presenter is not OverlappedPresenter { State: OverlappedPresenterState.Restored })
+                return;
+
+            var pos  = AppWindow.Position;
+            var size = AppWindow.Size;
+            _config.SaveSettingsWindowRect(new WindowRect(pos.X, pos.Y, size.Width, size.Height));
+        }
+        catch (Exception ex) { AppInfo.AppendCrashLogLine("SettingsWindow", $"save window rect: {ex}"); }
     }
 
     // Toggles which category panel is visible. Guarded against firing during InitializeComponent (the
@@ -154,19 +172,49 @@ internal sealed partial class SettingsWindow : Window
         presenter.IsMaximizable = true;
         presenter.IsMinimizable = true;
         presenter.IsAlwaysOnTop = false;
+
+        // Issue #31 (2): without these the window could be dragged arbitrarily small, which is what
+        // triggered the row collapse. OverlappedPresenter's minimums are applied in DIP — the platform
+        // scales them by the window's CURRENT monitor DPI, which is also why they are set once here and
+        // stay correct when the window is dragged to a different-DPI screen.
+        presenter.PreferredMinimumWidth  = WindowPlacement.SettingsMinWidth;
+        presenter.PreferredMinimumHeight = WindowPlacement.SettingsMinHeight;
         AppWindow.SetPresenter(presenter);
 
         // Native, single-monitor placement — the same MonitorFromPoint path every other window in
-        // this app uses. Centre on the monitor under the cursor, capped to its work area so it is
-        // never larger than the screen. No DisplayArea.FindAll (see the class remarks).
-        var (work, scale) = NativeMethods.GetCursorMonitorMetrics();
-        int workW = work.Right  - work.Left;
-        int workH = work.Bottom - work.Top;
-        int w = Math.Min((int)Math.Round(DefaultWidth  * scale), workW);
-        int h = Math.Min((int)Math.Round(DefaultHeight * scale), workH);
+        // this app uses. No DisplayArea.FindAll (see the class remarks).
+        var rect = ComputeInitialRect();
+        try { AppWindow.MoveAndResize(rect); }
+        catch (Exception ex) { AppInfo.AppendCrashLogLine("SettingsWindow", $"MoveAndResize: {ex}"); }
+    }
 
-        AppWindow.Resize(new SizeInt32(w, h));
-        AppWindow.Move(new PointInt32(work.Left + (workW - w) / 2, work.Top + (workH - h) / 2));
+    /// <summary>
+    /// The window's opening rect (physical px): the rect saved in config.json when there is a complete
+    /// one — clamped onto a currently-connected monitor, so a rect saved on a since-unplugged screen
+    /// can't strand the window offscreen — otherwise a default centred on the monitor under the cursor
+    /// and capped to its work area, so it is never oversized on a small screen (issue #31 (1)).
+    /// </summary>
+    private RectInt32 ComputeInitialRect()
+    {
+        var cfg = _config.Current;
+        if (WindowPlacement.TryGetSavedRect(
+                cfg.SettingsWindowX, cfg.SettingsWindowY,
+                cfg.SettingsWindowWidth, cfg.SettingsWindowHeight) is { } saved)
+        {
+            // The minimums are passed in DIP and scaled inside by the DPI of the monitor the saved rect
+            // actually lands on — not the cursor's — so a rect saved on the 100 % external screen isn't
+            // floored using the 175 % laptop's scale on a mixed-DPI desktop.
+            var (x, y, w, h, _) = NativeMethods.ClampRectToNearestMonitor(
+                saved.X, saved.Y, saved.Width, saved.Height,
+                WindowPlacement.SettingsMinWidth, WindowPlacement.SettingsMinHeight);
+            return new RectInt32(x, y, w, h);
+        }
+
+        var (work, scale) = NativeMethods.GetCursorMonitorMetrics();
+        var d = WindowPlacement.DefaultRect(
+            work.Left, work.Top, work.Right, work.Bottom, scale,
+            WindowPlacement.SettingsDefaultWidth, WindowPlacement.SettingsDefaultHeight);
+        return new RectInt32(d.X, d.Y, d.Width, d.Height);
     }
 
     // ── Section composition ──────────────────────────────────────────────────────
@@ -842,14 +890,15 @@ internal sealed partial class SettingsWindow : Window
         Child           = child,
     };
 
-    /// <summary>A settings card: header (+ optional description) on the left, a control on the right.</summary>
+    /// <summary>
+    /// A settings card: header (+ optional description) on the left, a control on the right — dropping
+    /// the control beneath the text on a row too narrow for both (issue #31; see
+    /// <see cref="SettingRowPanel"/>, which owns that decision).  Child order is load-bearing: the panel
+    /// arranges <c>Children[0]</c> as the text and <c>Children[1]</c> as the control.
+    /// </summary>
     private static Border SettingRow(string header, string? description, FrameworkElement control)
     {
-        var grid = new Grid { ColumnSpacing = 12 };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-        var left = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        var left = new StackPanel { Spacing = 2 };
         left.Children.Add(new TextBlock
         {
             Text         = header,
@@ -864,14 +913,11 @@ internal sealed partial class SettingsWindow : Window
                 Opacity      = 0.7,
                 TextWrapping = TextWrapping.Wrap,
             });
-        Grid.SetColumn(left, 0);
 
-        control.VerticalAlignment = VerticalAlignment.Center;
-        Grid.SetColumn(control, 1);
-
-        grid.Children.Add(left);
-        grid.Children.Add(control);
-        return Card(grid);
+        var row = new SettingRowPanel();
+        row.Children.Add(left);
+        row.Children.Add(control);
+        return Card(row);
     }
 
     private void WithUpdatingSuppressed(Action apply)

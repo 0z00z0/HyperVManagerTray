@@ -1,7 +1,9 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Models;
 using HyperVManagerTray.Services;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -639,5 +641,127 @@ public class ConfigManagerTests : IDisposable
 
         Assert.Equal("Default Switch", roundTripped.Fallback.VirtualSwitch);
         Assert.Equal(["Alpha"],        roundTripped.Fallback.TargetVms);
+    }
+
+    // ── SaveSettingsWindowRect (issue #31) ────────────────────────────────────
+
+    [Fact]
+    public void SaveSettingsWindowRect_WritesTheRectToConfigJson()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        mgr.SaveSettingsWindowRect(new WindowRect(120, 80, 1000, 800));
+
+        var saved = ReadConfig(path);
+        Assert.Equal(120,  saved.SettingsWindowX);
+        Assert.Equal(80,   saved.SettingsWindowY);
+        Assert.Equal(1000, saved.SettingsWindowWidth);
+        Assert.Equal(800,  saved.SettingsWindowHeight);
+    }
+
+    /// <summary>
+    /// The rect must come back through the SAME reflection-based serializer the app uses (camelCase on
+    /// write, case-insensitive on read). If a property name or its nullability drifts, restore silently
+    /// falls back to the centred default and the window "forgets" its position with no error anywhere.
+    /// </summary>
+    [Fact]
+    public void SettingsWindowRect_RoundTripsAsCamelCaseJson()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        mgr.SaveSettingsWindowRect(new WindowRect(-1800, 40, 960, 760));
+
+        var json = File.ReadAllText(path);
+        Assert.Contains("\"settingsWindowX\": -1800", json);
+        Assert.Contains("\"settingsWindowY\": 40",    json);
+
+        // …and the live Current is refreshed from disk, not just the file.
+        Assert.Equal(-1800, mgr.Current.SettingsWindowX);
+        Assert.Equal(960,   mgr.Current.SettingsWindowWidth);
+    }
+
+    /// <summary>
+    /// A config that predates issue #31 has no window properties at all. They must be omitted entirely
+    /// (WhenWritingNull) rather than written as nulls — TryGetSavedRect reads "absent" as "never saved".
+    /// </summary>
+    [Fact]
+    public void SettingsWindowRect_IsOmittedFromJson_WhenNeverSaved()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        mgr.UpdateLogLevel(LogLevel.Warning);
+
+        Assert.DoesNotContain("settingsWindow", File.ReadAllText(path));
+        Assert.Null(ReadConfig(path).SettingsWindowX);
+    }
+
+    /// <summary>
+    /// The regression this guards: ConfigManager.With() rebuilds the WHOLE AppConfig for every write, so
+    /// a field it forgets is not "left alone" — it is serialised back as null and lost for good. Before
+    /// the window rect was carried through With(), merely changing the log level erased it.
+    /// </summary>
+    [Fact]
+    public void SavingAnUnrelatedSetting_PreservesTheSettingsWindowRect()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        mgr.SaveSettingsWindowRect(new WindowRect(120, 80, 1000, 800));
+
+        mgr.UpdateLogLevel(LogLevel.Warning);
+        mgr.AddBridgedRule(new NetworkRule { Name = "New", Priority = 5, VirtualSwitch = "Bridged" });
+        mgr.AddVmToConfig("Alpha", "NIC 1");
+
+        var saved = ReadConfig(path);
+        Assert.Equal(120,  saved.SettingsWindowX);
+        Assert.Equal(80,   saved.SettingsWindowY);
+        Assert.Equal(1000, saved.SettingsWindowWidth);
+        Assert.Equal(800,  saved.SettingsWindowHeight);
+        Assert.Equal(LogLevel.Warning, saved.LogLevel);
+    }
+
+    /// <summary>
+    /// Closing Settings without moving the window must not rewrite config.json — an unchanged rect is a
+    /// no-op, so a Closed handler can save unconditionally without churning the file (and without
+    /// waking the file watcher on every open/close cycle).
+    /// </summary>
+    [Fact]
+    public void SaveSettingsWindowRect_IsANoOp_WhenTheRectIsUnchanged()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        mgr.SaveSettingsWindowRect(new WindowRect(120, 80, 1000, 800));
+        var afterFirst = File.GetLastWriteTimeUtc(path);
+
+        mgr.SaveSettingsWindowRect(new WindowRect(120, 80, 1000, 800));
+
+        Assert.Equal(afterFirst, File.GetLastWriteTimeUtc(path));
+    }
+
+    /// <summary>
+    /// A rect write must NOT raise ConfigReloaded: the NetworkMonitor subscribes to it and would
+    /// schedule a network re-evaluation — which can move a VM's switch — every time the user closed the
+    /// Settings window. Current must still be refreshed, though.
+    /// </summary>
+    [Fact]
+    public void SaveSettingsWindowRect_DoesNotRaiseConfigReloaded()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        int reloads = 0;
+        mgr.ConfigReloaded += (_, _) => reloads++;
+
+        mgr.SaveSettingsWindowRect(new WindowRect(120, 80, 1000, 800));
+        Assert.Equal(0, reloads);
+        Assert.Equal(120, mgr.Current.SettingsWindowX);
+
+        // …while a real, subscriber-relevant change still does.
+        mgr.UpdateLogLevel(LogLevel.Warning);
+        Assert.Equal(1, reloads);
     }
 }

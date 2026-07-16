@@ -334,14 +334,50 @@ public sealed class ConfigManager : IDisposable
     }
 
     /// <summary>
-    /// Serialises <paramref name="updated"/> to config.json, reloads, and raises
-    /// <see cref="ConfigReloaded"/> — with the watcher paused so the write itself doesn't trigger a
-    /// second, debounced reload.  On failure the error is logged and rethrown so the caller can
-    /// surface it.  Shared by every config-mutating method.
+    /// Persists the Settings window's last on-screen rect (physical px) to config.json (issue #31), so
+    /// it reopens where the user left it.  A no-op when the rect is unchanged, so opening and closing
+    /// Settings without moving it doesn't rewrite the file.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately does NOT raise <see cref="ConfigReloaded"/> (<c>raiseReloaded: false</c>): a window
+    /// rect has no bearing on any subscriber, and the only two subscribers would both misbehave — the
+    /// <see cref="NetworkMonitor"/> would schedule a pointless network re-evaluation (which can move a
+    /// VM's switch) every time Settings is closed, and an open Settings window would rebuild all of its
+    /// sections in response to its own write.  Throws on a write failure like the other mutators; the
+    /// caller (a <c>Closed</c> handler) is expected to swallow it — a lost rect is cosmetic.
+    /// </remarks>
+    public void SaveSettingsWindowRect(WindowRect rect)
+    {
+        if (_config.SettingsWindowX      == rect.X     && _config.SettingsWindowY      == rect.Y &&
+            _config.SettingsWindowWidth  == rect.Width && _config.SettingsWindowHeight == rect.Height)
+        {
+            _logger.LogDebug("SaveSettingsWindowRect: unchanged — skipping.");
+            return;
+        }
+
+        SaveAndReload(
+            With(settingsWindowRect: rect),
+            $"Settings window rect {rect.Width}×{rect.Height} at ({rect.X},{rect.Y}) saved to {_configPath}",
+            "Failed to save the Settings window rect",
+            raiseReloaded: false);
+    }
+
+    /// <summary>
+    /// Serialises <paramref name="updated"/> to config.json, reloads, and (unless
+    /// <paramref name="raiseReloaded"/> is false) raises <see cref="ConfigReloaded"/> — with the
+    /// watcher paused so the write itself doesn't trigger a second, debounced reload.  On failure the
+    /// error is logged and rethrown so the caller can surface it.  Shared by every config-mutating
+    /// method.
     /// </summary>
     /// <param name="successMessage">Message logged on success (already fully formatted).</param>
     /// <param name="failureMessage">Message logged if the write throws.</param>
-    private void SaveAndReload(AppConfig updated, string successMessage, string failureMessage)
+    /// <param name="raiseReloaded">
+    /// False to persist and refresh <see cref="Current"/> without notifying subscribers — for a write
+    /// no subscriber cares about (see <see cref="SaveSettingsWindowRect"/>).  Defaults to true so every
+    /// existing caller keeps its current behaviour.
+    /// </param>
+    private void SaveAndReload(AppConfig updated, string successMessage, string failureMessage,
+                               bool raiseReloaded = true)
     {
         // Serialise the whole write+reload so concurrent saves queue rather than clobbering each other.
         lock (_saveLock)
@@ -353,7 +389,7 @@ public sealed class ConfigManager : IDisposable
                 _logger.LogInformation("{Message}", successMessage);
 
                 Load();
-                ConfigReloaded?.Invoke(this, _config);
+                if (raiseReloaded) ConfigReloaded?.Invoke(this, _config);
             }
             catch (Exception ex)
             {
@@ -379,13 +415,23 @@ public sealed class ConfigManager : IDisposable
         List<NetworkRule>? rules = null,
         FallbackAction? fallback = null,
         List<AdapterNameOverride>? adapterNames = null,
-        LogLevel? logLevel = null) => new()
+        LogLevel? logLevel = null,
+        WindowRect? settingsWindowRect = null) => new()
         {
             VirtualMachines = vms          ?? _config.VirtualMachines,
             Rules           = rules        ?? _config.Rules,
             Fallback        = fallback     ?? _config.Fallback,
             AdapterNames    = adapterNames ?? _config.AdapterNames,
             LogLevel        = logLevel     ?? _config.LogLevel,
+
+            // The Settings window rect (issue #31) MUST be carried through here like every other field:
+            // this method builds the object that is serialised over config.json wholesale, so a field it
+            // omits is not "left alone" — it is written back as null and permanently lost. Without these
+            // four lines, changing the log level (or any rule) would silently erase the saved rect.
+            SettingsWindowX      = settingsWindowRect?.X      ?? _config.SettingsWindowX,
+            SettingsWindowY      = settingsWindowRect?.Y      ?? _config.SettingsWindowY,
+            SettingsWindowWidth  = settingsWindowRect?.Width  ?? _config.SettingsWindowWidth,
+            SettingsWindowHeight = settingsWindowRect?.Height ?? _config.SettingsWindowHeight,
         };
 
     /// <summary>Returns the expected config.json path: next to the executable.</summary>
