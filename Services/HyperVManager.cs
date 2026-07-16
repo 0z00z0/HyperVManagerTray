@@ -18,11 +18,12 @@ namespace HyperVManagerTray.Services;
 /// <see cref="RepairHostVNicAsync"/>, the <see cref="HostVNicState"/> enum, and the SKIP / bound /
 /// repaired / reshared semantics) is unchanged, so the rest of the app is unaffected.</para>
 ///
-/// <para><b>⚠️ UNVALIDATED.</b> As of this commit the WMI sequences below have NEVER been executed
-/// against a live host — this is the deliberately-deferred prototype from issue #17. Before it can
-/// replace the PowerShell path it must pass <c>docs/wmi-switch-binding-test-protocol.md</c> on a
-/// disposable Hyper-V host. See that doc and DEVELOPMENT_NOTES.md for the atomic-bind and duplicate-vNIC
-/// history the WMI sequences are designed to preserve, and the honest list of points still uncertain.</para>
+/// <para><b>Validated live (issue #17 close-out).</b> The WMI sequences below have been exercised
+/// against a live Hyper-V host following <c>docs/wmi-switch-binding-test-protocol.md</c>: the VM
+/// follows the network in both directions, and the <see cref="FindNicConnection"/> escaping-proof
+/// correlation fix came out of that validation run. The retired PowerShell implementation is parked on
+/// the <c>parked/main-pre-wmi</c> branch. See the protocol doc and DEVELOPMENT_NOTES.md for the
+/// atomic-bind and duplicate-vNIC history these sequences preserve.</para>
 ///
 /// <para><b>Model (Microsoft Hyper-V WMI v2).</b> A switch's connections are
 /// <c>Msvm_EthernetPortAllocationSettingData</c> (EPASD) instances. An EPASD's <c>HostResource[0]</c>
