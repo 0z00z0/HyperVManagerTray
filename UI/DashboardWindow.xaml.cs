@@ -29,7 +29,7 @@ public sealed partial class DashboardWindow : Window
 
     private readonly ConfigManager  _config;
     private readonly NetworkMonitor _monitor;
-    private readonly HyperVManager  _hyperV;   // Connect-VM-NIC / switch (PowerShell, Phase 1)
+    private readonly HyperVManager  _hyperV;   // VM-NIC connect / switch binding (native WMI)
     private readonly VmService      _vm;       // status/metrics/power/IPs (WMI, event-driven)
     // Tray balloon (title, message, isError) — owned by App, which holds the TaskbarIcon; the same
     // channel TrayMenu/NetworkActions report through (issue #37), and passed with the same

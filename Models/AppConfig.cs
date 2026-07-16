@@ -77,9 +77,11 @@ public sealed class AppConfig
     public List<AdapterNameOverride> AdapterNames { get; set; } = [];
 
     /// <summary>
-    /// Minimum severity written to <c>switcher.log</c>.  One of <c>Trace</c>, <c>Debug</c>,
-    /// <c>Information</c>, <c>Warning</c>, <c>Error</c>, <c>Critical</c>, <c>None</c>.
-    /// Defaults to <c>Debug</c> so diagnostic detail (e.g. the PowerShell worker echo) is captured.
+    /// Minimum severity for the file logs — the single live gate (issue #22) shared by
+    /// <c>switcher.log</c>, <c>vm-power.log</c> and <c>ui.log</c> alike.  One of <c>Trace</c>,
+    /// <c>Debug</c>, <c>Information</c>, <c>Warning</c>, <c>Error</c>, <c>Critical</c>, <c>None</c>.
+    /// Defaults to <c>Debug</c> so diagnostic detail (e.g. rule-evaluation decisions and WMI
+    /// return codes) is captured.
     /// </summary>
     public LogLevel LogLevel { get; set; } = LogLevel.Debug;
 

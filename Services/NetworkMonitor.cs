@@ -14,7 +14,7 @@ namespace HyperVManagerTray.Services;
 public sealed class NetworkMonitor : IDisposable
 {
     private readonly ConfigManager _config;
-    private readonly HyperVManager _hyperV;   // switch binding (PowerShell)
+    private readonly HyperVManager _hyperV;   // switch binding (native WMI)
     private readonly VmService     _vm;       // VM power (WMI)
     private readonly ILogger<NetworkMonitor> _logger;
     // Dedicated "vm-power" category logger → vm-power.log (issue #20): records the automatic power
