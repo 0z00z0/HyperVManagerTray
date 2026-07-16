@@ -16,9 +16,9 @@ When you move between networks — office LAN, home Wi-Fi, mobile hotspot — th
 | Office LAN (`10.0.0.0/23`, adapter `AA:BB:CC:DD:EE:FF`) | **Bridged** switch (full LAN access) |
 | Anything else | **Default Switch** (NAT, always works) |
 
-The app watches for network changes in the background. The moment the host connects to a recognised network, the VM's NIC is silently reconnected to the right Hyper-V virtual switch. If no rule matches, it falls back to the Default Switch automatically.
+The app watches for network changes in the background. The moment the host connects to a recognised network, the VM's NIC is automatically reconnected to the right Hyper-V virtual switch. If no rule matches, it falls back to the configured fallback switch (the Hyper-V **Default Switch** on a fresh install). All Hyper-V interaction — switch binding, VM NIC reconnects, VM status and power — goes through the native Hyper-V WMI providers (`root\virtualization\v2`); no PowerShell is involved. When a reconnect or switch bind **fails**, the app says so rather than pretending: the tray icon turns red and a balloon reports what could not be done.
 
-It also includes a **WinUI 3 dashboard** (left-click the tray icon) that shows the live host-network/switch status and a control card per configured VM — state, CPU / memory / VHD-size meters, and power buttons (Start, Shutdown, Pause, Resume, Save, Connect, Start & Connect). A rule can optionally **auto-start** its VMs when its network becomes active.
+It also includes a **WinUI 3 dashboard** (left-click the tray icon) that shows the live host-network/switch status and a control card per managed VM — state, CPU / memory / VHD-size meters, and power buttons appropriate to the state. A rule can optionally **auto-start** its VMs when its network becomes active. A **Settings window** (right-click → **Settings…**) covers the whole configuration — managed VMs, network rules, fallback, adapter renaming, logging, startup — so nothing requires hand-editing a file (though that stays supported).
 
 ---
 
@@ -26,16 +26,17 @@ It also includes a **WinUI 3 dashboard** (left-click the tray icon) that shows t
 
 - Windows 11 host with **Hyper-V** enabled
 - The user account must be a member of the **Hyper-V Administrators** group (or run as Administrator)
-- The two virtual switches **Bridged** and **Default Switch** must exist in Hyper-V Virtual Switch Manager
-- To **build** from source: the .NET 10 SDK with the Windows App SDK workload. The published app is **self-contained** — no .NET or Windows App Runtime install required on the target.
+- The virtual switches your rules and fallback name must exist in Hyper-V Virtual Switch Manager (a fresh install references only the built-in **Default Switch**)
+- To **run** the installed app: the **.NET 10 Desktop Runtime**. The app is published **framework-dependent** — the installer checks for the runtime and offers to install it if missing. The Windows App SDK is bundled, so no separate Windows App Runtime install is needed.
+- To **build** from source: the .NET 10 SDK.
 
 ---
 
 ## Setup
 
 1. Run or publish the application (see below). There is **nothing to edit first** — if no `config.json` sits next to the `.exe`, the app creates a blank-slate one and tells you it did.
-2. A tray icon appears. **Left-click** it for the status dashboard + VM controls; **right-click** for the menu (manual override, add a network rule, etc.).
-3. Add your first VM from the tray, and your rules from **Settings → Network**. Hand-editing `config.json` stays fully supported ([Configuration](#configuration) below) — the file is watched, so a saved edit applies without a restart. An edit that doesn't parse is rejected and announced with a tray balloon; the settings already loaded keep running until you fix it.
+2. A tray icon appears. **Left-click** it for the status dashboard + VM controls; **right-click** for the quick-command menu (re-check the network, a temporary switch override, manage VMs) and the **Settings** window.
+3. Add your first VM from the tray's **Manage VMs** menu or from **Settings → Managed VMs**, and your rules from **Settings → Network**. Hand-editing `config.json` stays fully supported ([Configuration](#configuration) below) — the file is watched, so a saved edit applies without a restart. An edit that doesn't parse is rejected and announced with a tray balloon; the settings already loaded keep running until you fix it.
 
 > The shipped `config.json` is deliberately **empty** — no example rule, no example VM. A sample that looks configured but targets a VM you don't have is a trap, not a starting point: it matches nothing and only warns to a log file. The annotated, fully-populated example lives under [Configuration](#configuration).
 
@@ -60,7 +61,7 @@ winget install 0z00z0.HyperVManagerTray
 winget upgrade 0z00z0.HyperVManagerTray   # later, to update
 ```
 
-Or download `HyperVManagerTray-Setup.exe` from the
+Or download `HyperVManagerTray-Setup-<version>.exe` from the
 [latest release](https://github.com/0z00z0/HyperVManagerTray/releases/latest) and run it.
 
 The setup offers two optional tasks:
@@ -89,9 +90,11 @@ winget install JRSoftware.InnoSetup
 .\installer\build-installer.ps1   # auto-bumps the patch version
 ```
 
-This publishes the app fully self-contained (.NET + Windows App SDK bundled, no runtime install
-needed on the target) and compiles `installer\Output\HyperVManagerTray-Setup.exe`. See
-[`installer/README.md`](installer/README.md) for how the elevation is handled.
+This publishes the app **framework-dependent** (`--self-contained false`, with the Windows App SDK
+bundled) and compiles `installer\Output\HyperVManagerTray-Setup-<version>.exe`. Keeping the .NET
+runtime out of the payload keeps the installer small; the installer detects a missing **.NET 10
+Desktop Runtime** on the target and offers to install it (via winget, falling back to a direct
+download). See [`installer/README.md`](installer/README.md) for how the elevation is handled.
 
 > **Releases** are automated: pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`,
 > which builds + signs the installer, patches the winget manifests, creates the GitHub Release,
@@ -100,14 +103,14 @@ needed on the target) and compiles `installer\Output\HyperVManagerTray-Setup.exe
 ### Publish manually (no installer)
 
 ```powershell
-dotnet publish -c Release -r win-x64 --self-contained true -p:WindowsAppSDKSelfContained=true
+dotnet publish -c Release -r win-x64 --self-contained false -p:WindowsAppSDKSelfContained=true
 ```
 
-Output folder: `bin\Release\net10.0-windows10.0.26100.0\win-x64\publish\` (run `HyperVManagerTray.exe` from there; the `.pri` next to it is required).
+Output folder: `bin\Release\net10.0-windows10.0.26100.0\win-x64\publish\` (run `HyperVManagerTray.exe` from there; the `.pri` next to it is required). This matches what the installer ships: framework-dependent, so the machine needs the .NET 10 Desktop Runtime. Passing `--self-contained true` instead also works if you want a folder that runs without any runtime install — the shipped builds don't do this.
 
 ### Auto-start with Windows
 
-Right-click the tray icon → **Run on startup** to toggle auto-start at login.
+**Settings → General → Run on startup** toggles auto-start at login. (This toggle used to live on the tray menu; it moved to Settings.)
 
 Because this app requires elevation (UAC), it **cannot** auto-start from a `HKCU\...\Run` entry — Windows launches Run-key items with a standard token and silently skips apps that demand administrator rights. Instead, the toggle creates a **Scheduled Task** with "Run with highest privileges" and a logon trigger. The task runs in your interactive session, so the tray icon still appears, with no UAC prompt at logon.
 
@@ -142,30 +145,47 @@ schtasks /Query /TN "HyperVManagerTray" /V /FO LIST
 
 A borderless Mica popup titled **"Hyper-V Manager"** near the tray:
 
-- **HOST NETWORK** — Adapter, IP, Gateway, DNS of the active host network.
-- **Per-VM cards** (one per configured VM) — switch name and active rule shown as a subtitle; state (Running/Off/Paused/Saved); CPU / memory / VHD-size meters when running; power buttons appropriate to the state: **Start**, **Shutdown**, **Pause**, **Resume**, **Save**, **Connect**, **Start & Connect**.
+- **HOST NETWORK** — Adapter, IP, Gateway, DNS of the active host network, and the rule row reports the actual apply **outcome**, not just which rule matched.
+- **Per-VM cards** (one per **managed** VM) — switch name and active rule shown as a subtitle; state (Running/Off/Paused/Saved, plus live transition states such as "Restoring (10%)"); CPU / memory / VHD-size meters when running; power buttons appropriate to the state: **Start**, **Shutdown**, **Pause**, **Resume**, **Save**, **Connect**, **Start & Connect**. A power action shows its progress on the card and reports failure rather than going quiet.
 
-Metrics refresh every ~2 s **only while the dashboard is open**, so a closed dashboard costs no CPU.
+Metrics refresh every ~2.5 s **only while the dashboard is open**, so a closed dashboard costs no CPU.
+
+The dashboard is the app's **only** VM power surface — the tray menu deliberately carries no power verbs (see below). A consequence worth knowing: since the cards cover managed VMs only, the app offers **no power controls for unmanaged VMs** — manage the VM first (one click in the tray's Manage VMs list) or use Hyper-V Manager.
 
 ## Context menu (right-click the tray icon)
 
+The tray menu is the **quick-command surface**; the Settings window is the complete superset. Everything here (except Exit) is also reachable from Settings.
+
 | Item | Description |
 |---|---|
-| **Force Re-evaluate** | Re-runs rule matching and applies any change immediately |
-| **VM Power ▶** | Per-VM submenu: Start, Start & Connect, Shutdown, Pause, Resume, Save |
-| **Manual Override ▶** | Force a specific VM → switch combination |
-| **Add current network as bridged** | Detects the current adapter, confirms, and appends a new Bridged rule to `config.json` |
-| **Open config.json** | Opens the config file in your default `.json` editor (falls back to Explorer) |
-| **Open log file** | Opens `switcher.log` |
-| **Reload config** | Hot-reloads `config.json` without restarting |
-| **Run on startup** | Toggle auto-start at Windows login |
+| **⬆ Update available: vX.Y.Z** | Only shown when a newer release is published — opens the GitHub releases page |
+| **Re-check network now** | Re-runs rule matching, applies any change, and reports the result |
+| **Override VM switch (until next network change) ▶** | Force a managed VM onto a specific switch — transient, undone by the next network change |
+| **Manage VMs ▶** | Every VM on the host as a checkable list: a checkmark means this app manages it. Click an unmanaged VM to start managing it, a managed one to stop (with one confirmation) |
+| **Settings…** | Opens the [Settings window](#settings-window) |
+| **About…** | Version, links, licences, check for updates |
 | **Exit** | Stops the application |
+
+Items from older versions didn't vanish — they moved to Settings: **Repair host networking** and the config/log actions are under Settings → Maintenance, **Add current network as bridged** is under Settings → Network, and **Run on startup** is under Settings → General.
+
+## Settings window
+
+Right-click the tray icon → **Settings…**. Six sections in a sidebar; every change is saved to `config.json` as you make it. The window remembers its size and position between opens.
+
+| Section | What's there |
+|---|---|
+| **General** | Run on startup (the elevated scheduled task); log level for all of the app's log files |
+| **Managed VMs** | The VMs this app looks after: add or remove one, the NIC name each is reconnected through, and an optional action (pause / save / shutdown, after a configurable delay) when the bridged network is lost |
+| **Network** | The rules editor — add, edit, remove and re-prioritise rules; **Add current network** captures the live adapter's MAC and subnet in one step; the fallback switch and target VMs; the transient per-VM switch override |
+| **Adapters** | Rename a physical adapter. Note this renames the adapter's **description** (what Device Manager, Hyper-V Manager and this app show) — not its Windows connection name/alias. Renaming briefly drops that adapter's connection; only real physical NICs are listed, and a rename can be reset to the factory name |
+| **Maintenance** | Open `config.json`, open any of the three log files or the logs folder, reload the config from disk (a reload that can't parse says so and changes nothing), re-check the network, repair host networking (for the "host offline but VM online" duplicate-vNIC state after a dock cycle), check for updates |
+| **About** | The same brand/about content as the About window, embedded |
 
 ---
 
 ## Configuration
 
-`config.json` is loaded from the same directory as the executable. It is watched for changes — edits take effect immediately without a restart. If the file is missing the app writes the blank-slate default below and carries on; if an edit doesn't parse, the app keeps the last good config, says so in a tray balloon, and re-reads the file on your next save.
+`config.json` is loaded from the same directory as the executable. Everything in it can be edited from the Settings window, so hand-editing is a choice, not a requirement. It is watched for changes — edits take effect immediately without a restart. If the file is missing the app writes the blank-slate default below and carries on; if an edit doesn't parse, the app keeps the last good config, says so in a tray balloon, and re-reads the file on your next save.
 
 The default the app ships (and self-heals to) is just this — a fallback switch and nothing else:
 
@@ -185,11 +205,14 @@ Everything below is the annotated **reference** for the full format — copy fro
 
 ```jsonc
 {
+  "logLevel": "Debug",                     // Minimum severity for ALL log files; "None" disables logging
   "virtualMachines": [
     {
-      "name":          "MyVM",             // Hyper-V VM name (exact)
-      "nicName":       "Network Adapter",  // NIC name inside Hyper-V manager
-      "defaultSwitch": "Default Switch"    // Fallback switch for this VM
+      "name":                     "MyVM",             // Hyper-V VM name (exact)
+      "nicName":                  "Network Adapter",  // NIC name inside Hyper-V Manager
+      "onBridgeLostAction":       "pause",            // optional: "pause" | "save" | "shutdown" when the
+                                                      // bridged network is lost; null/"none" = do nothing
+      "onBridgeLostDelaySeconds": 30                  // wait before acting; cancelled if the bridge returns
     }
   ],
   "rules": [
@@ -212,11 +235,17 @@ Everything below is the annotated **reference** for the full format — copy fro
 }
 ```
 
+The app also writes a few keys of its own into the same file — `adapterNames` (the saved original
+descriptions behind the adapter-rename Reset) and `settingsWindow*` (the Settings window's last
+position/size). Leave them alone; they are not configuration you need to author.
+
 ### Adding a new network rule
 
-**Option A — from the tray:** Connect to the network, then right-click the tray icon → **Add current network as bridged**. The app reads the current adapter MAC and subnet automatically.
+**Option A — from Settings:** Connect to the network, then **Settings → Network → Add current network**. The app reads the current adapter's MAC and subnet automatically. (This action used to live on the tray menu.)
 
-**Option B — manually:** Add an object to the `rules` array in `config.json`. Both `adapterMac` and `ipCidr` are optional; omitting both means the rule matches any active adapter.
+**Option B — the rules editor:** **Settings → Network → Add rule** gives a blank rule to fill in by hand.
+
+**Option C — manually:** Add an object to the `rules` array in `config.json`. Both `adapterMac` and `ipCidr` are optional; omitting both means the rule matches any active adapter.
 
 ---
 
@@ -230,15 +259,21 @@ HyperVManagerTray/
 │  ├─ NetworkMonitor.cs        watches NICs, debounces, drives switch changes
 │  ├─ AdapterMatcher.cs        rule evaluation (MAC + CIDR), adapter selection
 │  ├─ VmService.cs             VM status/metrics/power/guest IPs via native WMI (event-driven)
-│  ├─ HyperVManager.cs         switch binding + host-vNIC repair via powershell.exe (Phase 2 will move this to WMI too)
-│  ├─ ConfigManager.cs         loads/watches config.json
-│  ├─ StartupManager.cs        "run at startup" scheduled task
+│  ├─ HyperVManager.cs         switch binding + host-vNIC repair via native WMI
+│  ├─ SwitchWmiHelpers.cs      pure classification/matching logic behind HyperVManager
+│  ├─ HostInventory.cs         one cold read of the host's VMs/switches/adapters for Settings
+│  ├─ ConfigManager.cs         loads/watches/writes config.json
+│  ├─ StartupManager.cs        "run at startup" scheduled task (schtasks)
+│  ├─ UpdateChecker.cs         GitHub release check behind the update badge
 │  ├─ ProcessRunner.cs         shared process-spawning helper (timeout, stream capture)
-│  └─ FileLogger.cs            minimal ILogger file sink
+│  └─ FileLogger.cs            category-routing ILogger file sink (switcher/vm-power/ui logs)
 ├─ Models/                  POCOs: AppConfig, NetworkRule, VmTarget, VmStatus, DiscoveredVm, VmOperation
-├─ UI/                      DashboardWindow (Mica popup + VM cards), TrayMenu
-├─ Helpers/                 AppColors, IconGenerator, NativeMethods, RelayCommand, WmiVmMapper
-├─ Tests/                   xUnit tests (links the pure Services/Models sources)
+├─ UI/                      DashboardWindow (Mica popup + VM cards), SettingsWindow (sidebar + editors),
+│                           TrayMenu, RenameAdapterWindow + AdapterRenameFlow, shared action classes
+│                           (NetworkActions, ManagedVmActions), UpdatePrompt, UiActivityLog
+├─ Helpers/                 icon generation, adapter renaming (SetupAPI), window placement,
+│                           title-bar theming, UI text builders, WMI mapping, small shared utilities
+├─ Tests/                   xUnit tests (links the pure Services/Models/Helpers sources)
 ├─ installer/              per-user Inno Setup installer (.iss + build script)
 └─ config.json             blank-slate default (shipped next to the exe; also written on first run if absent)
 ```
@@ -249,10 +284,12 @@ HyperVManagerTray/
 dotnet test
 ```
 
-`Tests/` is a small xUnit project covering the pure logic — CIDR/MAC matching (`AdapterMatcher`),
-the VM status maths (`VmStatus`), and the `config.json` contract (including `autoStart`). It
-**links** the relevant source files rather than referencing the WinUI app, so `dotnet test` needs
-no Windows App SDK runtime. The UI/Hyper-V layers are exercised by building and running the app.
+`Tests/` is an xUnit project (745 tests) covering the pure logic — CIDR/MAC matching
+(`AdapterMatcher`), the VM status maths (`VmStatus`), the `config.json` contract, the WMI
+classification helpers (`SwitchWmiHelpers`, `WmiVmMapper`), log routing (`FileLogger`), and the
+UI's text/state helpers. It **links** the relevant source files rather than referencing the WinUI
+app, so `dotnet test` needs no Windows App SDK runtime. The windows themselves and the live WMI
+calls are exercised by building and running the app, not by this suite.
 
 ## Development notes
 
@@ -265,7 +302,7 @@ the app talks to Hyper-V or the host network.
 ## Built with
 
 - **Language / UI:** C# on **.NET 10**, **WinUI 3 / Windows App SDK** (`net10.0-windows10.0.26100.0`, unpackaged, Mica backdrop)
-- **OS integration:** Win32 P/Invoke (`iphlpapi.dll` `GetBestInterface`, `user32.dll`/`Shcore.dll` for popup positioning + message boxes); VM status/metrics/power/guest IPs via native WMI (`root\virtualization\v2`, `System.Management`) — event-driven, no polling; switch binding + host-vNIC repair still via the Windows-bundled `powershell.exe`; `schtasks.exe` for the auto-start task
+- **OS integration:** Win32 P/Invoke (`iphlpapi.dll` `GetBestInterface`, `user32.dll`/`Shcore.dll` for popup positioning + message boxes, SetupAPI for the adapter rename); all Hyper-V interaction — VM status/metrics/power/guest IPs, switch binding, host-vNIC repair — via native WMI (`root\virtualization\v2`, `System.Management`), event-driven and PowerShell-free (metrics poll only while the dashboard is open); `schtasks.exe` for the auto-start and auto-update tasks
 
 ## External libraries
 
@@ -278,7 +315,7 @@ Every third-party package the app references (`HyperVManagerTray.csproj`):
 | [H.NotifyIcon.WinUI](https://github.com/HavenDV/H.NotifyIcon) | 2.4.1 | HavenDV | System-tray icon + native context menu for WinUI 3 | MIT |
 | [System.Drawing.Common](https://www.nuget.org/packages/System.Drawing.Common) | 10.0.8 | Microsoft | Renders the tray `.ico` at runtime | MIT |
 | [Microsoft.Extensions.Logging](https://www.nuget.org/packages/Microsoft.Extensions.Logging) | 10.0.8 | Microsoft | Logging abstraction; output goes to a small custom file sink | MIT |
-| [System.Management](https://www.nuget.org/packages/System.Management) | 10.0.8 | Microsoft | WMI access (`root\virtualization\v2`) for VM status/power — replaces PowerShell polling | MIT |
+| [System.Management](https://www.nuget.org/packages/System.Management) | 10.0.8 | Microsoft | WMI access (`root\virtualization\v2`) for VM status/power and switch binding — replaced the earlier PowerShell path | MIT |
 
 ¹ The NuGet packages ship under the Microsoft Software License Terms; the Windows App SDK
 *source* is MIT on [GitHub](https://github.com/microsoft/WindowsAppSDK).
@@ -334,12 +371,17 @@ Jordan Russell & Martijn Laan (free, with attribution under its license), and di
 
 ## Logging
 
-Logs are written to:
-```
-%APPDATA%\HyperVManagerTray\switcher.log
-```
+Logs are written to `%APPDATA%\HyperVManagerTray\`, split by concern:
 
-Each switch change, rule evaluation, and error is recorded there.
+| File | What lands there |
+|---|---|
+| `switcher.log` | Switch changes, rule evaluation, network events, errors — the catch-all |
+| `vm-power.log` | A begin + outcome audit line for every VM power action, with its origin |
+| `ui.log` | Tray-menu commands, window open/close, rename-flow events |
+
+One setting governs all three: the log level in **Settings → General** (or `logLevel` in
+`config.json`); `None` silences them. A crash additionally writes `crash.log` in the same folder.
+All files are openable from **Settings → Maintenance**.
 
 ---
 
@@ -347,8 +389,10 @@ Each switch change, rule evaluation, and error is recorded there.
 
 | Symptom | Likely cause |
 |---|---|
-| UAC prompt on every launch | Normal — required for Hyper-V access. Enable **Run on startup** for a prompt-free elevated auto-start. |
+| UAC prompt on every launch | Normal — required for Hyper-V access. Enable **Settings → General → Run on startup** for a prompt-free elevated auto-start. |
 | Status shows "Fallback" on the office LAN | MAC or CIDR in the rule does not match — check `switcher.log` |
-| VM card shows "Unknown" / no CPU·memory meters | The `config.json` VM name doesn't match a VM on the host, or the VM isn't running (only running VMs report metrics) |
-| Switch change fails silently | User account lacks Hyper-V Administrator rights |
+| VM card shows "Unknown" / no CPU·memory meters | The configured VM name doesn't match a VM on the host, or the VM isn't running (only running VMs report metrics) |
+| Tray icon turns red / a balloon reports a failure | A switch bind or VM reconnect failed — commonly the account lacks Hyper-V Administrator rights, or the named switch doesn't exist. Details in `switcher.log`. |
+| Host has no network but the VM does (after a dock cycle) | A duplicate host vNIC — **Settings → Maintenance → Repair host networking** |
 | Dashboard opens blank / `0xC000027B` at startup | The `.pri` resource index isn't next to the exe — re-run the installer or copy the whole publish folder |
+| App won't start after a manual (non-installer) copy | The .NET 10 Desktop Runtime is missing — the build is framework-dependent (the installer normally handles this) |
