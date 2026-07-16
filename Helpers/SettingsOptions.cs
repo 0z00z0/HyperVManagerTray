@@ -1,3 +1,4 @@
+using HyperVManagerTray.Models;
 using HyperVManagerTray.Services;
 using Microsoft.Extensions.Logging;
 
@@ -56,6 +57,21 @@ public static class SettingsOptions
     /// <summary>Clamps a delay to a sane range [0, 86400]; negatives (a hand-edited config) fall back to the model default of 30.</summary>
     public static int NormalizeDelaySeconds(int seconds) =>
         seconds < 0 ? 30 : Math.Min(seconds, 86_400);
+
+    /// <summary>
+    /// The delay <c>NetworkMonitor</c> actually waits before running a VM's on-bridge-lost action — the
+    /// single place that answers "how long?", so the picker and the monitor cannot disagree.
+    ///
+    /// <para><b>0 is a value, not a sentinel.</b> <see cref="BridgeLostDelaySeconds"/> offers 0 and
+    /// <see cref="FormatDelay"/> renders it "Immediate": it is user-selectable and correctly persisted.
+    /// The monitor used to read it inline as <c>delay &gt; 0 ? delay : 30</c>, treating the user's
+    /// explicit "Immediate" as "unset" and silently waiting 30 s instead — so the picker stated a delay
+    /// the app did not honour. "Unset" needs no sentinel here and never did: it is already handled where
+    /// it belongs, by <c>VmTarget.OnBridgeLostDelaySeconds</c>'s own default of 30, so an omitted value
+    /// never arrives as 0 in the first place.</para>
+    /// </summary>
+    public static int EffectiveBridgeLostDelaySeconds(VmTarget vm) =>
+        NormalizeDelaySeconds(vm.OnBridgeLostDelaySeconds);
 
     /// <summary>
     /// Human label for a delay in seconds ("Immediate" for 0, "45 s", "1 min 30 s", "5 min",

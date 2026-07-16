@@ -147,19 +147,28 @@ public static class NetworkStatusUi
     /// <summary>
     /// The balloon text for a failed apply, mirroring <c>App.OnVmOperationFailed</c>'s treatment of a
     /// failed power action. Names the switch and the adapter the bind targeted (the two things the user
-    /// needs to check) and points at the log for the underlying WMI error. Returns null when
-    /// <paramref name="status"/> is not a failure — there is nothing to report.
+    /// needs to check) and points at the log for the underlying WMI error. Returns null when the
+    /// result is not a failure — there is nothing to report.
+    ///
+    /// <para><b>Takes the whole <see cref="MatchResult"/> on purpose.</b> It previously took a loose
+    /// <c>adapterName</c> string, and both call sites passed <see cref="MatchResult.HostAdapterName"/> —
+    /// the DisplayNameResolver's <i>description</i> ("Realtek USB GbE Family Controller") — while this
+    /// message is about the bind, which targets <see cref="MatchResult.HostAdapterInterfaceName"/> (the
+    /// OS alias, "Ethernet 5"). Two adapters can share a description, so the one message the user reads
+    /// when the network is broken named a string that need not identify the adapter that actually
+    /// failed. That is the exact description-vs-alias conflation <c>docs/STYLE.md</c> exists to
+    /// eliminate. Selecting the field HERE, once, means no call site can reintroduce it.</para>
     /// </summary>
-    public static string? FailureMessage(
-        SwitchApplyStatus status, string switchName, string adapterName, IReadOnlyList<string> failedVms) => status switch
+    public static string? FailureMessage(MatchResult result) => result.ApplyStatus switch
     {
         // "virtual switch", not a bare "switch" (issue #42): each of these is read alone in a balloon,
         // so each is a first mention, and "switch" next to "network" in the same sentence is precisely
         // the pair the pinned vocabulary exists to keep apart.
         SwitchApplyStatus.BindFailed =>
-            $"Could not bind virtual switch '{switchName}' to '{adapterName}'. The VM is not on this network — see switcher.log.",
+            $"Could not bind virtual switch '{result.VirtualSwitch}' to '{result.HostAdapterInterfaceName}'. " +
+            "The VM is not on this network — see switcher.log.",
         SwitchApplyStatus.VmConnectFailed =>
-            $"Could not connect {DescribeVms(failedVms)} to virtual switch '{switchName}' — see switcher.log.",
+            $"Could not connect {DescribeVms(result.FailedVms)} to virtual switch '{result.VirtualSwitch}' — see switcher.log.",
         _ => null,
     };
 
@@ -174,13 +183,12 @@ public static class NetworkStatusUi
     /// whether any WMI write actually occurred is not known at this level — and asserting "no change"
     /// without knowing would be the exact overclaim this issue is about.</para>
     /// </summary>
-    public static string ReCheckMessage(
-        string ruleName, string switchName, SwitchApplyStatus status, string adapterName, IReadOnlyList<string> failedVms)
+    public static string ReCheckMessage(MatchResult result)
     {
-        var headline = $"Re-checked: {ruleName} → {switchName}";
-        var failure  = FailureMessage(status, switchName, adapterName, failedVms);
+        var headline = $"Re-checked: {result.RuleName} → {result.VirtualSwitch}";
+        var failure  = FailureMessage(result);
         if (failure is not null) return $"{headline}\n\n{failure}";
-        return status == SwitchApplyStatus.Applied
+        return result.ApplyStatus == SwitchApplyStatus.Applied
             ? headline
             : $"{headline}\n\nThe result could not be confirmed — see switcher.log.";
     }

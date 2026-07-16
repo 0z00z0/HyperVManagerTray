@@ -117,30 +117,45 @@ public sealed class NetworkMonitor : IDisposable
                 var result = AdapterMatcher.Evaluate(_config.Current);
                 _logger.LogInformation("Evaluated: rule='{Rule}' switch='{Switch}'", result.RuleName, result.VirtualSwitch);
 
-                bool switchUnchanged = _lastApplied?.VirtualSwitch == result.VirtualSwitch &&
-                                       _lastApplied?.TargetVms.SequenceEqual(result.TargetVms) == true;
-                if (switchUnchanged)
+                // Skip the apply pass only when the last pass CONFIRMED this exact outcome — same rule,
+                // switch, host adapter and target VMs, and it actually succeeded. See
+                // MatchResult.ConfirmsSameOutcomeFor for why each clause is load-bearing; in short, the
+                // old guard tested only switch+VMs, which both (a) skipped a required rebind when a
+                // different rule pointed the same switch at a different adapter, and (b) made the
+                // bind-failure retry unreachable by short-circuiting before the retry path could run.
+                if (_lastApplied is { } confirmed && confirmed.ConfirmsSameOutcomeFor(result))
                 {
-                    // Same Hyper-V switch — skip rebind to avoid a VM network drop. But the
-                    // host adapter/IP/gateway may have changed (e.g. two different mobile
-                    // networks both resolving to Fallback), so still update _lastApplied and
-                    // fire SwitchApplied so the dashboard reflects the current network.
-                    // Also run bridge-transition detection: an adapter change that keeps the
-                    // same switch might cross a bridge-lost or bridge-restored boundary and
-                    // needs to schedule or cancel the per-VM disconnect actions.
+                    // Same rule, switch, adapter and VMs, and the last pass confirmed it — skip the
+                    // rebind, which would drop the VM's network for nothing. The IP/gateway/DNS may
+                    // still have moved underneath it (a DHCP renew, or the same adapter roaming between
+                    // two networks that resolve to the same rule), so still update _lastApplied and fire
+                    // SwitchApplied for the dashboard.
                     _logger.LogDebug("No switch change needed");
-                    HandleBridgeTransition(_lastApplied?.RuleName, result);
+
+                    // A no-op under the current guard — every bridge transition is a RULE change
+                    // (to or from "Fallback"), and the guard admits only an identical rule, so both
+                    // flags are necessarily false here. Kept deliberately: it is the one line that
+                    // kept this fast path correct when the guard was looser, and a future guard that
+                    // stops comparing RuleName would silently start missing bridge-lost actions
+                    // without it. Cheap insurance against a re-loosening.
+                    HandleBridgeTransition(confirmed.RuleName, result);
 
                     // Nothing was applied on this pass, so this result has no outcome of its own — carry
-                    // the previous pass's outcome forward (issue #37). The switch and target VMs are
-                    // identical to _lastApplied (that is what switchUnchanged tested), so the last
-                    // confirmed outcome is still the true one. Publishing the default NotEvaluated here
-                    // would flick the icon to grey on every no-change network blip; publishing an
+                    // the previous pass's outcome forward (issue #37). That is sound here and ONLY here:
+                    // the guard above established that the previous pass confirmed Applied for this exact
+                    // rule/switch/adapter/VM set, so the fact still holds. Publishing the default
+                    // NotEvaluated would flick the icon to grey on every no-change network blip; an
                     // optimistic Applied would be the exact lie #37 exists to remove.
+                    //
+                    // A non-Applied status is deliberately NOT reachable here — it fails the guard and
+                    // routes to ApplyAsync, which re-attempts and stamps a fresh outcome. Carrying a
+                    // FAILURE forward would assert a stale snapshot as durable truth and strand the
+                    // retry. Applied implies no failed VMs (NetworkStatusUi.Classify), so FailedVms is
+                    // empty by construction rather than by copy.
                     result = result with
                     {
-                        ApplyStatus = _lastApplied?.ApplyStatus ?? NetworkStatusUi.SwitchApplyStatus.NotEvaluated,
-                        FailedVms   = _lastApplied?.FailedVms   ?? [],
+                        ApplyStatus = NetworkStatusUi.SwitchApplyStatus.Applied,
+                        FailedVms   = [],
                     };
 
                     _lastApplied = result;
@@ -186,7 +201,9 @@ public sealed class NetworkMonitor : IDisposable
             // network now" command on the UI thread, so run the enumeration on the thread pool to keep
             // the UI responsive (issue #29, finding 3). The debounce path already runs on a timer thread.
             var result = await Task.Run(() => AdapterMatcher.Evaluate(_config.Current));
-            return await ApplyAsync(result);
+            // userInitiated: the tray's "Re-check network now" reports this result itself (including the
+            // failure), so the automatic balloon must not also fire and contradict it.
+            return await ApplyAsync(result, userInitiated: true);
         }
         catch (Exception ex)
         {
@@ -226,7 +243,9 @@ public sealed class NetworkMonitor : IDisposable
     public async Task<OverrideOutcome> ManualOverrideAsync(string vmName, string switchName)
     {
         _logger.LogInformation("Manual override: {Vm} → {Switch}", vmName, switchName);
-        if (_config.Current.VirtualMachines.FirstOrDefault(v => v.Name == vmName) is not { } vm)
+        // One shared, case-insensitive lookup — see VmConfigUi.FindManagedVm for why an ordinal compare
+        // here reported a config the app's own pickers created as an unmanaged VM.
+        if (VmConfigUi.FindManagedVm(_config.Current.VirtualMachines, vmName) is not { } vm)
         {
             _logger.LogWarning("Manual override: VM '{Vm}' not found in config — nothing done", vmName);
             // Nothing was attempted, so nothing is published: _lastApplied still describes the state the
@@ -247,6 +266,9 @@ public sealed class NetworkMonitor : IDisposable
             ApplyStatus = ok ? NetworkStatusUi.SwitchApplyStatus.Applied
                              : NetworkStatusUi.SwitchApplyStatus.VmConnectFailed,
             FailedVms   = ok ? [] : new[] { vmName },
+            // The override menu command reports this outcome itself (and can distinguish "not a managed
+            // VM", which this path can't), so the automatic balloon stands down — one action, one report.
+            UserInitiated = true,
         };
         _lastApplied = result;
         SwitchApplied?.Invoke(this, result);
@@ -259,8 +281,12 @@ public sealed class NetworkMonitor : IDisposable
     /// That stamped result is what <see cref="_lastApplied"/> holds and what
     /// <see cref="SwitchApplied"/> publishes, so every status surface renders the outcome rather than
     /// the intent (issue #37).
+    ///
+    /// <para><paramref name="userInitiated"/> marks a pass a user explicitly asked for. It rides on the
+    /// published <see cref="MatchResult.UserInitiated"/> so the automatic failure balloon can stand down
+    /// and leave the report to the command that ran the pass — one action, one report.</para>
     /// </summary>
-    private async Task<MatchResult> ApplyAsync(MatchResult result)
+    private async Task<MatchResult> ApplyAsync(MatchResult result, bool userInitiated = false)
     {
         // Capture the previously-active rule before any state changes so autostart and
         // bridge-transition detection both see a consistent before/after snapshot.
@@ -316,7 +342,10 @@ public sealed class NetworkMonitor : IDisposable
         var failedVms = new List<string>();
         foreach (var vmName in result.TargetVms)
         {
-            var vm = _config.Current.VirtualMachines.FirstOrDefault(v => v.Name == vmName);
+            // Same shared lookup as ManualOverrideAsync (VmConfigUi.FindManagedVm). A casing-only
+            // mismatch is worse here: it lands in failedVms below, so the pass reports VmConnectFailed
+            // and pins a red icon for a VM that is present and perfectly connectable.
+            var vm = VmConfigUi.FindManagedVm(_config.Current.VirtualMachines, vmName);
             if (vm is null)
             {
                 // A rule targets a VM that isn't in config (typically a typo in TargetVms): its NIC name
@@ -337,7 +366,7 @@ public sealed class NetworkMonitor : IDisposable
 
         // Stamp the outcome onto the result BEFORE it is published/remembered — from here on this is
         // what the icon, tooltip and dashboard render.
-        result = result with { ApplyStatus = status, FailedVms = failedVms };
+        result = result with { ApplyStatus = status, FailedVms = failedVms, UserInitiated = userInitiated };
 
         // Per-network autostart: when this rule has just become active and opts in, start (or
         // resume) its target VMs.  Never auto-stop on leaving — by design.
@@ -403,7 +432,10 @@ public sealed class NetworkMonitor : IDisposable
 
                 var cts      = new CancellationTokenSource();
                 var vmName   = vm.Name;
-                var delaySec = vm.OnBridgeLostDelaySeconds > 0 ? vm.OnBridgeLostDelaySeconds : 30;
+                // One source of truth for "how long?", shared with the Settings picker — see
+                // SettingsOptions.EffectiveBridgeLostDelaySeconds for why 0 ("Immediate") is a real
+                // value and must not be read as "unset". This was `delay > 0 ? delay : 30` inline.
+                var delaySec = SettingsOptions.EffectiveBridgeLostDelaySeconds(vm);
                 _pendingDisconnect[vmName] = cts;
 
                 _logger.LogInformation(

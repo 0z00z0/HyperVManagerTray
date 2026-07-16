@@ -30,6 +30,11 @@
          SwitchBindOutcome enum below — deliberately NOT on HyperVManager.cs, which is the live-host
          WMI mutator and must never be linked into the test assembly. -->
     <Compile Include="..\Helpers\NetworkStatusUi.cs"  Link="Linked\NetworkStatusUi.cs" />
+    <!-- The announce/suppress decision behind the failed-apply balloon, lifted out of App.xaml.cs so
+         its two rules are testable without a WinUI host: a user command owns its own report (no double
+         toast), and only a balloon actually SHOWN may be latched as announced. State, but no IO and no
+         WinUI — it consumes NetworkStatusUi.FailureMessage's output and only decides whether to say it. -->
+    <Compile Include="..\Helpers\FailureAnnouncer.cs" Link="Linked\FailureAnnouncer.cs" />
     <!-- Issues #34/#47: the managed-VM set arithmetic and copy behind the tray's Manage VMs list and
          Settings' add/remove. Pure (no WinUI), which is what lets it be linked and tested here. -->
     <Compile Include="..\Helpers\VmConfigUi.cs"       Link="Linked\VmConfigUi.cs" />

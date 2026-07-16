@@ -379,12 +379,11 @@ public partial class App : Application
                     suppressWhenDashboardVisible: true);
     }
 
-    // The failure last balloon'd, so a persisting failure isn't re-announced on every NetworkChange.
-    // SwitchApplied fires on every network blip — including the "no switch change needed" fast path,
-    // which carries the previous outcome forward — so without this a single failed bind would toast
-    // repeatedly while the user is doing nothing about it. Cleared on a successful apply, so a genuinely
-    // NEW failure always announces itself.
-    private string? _lastNotifiedFailure;
+    // Decides whether a failed apply is announced, and remembers what actually WAS announced so a
+    // persisting failure isn't re-toasted on every NetworkChange (SwitchApplied fires on every blip,
+    // including the "no change needed" fast path). It also keeps this automatic balloon quiet for passes
+    // a user command already reports. See Helpers/FailureAnnouncer for both rules and why they exist.
+    private readonly FailureAnnouncer _applyFailure = new();
 
     /// <summary>
     /// Balloons a failed switch-apply (issue #37), mirroring <see cref="OnVmOperationFailed"/>: the
@@ -395,19 +394,14 @@ public partial class App : Application
     {
         try
         {
-            var message = NetworkStatusUi.FailureMessage(
-                result.ApplyStatus, result.VirtualSwitch, result.HostAdapterName, result.FailedVms);
-            if (message is null)
-            {
-                _lastNotifiedFailure = null;   // recovered — re-arm for the next failure
-                return;
-            }
+            var message = _applyFailure.Next(NetworkStatusUi.FailureMessage(result), result.UserInitiated);
+            if (message is null) return;
 
-            if (message == _lastNotifiedFailure) return;   // same failure, still unresolved — say it once
-            _lastNotifiedFailure = message;
-
+            // Latch inside onShown, not here: ShowBalloon may suppress the toast when the dashboard is
+            // visible, and a message marked announced but never shown would never be shown again.
             ShowBalloon($"{AppInfo.Name} — network", message,
-                        isError: true, suppressWhenDashboardVisible: true);
+                        isError: true, suppressWhenDashboardVisible: true,
+                        onShown: () => _applyFailure.MarkAnnounced(message));
         }
         catch (Exception ex) { LogCrash("Failed-apply tray toast", ex); }
     }
@@ -416,19 +410,28 @@ public partial class App : Application
     /// Posts a tray balloon from any thread. <paramref name="suppressWhenDashboardVisible"/> skips it
     /// when the dashboard is up and already showing the same information inline. Never throws — a
     /// notification failure must not take the app down.
+    ///
+    /// <para><paramref name="onShown"/> runs on the UI thread only if the notification was genuinely
+    /// posted — i.e. not suppressed and not thrown out. Callers that dedupe repeat announcements must
+    /// record the message HERE rather than before the call: whether the balloon is shown is decided
+    /// inside this lambda (it needs the dashboard's visibility on the UI thread), so a caller that
+    /// latches up front records toasts that were never shown.</para>
     /// </summary>
-    private void ShowBalloon(string title, string message, bool isError, bool suppressWhenDashboardVisible)
+    private void ShowBalloon(string title, string message, bool isError, bool suppressWhenDashboardVisible,
+                             Action? onShown = null)
     {
         _ui.TryEnqueue(() =>
         {
             try
             {
                 if (suppressWhenDashboardVisible && _dashboard is { } d && d.AppWindow.IsVisible) return;
-                _trayIcon?.ShowNotification(
+                if (_trayIcon is null) return;   // nothing was shown — onShown must not claim otherwise
+                _trayIcon.ShowNotification(
                     title: title,
                     message: message,
                     icon: isError ? H.NotifyIcon.Core.NotificationIcon.Error
                                   : H.NotifyIcon.Core.NotificationIcon.Info);
+                onShown?.Invoke();
             }
             catch (Exception ex) { LogCrash("Tray balloon", ex); }
         });

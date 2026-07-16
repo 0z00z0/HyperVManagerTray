@@ -20,6 +20,23 @@ namespace HyperVManagerTray.Helpers;
 public static class VmConfigUi
 {
     /// <summary>
+    /// The managed VM with this name, or null if this app doesn't manage it — the single lookup behind
+    /// "is this VM ours, and what is its NIC called?".
+    ///
+    /// <para><b>Case-insensitive, like every other name comparison on this surface.</b> Hyper-V VM names
+    /// are case-insensitive, and the two surfaces that produce one disagree on casing by construction:
+    /// the "Start managing a VM" prompt (issue #47) takes free text, so a user types <c>devbox</c>, while
+    /// the "Add VM" picker (issue #41) sources <see cref="UnmanagedVms"/> from the host inventory and
+    /// therefore carries Hyper-V's own <c>DevBox</c>. <c>NetworkMonitor</c> used to look these up with an
+    /// ordinal <c>==</c> — the only such compare left in the app — so a config the app's OWN pickers
+    /// created could fail to match, and since issue #37 escalated that miss from a log line to a
+    /// permanent failure state, the result was a pinned red icon and a VM that was never reconnected.
+    /// Centralising the lookup here is what stops a third caller re-deriving it a fourth way.</para>
+    /// </summary>
+    public static Models.VmTarget? FindManagedVm(IEnumerable<Models.VmTarget>? managedVms, string vmName) =>
+        managedVms?.FirstOrDefault(v => string.Equals(v.Name, vmName, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
     /// The VMs on the host that this app does NOT manage — the set the "Manage VMs" list offers to add,
     /// and the set Settings' add-picker suggests. Case-insensitive (Hyper-V VM names are), de-duplicated,
     /// and ordered by name so the menu doesn't reshuffle between opens.

@@ -1,4 +1,5 @@
 using HyperVManagerTray.Helpers;
+using HyperVManagerTray.Models;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
@@ -322,4 +323,47 @@ public class SettingsOptionsTests
         var handTyped = SettingsOptions.ParseVmLines("Alpha\r\nBeta");
         Assert.Equal(handTyped, picked);
     }
+
+    // ── The on-bridge-lost delay the monitor actually honours ────────────────────
+
+    /// <summary>
+    /// THE defect: 0 is a real, user-selectable delay ("Immediate"), not a "not set" sentinel. The
+    /// monitor read it as <c>delay &gt; 0 ? delay : 30</c> and waited 30 s instead — so a VM the user
+    /// told to pause immediately on losing the bridge sat running for half a minute, and the picker
+    /// stated a delay the app did not honour.
+    /// </summary>
+    [Fact]
+    public void EffectiveBridgeLostDelaySeconds_ZeroMeansImmediateNotUnset()
+    {
+        var vm = new VmTarget { Name = "Alpha", OnBridgeLostAction = "pause", OnBridgeLostDelaySeconds = 0 };
+
+        Assert.Equal(0, SettingsOptions.EffectiveBridgeLostDelaySeconds(vm));
+        Assert.Equal("Immediate", SettingsOptions.FormatDelay(SettingsOptions.EffectiveBridgeLostDelaySeconds(vm)));
+    }
+
+    /// <summary>"Unset" needs no sentinel: the model's own default supplies 30, so an omitted value
+    /// never reaches the monitor as 0. This is why dropping the ternary loses nothing.</summary>
+    [Fact]
+    public void EffectiveBridgeLostDelaySeconds_OmittedValueStillDefaultsTo30() =>
+        Assert.Equal(30, SettingsOptions.EffectiveBridgeLostDelaySeconds(new VmTarget { Name = "Alpha" }));
+
+    // Every value the picker offers must survive to the monitor exactly as chosen.
+    [Fact]
+    public void EffectiveBridgeLostDelaySeconds_EveryPresetSurvivesUnchanged()
+    {
+        foreach (var preset in SettingsOptions.BridgeLostDelaySeconds)
+        {
+            var vm = new VmTarget { Name = "Alpha", OnBridgeLostDelaySeconds = preset };
+            Assert.Equal(preset, SettingsOptions.EffectiveBridgeLostDelaySeconds(vm));
+        }
+    }
+
+    // A hand-edited negative is still clamped to the model default, and an absurd value to the cap —
+    // the monitor and the picker apply the same clamp because they call the same helper.
+    [Theory]
+    [InlineData(-5, 30)]
+    [InlineData(999_999, 86_400)]
+    public void EffectiveBridgeLostDelaySeconds_ClampsHandEditedValues(int stored, int expected) =>
+        Assert.Equal(expected, SettingsOptions.EffectiveBridgeLostDelaySeconds(
+            new VmTarget { Name = "Alpha", OnBridgeLostDelaySeconds = stored }));
 }
