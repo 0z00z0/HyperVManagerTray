@@ -44,11 +44,36 @@ public sealed class ConfigManager : IDisposable
     // so a ConfigReloaded subscriber that re-enters on the same thread can't self-deadlock.
     private readonly object _saveLock = new();
 
-    /// <summary>Raised after the config is reloaded (file change or rule addition).</summary>
+    /// <summary>Raised after the config is reloaded (file change or rule addition). NOT raised when a
+    /// reload FAILED — see <see cref="OnDebounceElapsed"/>: nothing was reloaded, so telling subscribers
+    /// otherwise would hand them stale data dressed as fresh (issue #39).</summary>
     public event EventHandler<AppConfig>? ConfigReloaded;
 
-    /// <summary>The most recently loaded configuration.</summary>
+    /// <summary>
+    /// Raised (at most once per broken save — see <see cref="_failureAnnounced"/>) when an unsolicited
+    /// reload could not parse config.json, so the app is still running on the previous settings and the
+    /// user's edit did NOT take effect (issue #39). The subscriber is expected to say so out loud.
+    /// Startup is deliberately NOT routed through this event — no one is subscribed yet when the
+    /// constructor runs; check <see cref="LastLoad"/> instead.
+    /// </summary>
+    public event EventHandler<ConfigLoadOutcome>? ConfigLoadFailed;
+
+    /// <summary>The most recently loaded configuration. After a FAILED load this still holds the
+    /// previous, successfully-loaded config — never a half-parsed or empty one.</summary>
     public AppConfig Current => _config;
+
+    /// <summary>
+    /// The outcome of the most recent <see cref="Load"/>. Exists mainly so startup can detect a corrupt
+    /// config.json (which the constructor's own Load hits before any <see cref="ConfigLoadFailed"/>
+    /// subscriber can exist) and surface it rather than silently starting on an empty default.
+    /// </summary>
+    public ConfigLoadOutcome LastLoad { get; private set; } = ConfigLoadOutcome.Success(0, 0);
+
+    // True once a failed load has been announced, so a debounce storm (editors save repeatedly) or a
+    // long-broken file doesn't balloon on every tick. Cleared by the next successful load, so a NEW
+    // breakage always announces itself — the same say-it-once/re-arm discipline App applies to a failed
+    // switch apply (_lastNotifiedFailure).
+    private bool _failureAnnounced;
 
     public ConfigManager(string configPath, ILogger logger, LogLevelSwitch? levelSwitch = null)
     {
@@ -67,8 +92,15 @@ public sealed class ConfigManager : IDisposable
         Load();
     }
 
-    /// <summary>Reads and deserialises config.json, ordering rules by priority. Errors are logged, not thrown.</summary>
-    public void Load()
+    /// <summary>
+    /// Reads and deserialises config.json, ordering rules by priority, and REPORTS what happened
+    /// (issue #39). Errors are still logged rather than thrown — a broken hand-edit must not take the
+    /// tray app down — but they are no longer swallowed: the returned <see cref="ConfigLoadOutcome"/>
+    /// (also stored on <see cref="LastLoad"/>) lets every caller distinguish "your edit is now live"
+    /// from "your edit was rejected and the old settings are still running", which is the whole point.
+    /// On failure <see cref="Current"/> is left untouched — the last good config stays live.
+    /// </summary>
+    public ConfigLoadOutcome Load()
     {
         try
         {
@@ -79,18 +111,36 @@ public sealed class ConfigManager : IDisposable
             // Apply the loaded verbosity to the live gate immediately (issue #22) — this is the single
             // place every path (startup, UpdateLogLevel's SaveAndReload, a manual file edit) flows through.
             if (_levelSwitch is not null) _levelSwitch.MinimumLevel = loaded.LogLevel;
-            _logger.LogInformation("Config loaded from {Path} ({RuleCount} rules)", _configPath, _config.Rules.Count);
+            _logger.LogInformation("Config loaded from {Path} ({RuleCount} rules, {VmCount} VMs)",
+                _configPath, _config.Rules.Count, _config.VirtualMachines.Count);
+            return LastLoad = ConfigLoadOutcome.Success(_config.Rules.Count, _config.VirtualMachines.Count);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to load config from {Path}", _configPath);
+            _logger.LogError(ex, "Failed to load config from {Path} — keeping the previously loaded config", _configPath);
+            return LastLoad = ConfigLoadOutcome.Failure(ex.Message);
         }
     }
 
     private void OnDebounceElapsed(object? _)
     {
         _logger.LogInformation("Config file changed — reloading");
-        Load();
+        var outcome = Load();
+
+        if (!outcome.Succeeded)
+        {
+            // Nothing was reloaded. Raising ConfigReloaded here would hand NetworkMonitor the stale
+            // config as if it were the user's new intent (and trigger a switch re-evaluation off it),
+            // and would tell an open Settings window to re-render the old values as freshly read —
+            // the exact "surface claims a state the app hasn't confirmed" defect #37 fixed elsewhere.
+            if (_failureAnnounced) return;   // same broken file, still broken — say it once
+            _failureAnnounced = true;
+            try { ConfigLoadFailed?.Invoke(this, outcome); }
+            catch (Exception ex) { _logger.LogError(ex, "A ConfigLoadFailed subscriber threw an exception"); }
+            return;
+        }
+
+        _failureAnnounced = false;   // parsed again — re-arm for the next breakage
         try { ConfigReloaded?.Invoke(this, _config); }
         catch (Exception ex) { _logger.LogError(ex, "A ConfigReloaded subscriber threw an exception"); }
     }
@@ -388,7 +438,17 @@ public sealed class ConfigManager : IDisposable
                 File.WriteAllText(_configPath, JsonSerializer.Serialize(updated, WriteOptions));
                 _logger.LogInformation("{Message}", successMessage);
 
-                Load();
+                // We just serialised this object ourselves, so a failed read-back is a bug (or the file
+                // was clobbered between the write and the read) — either way _config still holds the
+                // PREVIOUS config, so announcing a reload would publish stale state as new (issue #39).
+                if (!Load().Succeeded)
+                {
+                    _logger.LogError("Config was written to {Path} but could not be re-read — subscribers "
+                                     + "were NOT notified and the previously loaded config is still live.",
+                                     _configPath);
+                    return;
+                }
+
                 if (raiseReloaded) ConfigReloaded?.Invoke(this, _config);
             }
             catch (Exception ex)
@@ -437,6 +497,40 @@ public sealed class ConfigManager : IDisposable
     /// <summary>Returns the expected config.json path: next to the executable.</summary>
     public static string GetConfigPath() =>
         Path.Combine(AppContext.BaseDirectory, "config.json");
+
+    /// <summary>
+    /// Writes <see cref="DefaultConfig.Json"/> to <paramref name="configPath"/> if no file is there, and
+    /// returns whether it created one (issue #38). Startup previously answered a missing config with an
+    /// error box and an immediate exit — in an app that ships a full rules editor and tray onboarding
+    /// flows, i.e. it refused to start into the very UI that would have fixed the problem. It can
+    /// trivially heal itself instead, so it does.
+    ///
+    /// <para>Called BEFORE the <see cref="ConfigManager"/> (and hence its FileSystemWatcher) exists, so
+    /// this write can't trigger a reload, and no <see cref="ConfigReloaded"/> can fire off it — a
+    /// startup-path write must never kick <see cref="NetworkMonitor"/> into moving a VM's switch.</para>
+    ///
+    /// <para>Never throws: if the directory is read-only, the app still starts and the subsequent
+    /// <see cref="Load"/> reports the missing file through <see cref="LastLoad"/>, which startup
+    /// balloons. A cosmetic self-heal is not worth a fatal.</para>
+    /// </summary>
+    /// <returns>True if a default config was created; false if one already existed or creation failed.</returns>
+    public static bool CreateDefaultIfMissing(string configPath, ILogger? logger = null)
+    {
+        try
+        {
+            if (File.Exists(configPath)) return false;
+
+            Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
+            File.WriteAllText(configPath, DefaultConfig.Json);
+            logger?.LogInformation("No config.json at {Path} — created a default one", configPath);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger?.LogError(ex, "Could not create a default config at {Path}", configPath);
+            return false;
+        }
+    }
 
     /// <summary>
     /// Reads just the <see cref="AppConfig.LogLevel"/> from config.json, for use at startup before

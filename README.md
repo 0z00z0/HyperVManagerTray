@@ -33,9 +33,11 @@ It also includes a **WinUI 3 dashboard** (left-click the tray icon) that shows t
 
 ## Setup
 
-1. Edit `config.json` (lives next to the `.exe`) to describe your networks and VMs — see [Configuration](#configuration) below.
-2. Run or publish the application (see below).
-3. A tray icon appears. **Left-click** it for the status dashboard + VM controls; **right-click** for the menu (manual override, add a network rule, etc.).
+1. Run or publish the application (see below). There is **nothing to edit first** — if no `config.json` sits next to the `.exe`, the app creates a blank-slate one and tells you it did.
+2. A tray icon appears. **Left-click** it for the status dashboard + VM controls; **right-click** for the menu (manual override, add a network rule, etc.).
+3. Add your first VM from the tray, and your rules from **Settings → Network**. Hand-editing `config.json` stays fully supported ([Configuration](#configuration) below) — the file is watched, so a saved edit applies without a restart. An edit that doesn't parse is rejected and announced with a tray balloon; the settings already loaded keep running until you fix it.
+
+> The shipped `config.json` is deliberately **empty** — no example rule, no example VM. A sample that looks configured but targets a VM you don't have is a trap, not a starting point: it matches nothing and only warns to a log file. The annotated, fully-populated example lives under [Configuration](#configuration).
 
 ---
 
@@ -163,7 +165,23 @@ Metrics refresh every ~2 s **only while the dashboard is open**, so a closed das
 
 ## Configuration
 
-`config.json` is loaded from the same directory as the executable. It is watched for changes — edits take effect immediately without a restart.
+`config.json` is loaded from the same directory as the executable. It is watched for changes — edits take effect immediately without a restart. If the file is missing the app writes the blank-slate default below and carries on; if an edit doesn't parse, the app keeps the last good config, says so in a tray balloon, and re-reads the file on your next save.
+
+The default the app ships (and self-heals to) is just this — a fallback switch and nothing else:
+
+```json
+{
+  "logLevel": "Debug",
+  "virtualMachines": [],
+  "rules": [],
+  "fallback": {
+    "virtualSwitch": "Default Switch",
+    "targetVms": []
+  }
+}
+```
+
+Everything below is the annotated **reference** for the full format — copy from it as needed:
 
 ```jsonc
 {
@@ -222,7 +240,7 @@ HyperVManagerTray/
 ├─ Helpers/                 AppColors, IconGenerator, NativeMethods, RelayCommand, WmiVmMapper
 ├─ Tests/                   xUnit tests (links the pure Services/Models sources)
 ├─ installer/              per-user Inno Setup installer (.iss + build script)
-└─ config.json             sample config (shipped next to the exe)
+└─ config.json             blank-slate default (shipped next to the exe; also written on first run if absent)
 ```
 
 ## Tests

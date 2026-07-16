@@ -15,6 +15,11 @@
     <Compile Include="..\Services\AdapterMatcher.cs"  Link="Linked\AdapterMatcher.cs" />
     <Compile Include="..\Services\SwitchWmiHelpers.cs" Link="Linked\SwitchWmiHelpers.cs" />
     <Compile Include="..\Services\ConfigManager.cs"   Link="Linked\ConfigManager.cs" />
+    <!-- The canonical blank-slate config.json and the pure load-outcome→UI decisions (issues #38/#39).
+         Both are required by the linked ConfigManager.cs, and both are strings-and-flags only — no
+         WinUI, no file IO in ConfigLoadUi. -->
+    <Compile Include="..\Helpers\DefaultConfig.cs"    Link="Linked\DefaultConfig.cs" />
+    <Compile Include="..\Helpers\ConfigLoadUi.cs"     Link="Linked\ConfigLoadUi.cs" />
     <Compile Include="..\Helpers\UptimeFormatter.cs"  Link="Linked\UptimeFormatter.cs" />
     <Compile Include="..\Helpers\WmiVmMapper.cs"      Link="Linked\WmiVmMapper.cs" />
     <!-- Pure state→UI decisions for VM power controls (issue #30). Depends only on VmOperation. -->
@@ -53,6 +58,16 @@
     <Compile Include="..\Models\NetworkRule.cs"       Link="Linked\NetworkRule.cs" />
     <Compile Include="..\Models\VmTarget.cs"          Link="Linked\VmTarget.cs" />
     <Compile Include="..\Models\VmStatus.cs"          Link="Linked\VmStatus.cs" />
+  </ItemGroup>
+
+  <!-- The SHIPPED sample config (the one the installer drops with Flags: onlyifdoesntexist). Copied in
+       so DefaultConfigTests can assert it is byte-for-byte the same blank slate the app writes for
+       itself when the file is missing — the two would otherwise drift, and a drifting sample is how a
+       phantom "MyVM" survives in the box for months (issue #38). -->
+  <ItemGroup>
+    <Content Include="..\config.json" Link="ShippedConfig\config.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
   <ItemGroup>

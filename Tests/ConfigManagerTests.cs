@@ -764,4 +764,84 @@ public class ConfigManagerTests : IDisposable
         mgr.UpdateLogLevel(LogLevel.Warning);
         Assert.Equal(1, reloads);
     }
+
+    // ── Load outcome (issue #39) ──────────────────────────────────────────────
+
+    /// <summary>A normal load reports what it read, so a caller can tell the user.</summary>
+    [Fact]
+    public void Load_Valid_ReportsRuleAndVmCounts()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [new VmTarget { Name = "A", NicName = "Network Adapter" },
+                               new VmTarget { Name = "B", NicName = "Network Adapter" }],
+            Rules           = [new NetworkRule { Name = "R1", Priority = 1, VirtualSwitch = "Bridged" }],
+        });
+        using var mgr = MakeManager(path);
+
+        var outcome = mgr.Load();
+
+        Assert.True(outcome.Succeeded);
+        Assert.Equal(1, outcome.RuleCount);
+        Assert.Equal(2, outcome.VmCount);
+        Assert.Null(outcome.Error);
+        Assert.Same(outcome, mgr.LastLoad);
+    }
+
+    /// <summary>
+    /// A malformed hand-edit must be REPORTED (not just logged), and must leave the last good config
+    /// live — the user's rules keep working while the file is broken.
+    /// </summary>
+    [Fact]
+    public void Load_BrokenJson_ReportsFailureAndKeepsThePreviousConfig()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [new VmTarget { Name = "Original", NicName = "Network Adapter" }],
+        });
+        using var mgr = MakeManager(path);
+        Assert.True(mgr.LastLoad.Succeeded);
+
+        File.WriteAllText(path, "{ \"virtualMachines\": [ { \"name\": \"Broken\" ");   // truncated JSON
+        var outcome = mgr.Load();
+
+        Assert.False(outcome.Succeeded);
+        Assert.False(string.IsNullOrWhiteSpace(outcome.Error));
+        Assert.False(mgr.LastLoad.Succeeded);
+        // The previous config is untouched — not emptied, not half-parsed.
+        Assert.Equal("Original", Assert.Single(mgr.Current.VirtualMachines).Name);
+    }
+
+    /// <summary>
+    /// The regression guard for the whole issue, spanning the real load and the UI contract: a load
+    /// that failed must not be renderable as a successful reload by ANY of the surfaces. If this ever
+    /// fails, Settings → "Reload config from disk" can once again re-draw the stale config and let the
+    /// user believe their broken edit took effect.
+    /// </summary>
+    [Fact]
+    public void Load_BrokenJson_CanNeverBeReportedAsASuccessfulReload()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        File.WriteAllText(path, "this is not json at all");
+        var outcome = mgr.Load();
+
+        Assert.Null(ConfigLoadUi.SuccessMessage(outcome));           // no "Reloaded — n rules…" sentence
+        Assert.False(ConfigLoadUi.ShouldRebuildFromConfig(outcome)); // Settings must not re-render
+        Assert.NotNull(ConfigLoadUi.FailureMessage(outcome));        // it must say something instead
+        Assert.Contains("still active", ConfigLoadUi.FailureMessage(outcome)!);
+    }
+
+    /// <summary>A missing file is a failure like any other — reported, never silently defaulted.</summary>
+    [Fact]
+    public void Load_MissingFile_ReportsFailure()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var mgr = MakeManager(path);
+
+        File.Delete(path);
+
+        Assert.False(mgr.Load().Succeeded);
+    }
 }
