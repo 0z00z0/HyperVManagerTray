@@ -465,6 +465,93 @@ public class ConfigManagerTests : IDisposable
         Assert.Equal(700, cfg.SettingsWindowHeight);
     }
 
+    // ── Add/RemoveVmFromConfig: the With() regression guard (issues #34 / #47) ──
+    //
+    // These two writers are no longer tray-only: issue #47 gives Settings its own add/remove, so both now
+    // run from two surfaces. They funnel through the same With(vms:) as SetVmNicName above, and the guard
+    // there is what keeps every unnamed field alive — but a writer that is reachable from a new place
+    // deserves its own proof rather than inheriting one by structural argument.
+
+    [Fact]
+    public void AddVmToConfig_PreservesRulesFallbackLogLevelAndWindowRect()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [new VmTarget { Name = "Alpha", NicName = "Ethernet 9" }],
+            Rules           = [new NetworkRule { Name = "Office", Priority = 10, VirtualSwitch = "Bridged" }],
+            Fallback        = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Alpha"] },
+            LogLevel        = LogLevel.Warning,
+            SettingsWindowX = 100, SettingsWindowY = 200, SettingsWindowWidth = 900, SettingsWindowHeight = 700,
+        });
+        using var mgr = MakeManager(path);
+
+        mgr.AddVmToConfig("Beta", "Ethernet 3");
+
+        var cfg = ReadConfig(path);
+        Assert.Equal(["Alpha", "Beta"], cfg.VirtualMachines.Select(v => v.Name));
+        Assert.Equal("Ethernet 9",     cfg.VirtualMachines[0].NicName);   // the existing VM is untouched
+        Assert.Equal("Ethernet 3",     cfg.VirtualMachines[1].NicName);
+        Assert.Equal("Office",         Assert.Single(cfg.Rules).Name);
+        Assert.Equal("Default Switch", cfg.Fallback.VirtualSwitch);
+        Assert.Equal(["Alpha"],        cfg.Fallback.TargetVms);
+        Assert.Equal(LogLevel.Warning, cfg.LogLevel);
+        Assert.Equal(100, cfg.SettingsWindowX);
+        Assert.Equal(200, cfg.SettingsWindowY);
+        Assert.Equal(900, cfg.SettingsWindowWidth);
+        Assert.Equal(700, cfg.SettingsWindowHeight);
+    }
+
+    [Fact]
+    public void RemoveVmFromConfig_PreservesRulesFallbackLogLevelAndWindowRect()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [new VmTarget { Name = "Alpha" }, new VmTarget { Name = "Beta", NicName = "Ethernet 9" }],
+            Rules           = [new NetworkRule { Name = "Office", Priority = 10, VirtualSwitch = "Bridged" }],
+            Fallback        = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Alpha"] },
+            LogLevel        = LogLevel.Warning,
+            SettingsWindowX = 100, SettingsWindowY = 200, SettingsWindowWidth = 900, SettingsWindowHeight = 700,
+        });
+        using var mgr = MakeManager(path);
+
+        mgr.RemoveVmFromConfig("Alpha");
+
+        var cfg = ReadConfig(path);
+        Assert.Equal("Beta",           Assert.Single(cfg.VirtualMachines).Name);
+        Assert.Equal("Ethernet 9",     cfg.VirtualMachines[0].NicName);   // the surviving VM keeps its fields
+        Assert.Equal("Office",         Assert.Single(cfg.Rules).Name);
+        Assert.Equal("Default Switch", cfg.Fallback.VirtualSwitch);
+        // Un-managing a VM must NOT quietly rewrite the rules that still name it — removing a VM from this
+        // app's care is not a claim about what the user's rules should say.
+        Assert.Equal(["Alpha"],        cfg.Fallback.TargetVms);
+        Assert.Equal(LogLevel.Warning, cfg.LogLevel);
+        Assert.Equal(100, cfg.SettingsWindowX);
+        Assert.Equal(200, cfg.SettingsWindowY);
+        Assert.Equal(900, cfg.SettingsWindowWidth);
+        Assert.Equal(700, cfg.SettingsWindowHeight);
+    }
+
+    [Fact]
+    public void RemoveVmFromConfig_ThenAddAgain_RoundTrips()
+    {
+        // The tray's Manage VMs list is a toggle, so this is its most ordinary interaction: an accidental
+        // un-manage followed immediately by a re-add must land back in a sane state.
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [new VmTarget { Name = "Alpha", NicName = "Ethernet 9" }],
+        });
+        using var mgr = MakeManager(path);
+
+        mgr.RemoveVmFromConfig("Alpha");
+        Assert.Empty(mgr.Current.VirtualMachines);
+
+        mgr.AddVmToConfig("Alpha", "Ethernet 9");
+
+        var vm = Assert.Single(ReadConfig(path).VirtualMachines);
+        Assert.Equal("Alpha",      vm.Name);
+        Assert.Equal("Ethernet 9", vm.NicName);
+    }
+
     // ── SaveRules (issue #23) ───────────────────────────────────────────────────
 
     [Fact]

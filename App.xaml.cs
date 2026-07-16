@@ -359,10 +359,16 @@ public partial class App : Application
 
     /// <summary>
     /// Shows a tray balloon for a failed VM power action, but only when the dashboard isn't visible —
-    /// the dashboard already surfaces the failure on the card, so a toast would be redundant there. This
-    /// covers the tray VM-Power submenu path, whose failures were previously invisible (issue #30,
-    /// finding 2). Fired on a background thread by <see cref="VmService.OperationProgress"/>; marshalled
-    /// to the UI. Never throws.
+    /// the dashboard already surfaces the failure on the card, so a toast would be redundant there.
+    ///
+    /// <para>This originally existed for the tray VM-Power submenu, whose failures were invisible (issue
+    /// #30, finding 2). That menu is gone (issue #34), but this balloon is now MORE load-bearing, not
+    /// less: the remaining producer is <see cref="Models.VmOpOrigin.Auto"/> — a rule's auto-start, or an
+    /// on-bridge-lost pause/save/shutdown — which fires with no user watching and possibly no window
+    /// open. Without this, a failed automatic power action would be log-only.</para>
+    ///
+    /// <para>Fired on a background thread by <see cref="VmService.OperationProgress"/>; marshalled to
+    /// the UI. Never throws.</para>
     /// </summary>
     private void OnVmOperationFailed(Models.VmOperationProgress p)
     {

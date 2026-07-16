@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Text;
 using Microsoft.UI.Windowing;
@@ -43,6 +44,13 @@ internal sealed partial class SettingsWindow : Window
     private readonly UpdateChecker    _updateChecker;
     private readonly AdapterRenameFlow _renameFlow;
     private readonly DispatcherQueue  _ui;
+
+    // The live network commands and the managed-VM add/remove, shared verbatim with the tray (issue #34):
+    // this window is the COMPLETE surface, so it holds both the actions the tray also offers as quick
+    // commands (re-check, override) and the ones that now live only here (repair, add current network,
+    // and — per issue #47 — creating and deleting a managed VM at all).
+    private readonly NetworkActions   _network;
+    private readonly ManagedVmActions _managedVms;
 
     // Suppresses commit handlers while controls are populated programmatically (same re-entrancy
     // guard idiom as the sibling app's settings window). One flag is safe: every Load runs
@@ -98,7 +106,15 @@ internal sealed partial class SettingsWindow : Window
     // ignored instead of NRE-ing out of the constructor (finding 6, cleanup 13).
     private IReadOnlyDictionary<string, StackPanel>? _panels;
 
-    public SettingsWindow(ConfigManager config, StartupManager startup, UpdateChecker updateChecker)
+    /// <param name="notify">
+    /// The tray balloon (title, message, isError). Passed in rather than replaced with dialogs of this
+    /// window's own: the outcome of a re-check or an override reads identically wherever it was started
+    /// from, and inventing a second display vocabulary for the same events is what issue #37 spent its
+    /// effort undoing.
+    /// </param>
+    public SettingsWindow(ConfigManager config, StartupManager startup, UpdateChecker updateChecker,
+                          NetworkMonitor monitor, HyperVManager hyperV,
+                          Action<string, string, bool> notify)
     {
         _consumerSink  = _sectionConsumers;   // RebuildRuleCards swaps this while it builds
         _config        = config;
@@ -111,6 +127,8 @@ internal sealed partial class SettingsWindow : Window
         _ui = DispatcherQueue.GetForCurrentThread()
             ?? throw new InvalidOperationException("SettingsWindow must be created on the UI thread.");
         _renameFlow = new AdapterRenameFlow(_config, _ui);
+        _network    = new NetworkActions(config, monitor, hyperV, notify);
+        _managedVms = new ManagedVmActions(config, notify);
 
         Closed += OnClosed;
 
@@ -559,26 +577,99 @@ internal sealed partial class SettingsWindow : Window
     {
         var panel = Section("Managed VMs");
         panel.Children.Add(Description(
-            "Which network adapter each managed VM is reconnected through, and what to do with the VM " +
-            "when the bridged network is lost (the switch falls back to the default). The action is " +
-            "cancelled if the bridge returns within the delay."));
+            "The VMs this app looks after: which network adapter each one is reconnected through, and " +
+            "what to do with the VM when the bridged network is lost (the switch falls back to the " +
+            "default). The action is cancelled if the bridge returns within the delay."));
 
         var vms = _config.Current.VirtualMachines;
         if (vms.Count == 0)
         {
+            // Issue #47's acceptance: this no longer sends the user to the tray as the ONLY route — the
+            // add control is right below. The tray is mentioned as the alternative it now is (issue #38).
             panel.Children.Add(Card(new TextBlock
             {
-                Text         = "No VMs are managed yet. Add one from the tray's VM Power menu, then it will appear here.",
+                Text         = "No VMs are managed yet. Add one below, or from the tray's Manage VMs menu.",
                 TextWrapping = TextWrapping.Wrap,
                 Opacity      = 0.75,
             }));
-            return panel;
+        }
+        else
+        {
+            foreach (var vm in vms)
+                panel.Children.Add(BuildVmCard(vm));
         }
 
-        foreach (var vm in vms)
-            panel.Children.Add(BuildVmCard(vm));
-
+        panel.Children.Add(BuildAddVmCard());
         return panel;
+    }
+
+    /// <summary>
+    /// "Start managing a VM" — the half of issue #47 that made Settings genuinely complete. Creating a
+    /// managed VM was previously reachable ONLY from the tray, which is what broke Espen's standing rule
+    /// that Settings is the superset (issue #34); nothing else in <see cref="AppConfig"/> was tray-only.
+    ///
+    /// <para>An editable picker, following the same reasoning as every other identity field (issue #41):
+    /// it SUGGESTS the host's unmanaged VMs — reusing the ONE cold <see cref="HostInventory"/> read this
+    /// window already makes, rather than adding a third enumeration path — but accepts free text, because
+    /// a config may legitimately name a VM that has not been created yet, and the host may be unreachable
+    /// when Settings is opened. With no suggestions it is exactly the text box it would otherwise be.</para>
+    ///
+    /// <para>Deliberately NOT a <see cref="SuggestionCombo"/>: that control commits on
+    /// SelectionChanged/LostFocus, which is right for a field that edits an existing VM and quite wrong
+    /// here — merely tabbing past this box must not add a VM to config. The Add button is the only commit.</para>
+    /// </summary>
+    private UIElement BuildAddVmCard()
+    {
+        var combo = new ComboBox
+        {
+            IsEditable          = true,
+            PlaceholderText     = "VM name",
+            MinWidth            = 220,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+
+        // An editable ComboBox REVERTS text that matches no item unless TextSubmitted is handled — the
+        // same trap SuggestionCombo documents at length. A not-yet-created VM is exactly the case that
+        // must keep working, so suppress the revert.
+        combo.TextSubmitted += (_, args) => args.Handled = true;
+
+        var addBtn = new Button { Content = "Start managing" };
+
+        _consumerSink.Add(snapshot =>
+        {
+            var current = combo.Text;   // assigning ItemsSource clears Text — restore what the user typed
+            combo.ItemsSource = VmConfigUi.UnmanagedVms(
+                snapshot.VmNames, _config.Current.VirtualMachines.Select(v => v.Name));
+            combo.Text = current;
+        });
+
+        addBtn.Click += async (_, _) =>
+        {
+            var name = (combo.SelectedItem as string ?? combo.Text)?.Trim();
+            if (string.IsNullOrEmpty(name)) return;
+
+            // The VM's own adapter, when the host could be read and reports one — the same value the tray
+            // passes. Blank is fine: AddVmToConfig falls back to the Hyper-V default ("Network Adapter"),
+            // and the NIC row on the card that appears is there to correct it.
+            var nic = _inventory?.NicNamesFor(name).FirstOrDefault() ?? "";
+
+            if (!await _managedVms.AddAsync(name, nic)) return;
+            if (_closed) return;
+            // The VM list is built from _config.Current, which AddAsync has just confirmed — rebuild so
+            // the new card appears. Same path the Reload button uses; every populate is guarded, so the
+            // rebuild itself commits nothing.
+            RefreshValuesFromConfig();
+        };
+
+        var stack = new StackPanel { Spacing = 6, MinWidth = 220 };
+        stack.Children.Add(combo);
+        stack.Children.Add(addBtn);
+
+        return SettingRow(
+            "Start managing a VM",
+            "Offers the VMs on this host that aren't managed yet; any name can still be typed (a VM that "
+            + "does not exist yet is allowed). The VM is not started or changed — only this app's list.",
+            stack);
     }
 
     /// <summary>
@@ -595,13 +686,34 @@ internal sealed partial class SettingsWindow : Window
         var vmName = vm.Name;
 
         var content = new StackPanel { Spacing = 10 };
-        content.Children.Add(new TextBlock
+
+        // Header: the VM's name, and the only way to stop managing it from here (issue #47). "Stop
+        // managing" rather than "Remove": next to a VM name, "remove" reads as "delete the virtual
+        // machine", and this deletes nothing — ManagedVmActions' single confirmation says so in full.
+        var title = new TextBlock
         {
-            Text         = vmName,
-            FontSize     = 14,
-            FontWeight   = FontWeights.SemiBold,
-            TextWrapping = TextWrapping.Wrap,
-        });
+            Text              = vmName,
+            FontSize          = 14,
+            FontWeight        = FontWeights.SemiBold,
+            TextWrapping      = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var stopBtn = new Button { Content = "Stop managing" };
+        stopBtn.Click += async (_, _) =>
+        {
+            if (!await _managedVms.RemoveAsync(vmName)) return;   // cancelled, or not confirmed — say nothing more
+            if (_closed) return;
+            RefreshValuesFromConfig();   // this card's VM is gone from _config.Current — re-render without it
+        };
+
+        var header = new Grid { ColumnSpacing = 8 };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(title, 0);
+        Grid.SetColumn(stopBtn, 1);
+        header.Children.Add(title);
+        header.Children.Add(stopBtn);
+        content.Children.Add(header);
 
         // ── Network adapter (issue #41) ──
         // Previously reachable ONLY by hand-editing config.json — a VM with a renamed or second synthetic
@@ -697,9 +809,28 @@ internal sealed partial class SettingsWindow : Window
         RebuildRuleCards();
         panel.Children.Add(_rulesListPanel);
 
-        var addBtn = new Button { Content = "Add rule", Margin = new Thickness(0, 2, 0, 0) };
+        // "Add rule" gives a blank rule to fill in by hand; "Add current network" captures the live
+        // adapter's description, MAC and subnet in one step (issue #34 moved it here from the tray). The
+        // latter is the better path whenever the user is standing on the network they want a rule for,
+        // which is why it sits directly beside the former rather than in a menu somewhere.
+        var addButtons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 2, 0, 0),
+        };
+        var addBtn = new Button { Content = "Add rule" };
         addBtn.Click += (_, _) => AddRule();
-        panel.Children.Add(addBtn);
+        var addCurrentBtn = new Button { Content = "Add current network" };
+        addCurrentBtn.Click += async (_, _) =>
+        {
+            await _network.AddCurrentAsBridgedAsync();
+            if (_closed) return;
+            // The rule was written straight to config (not through _workingRules), so the editor above is
+            // now a rule short. Re-render from config rather than leaving it stale.
+            RefreshValuesFromConfig();
+        };
+        addButtons.Children.Add(addBtn);
+        addButtons.Children.Add(addCurrentBtn);
+        panel.Children.Add(addButtons);
 
         // Fallback (editable) — the switch + target VMs used when no rule matches.
         panel.Children.Add(new TextBlock
@@ -734,7 +865,74 @@ internal sealed partial class SettingsWindow : Window
             + "or type a name (a VM that does not exist yet is allowed).",
             WithVmPicker(_fallbackVmsBox, CommitFallback)));
 
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Override", FontSize = 13, FontWeight = FontWeights.SemiBold, Margin = new Thickness(2, 12, 0, 0),
+        });
+        panel.Children.Add(BuildOverrideRow());
+
         return panel;
+    }
+
+    /// <summary>
+    /// "Override VM switch" — the tray's quick command, also reachable here so the tray item is a
+    /// convenience copy rather than the sole home (issue #34's policy: Settings is the superset).
+    ///
+    /// <para>Not a config editor: this fires a live, TRANSIENT action — the next network change
+    /// re-evaluates the rules and reverts it. The label says so before the click, and the balloon
+    /// <see cref="NetworkActions.OverrideSwitchAsync"/> raises says so again after (issue #37). The
+    /// controls deliberately carry no commit handlers: nothing here writes config, so merely opening
+    /// this section — or tabbing through it — must not touch the network.</para>
+    /// </summary>
+    private UIElement BuildOverrideRow()
+    {
+        var vmCombo     = new ComboBox { MinWidth = 160, PlaceholderText = "VM" };
+        var switchCombo = new ComboBox { MinWidth = 160, PlaceholderText = "Virtual switch" };
+
+        // Both lists come from config (the managed VMs, and the switches any rule or the fallback names),
+        // NOT from the host — an override only makes sense for a VM this app manages onto a switch it
+        // knows about, which is exactly the tray submenu's pairing. VmConfigUi.OverrideSwitchNames is
+        // shared with the tray so the two surfaces can't offer different sets.
+        var vmNames  = _config.Current.VirtualMachines.Select(v => v.Name).ToList();
+        var switches = VmConfigUi.OverrideSwitchNames(
+            _config.Current.Fallback.VirtualSwitch,
+            _config.Current.Rules.Select(r => r.VirtualSwitch));
+
+        WithUpdatingSuppressed(() =>
+        {
+            foreach (var n in vmNames)  vmCombo.Items.Add(n);
+            foreach (var s in switches) switchCombo.Items.Add(s);
+            if (vmNames.Count  > 0) vmCombo.SelectedIndex     = 0;
+            if (switches.Count > 0) switchCombo.SelectedIndex = 0;
+        });
+
+        var applyBtn = new Button
+        {
+            Content   = "Apply override",
+            IsEnabled = vmNames.Count > 0 && switches.Count > 0,
+        };
+        applyBtn.Click += async (_, _) =>
+        {
+            if (vmCombo.SelectedItem is not string vm || switchCombo.SelectedItem is not string sw) return;
+            UiActivityLog.Logger.LogInformation("Settings: Override switch '{Vm}' → '{Switch}'", vm, sw);
+            await _network.OverrideSwitchAsync(vm, sw);
+        };
+
+        var controls = new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center,
+        };
+        controls.Children.Add(vmCombo);
+        controls.Children.Add(switchCombo);
+        controls.Children.Add(applyBtn);
+
+        return SettingRow(
+            "Override VM switch",
+            vmNames.Count == 0
+                ? "No VMs are managed yet — add one under Managed VMs first."
+                : "Force a managed VM onto a specific virtual switch now. This is temporary: the next "
+                  + "network change re-evaluates the rules and reverts it.",
+            controls);
     }
 
     /// <summary>
@@ -1144,6 +1342,31 @@ internal sealed partial class SettingsWindow : Window
             + "or re-read config.json from disk after an out-of-band edit. A reload that can't parse the file says "
             + "so and changes nothing — the settings already loaded stay active.",
             buttons));
+
+        // ── The network tools (issue #34) ──
+        // "Re-check network now" is ALSO a tray quick command — a convenience copy there, per the policy
+        // that this window is the complete surface. "Repair host networking" is here ONLY.
+        var networkButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+
+        var recheckBtn = new Button { Content = "Re-check network now" };
+        recheckBtn.Click += (_, _) => _ = _network.ReCheckNetworkAsync();
+
+        var repairBtn = new Button { Content = "Repair host networking" };
+        repairBtn.Click += (_, _) => _ = _network.RepairHostNetworkingAsync();
+
+        networkButtons.Children.Add(recheckBtn);
+        networkButtons.Children.Add(repairBtn);
+
+        panel.Children.Add(SettingRow(
+            "Network",
+            // The recorded trade-off of moving Repair off the tray (issue #34): the automatic pass runs
+            // once, ~15 s after startup, so a mid-session dock cycle needs this button. Naming the exact
+            // symptom is what makes it findable at the moment it is needed — which is the moment the
+            // user's wired connection has just vanished.
+            "Re-evaluate the rules against the current network and report the result, or repair the host's "
+            + "own networking when the host is offline but the VM is online (a duplicate host adapter left "
+            + "behind by a dock cycle). Neither changes any setting.",
+            networkButtons));
 
         var updateBtn = new Button { Content = "Check for updates" };
         updateBtn.Click += (_, _) => _ = CheckForUpdatesAsync();
