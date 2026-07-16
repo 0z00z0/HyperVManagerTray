@@ -185,6 +185,82 @@ public static class SettingsOptions
     /// <summary>Clamps a rule priority to a sane, non-negative range (a hand-edited negative → 0).</summary>
     public static int NormalizePriority(int priority) => Math.Clamp(priority, 0, 100_000);
 
+    // ── Live-value suggestions (issue #41) ──────────────────────────────────────
+    // The identity fields (virtual switch, target VM, adapter MAC, a managed VM's NIC name) name things
+    // the app can already enumerate off the host, yet were hand-typed — so a typo produced a rule that
+    // silently never matched. These helpers shape the enumerated values into picker rows. They are
+    // deliberately ASSISTIVE, never restrictive: the current value always survives, and a value that is
+    // not in the live list is never dropped, because a rule is legitimately written ahead of the switch
+    // or VM it names (and the host may simply be offline when Settings is opened).
+
+    /// <summary>
+    /// The rows an editable picker offers for an identity field: <paramref name="current"/> first when it
+    /// is a real value the live list doesn't already contain (so a rule naming a not-yet-created switch,
+    /// or written while the host was unreachable, still shows its own value as a choice), then the live
+    /// values sorted case-insensitively. Blank/whitespace entries are dropped and duplicates removed
+    /// case-insensitively (first spelling wins).
+    ///
+    /// <para>The result is only ever a SUGGESTION list — the picker stays editable, so a value absent
+    /// from it can still be typed and persisted. An empty result (host offline, enumeration failed) is
+    /// therefore not a failure state: the control simply behaves as the plain text box it replaced.</para>
+    /// </summary>
+    public static List<string> SuggestionItems(string? current, IEnumerable<string>? live)
+    {
+        var seen   = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<string>();
+
+        var liveClean = (live ?? [])
+            .Select(v => v?.Trim() ?? string.Empty)
+            .Where(v => v.Length > 0)
+            .OrderBy(v => v, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var cur = current?.Trim();
+        if (!string.IsNullOrEmpty(cur) && !liveClean.Contains(cur, StringComparer.OrdinalIgnoreCase))
+        {
+            result.Add(cur);
+            seen.Add(cur);
+        }
+
+        foreach (var v in liveClean)
+            if (seen.Add(v)) result.Add(v);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Canonicalises a managed VM's NIC name (<see cref="Models.VmTarget.NicName"/>): trims, and maps
+    /// blank to the Hyper-V default <c>"Network Adapter"</c> — the same default
+    /// <see cref="Services.ConfigManager.AddVmToConfig"/> applies, so clearing the new NIC editor
+    /// restores the default rather than persisting an empty name that would match no adapter.
+    /// A non-blank exotic value is preserved verbatim (bar trimming): the VM's adapter may have been
+    /// renamed to anything, and this app is not the authority on what Hyper-V allows.
+    /// </summary>
+    public static string NormalizeNicName(string? nicName) =>
+        string.IsNullOrWhiteSpace(nicName) ? DefaultNicName : nicName.Trim();
+
+    /// <summary>The Hyper-V default name of a VM's first synthetic network adapter.</summary>
+    public const string DefaultNicName = "Network Adapter";
+
+    /// <summary>
+    /// Appends <paramref name="vmName"/> to a one-VM-per-line editor's text, returning the new text.
+    /// Backs the "Add from discovered VMs" affordance on the rule/fallback target-VM boxes: picking a VM
+    /// must ADD to what the user has, never replace it, and picking the same VM twice must not duplicate
+    /// it (the comparison is case-insensitive, matching <see cref="CleanVmList"/>'s dedupe). Returns the
+    /// text unchanged when the name is blank or already listed.
+    /// </summary>
+    public static string AppendVmLine(string? existingText, string? vmName)
+    {
+        var name = vmName?.Trim();
+        if (string.IsNullOrEmpty(name)) return existingText ?? string.Empty;
+
+        var lines = ParseVmLines(existingText);
+        if (lines.Contains(name, StringComparer.OrdinalIgnoreCase)) return existingText ?? string.Empty;
+
+        lines.Add(name);
+        return JoinVmLines(lines);
+    }
+
     // ── Shared ──────────────────────────────────────────────────────────────────
 
     /// <summary>

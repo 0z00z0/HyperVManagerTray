@@ -65,8 +65,31 @@ internal sealed partial class SettingsWindow : Window
     // a reload-driven re-sort of _config.Current can't reorder controls mid-edit.
     private readonly List<NetworkRule> _workingRules = [];
     private StackPanel? _rulesListPanel;
-    private TextBox?    _fallbackSwitchBox;
+    private ComboBox?   _fallbackSwitchCombo;
     private TextBox?    _fallbackVmsBox;
+
+    // ── Live host values for the identity pickers (issue #41) ────────────────────
+    //
+    // The last successful enumeration of the host's switches, VMs, per-VM NICs and physical adapters.
+    // Held in a FIELD, not on the controls, for the same reason as _reloadResultMessage: a config reload
+    // rebuilds every section from scratch, discarding whatever was written onto the old controls. With
+    // the snapshot cached here the fresh controls are re-populated instantly from it, so a rebuild never
+    // silently downgrades a working picker back to a bare text box while WMI is re-queried.
+    // Null = never enumerated yet (pickers are empty ⇒ plain free-text boxes, which is the correct and
+    // fully-functional degraded state — see HostInventory's remarks).
+    private HostInventory.Snapshot? _inventory;
+
+    // One callback per control that wants live values, registered as the control is built. The callbacks
+    // capture their controls, so a list that is not cleared when its controls are replaced grows forever
+    // and re-populates detached ones.
+    //
+    // TWO lists because the two rebuild scopes have different lifetimes: BuildSections replaces
+    // everything, but RebuildRuleCards replaces ONLY the rule cards (Add/Remove rule call it directly,
+    // with the rest of the window untouched) — so a single list would either leak on every Add, or lose
+    // every other section's pickers. _consumerSink is whichever list is currently being filled.
+    private readonly List<Action<HostInventory.Snapshot>> _sectionConsumers = [];
+    private readonly List<Action<HostInventory.Snapshot>> _ruleConsumers    = [];
+    private List<Action<HostInventory.Snapshot>> _consumerSink;
 
     // The single source of truth mapping each nav item's Tag → its content panel. Built once by
     // BuildSections (after the XAML fields are assigned), it drives OnNavSelectionChanged so a 7th
@@ -77,6 +100,7 @@ internal sealed partial class SettingsWindow : Window
 
     public SettingsWindow(ConfigManager config, StartupManager startup, UpdateChecker updateChecker)
     {
+        _consumerSink  = _sectionConsumers;   // RebuildRuleCards swaps this while it builds
         _config        = config;
         _startup       = startup;
         _updateChecker = updateChecker;
@@ -236,6 +260,11 @@ internal sealed partial class SettingsWindow : Window
         // Wire the Tag→panel map once the XAML fields are guaranteed assigned (we're past
         // InitializeComponent). Tags must match the NavigationViewItem Tags in SettingsWindow.xaml.
         // Also flips OnNavSelectionChanged's readiness guard on (see the field's remarks).
+        // Drop the previous build's picker callbacks before any new control can register one — they
+        // capture controls that are about to be detached (issue #41). The rule cards' own list is cleared
+        // by RebuildRuleCards, which BuildNetworkSection calls below.
+        _sectionConsumers.Clear();
+
         _panels = new Dictionary<string, StackPanel>(StringComparer.Ordinal)
         {
             ["General"]     = GeneralPanel,
@@ -263,6 +292,160 @@ internal sealed partial class SettingsWindow : Window
 
         AboutPanel.Children.Clear();
         AboutPanel.Children.Add(BuildAboutSection());
+
+        // Every section is now built and every picker has registered. Fill them from the cached snapshot
+        // first so a rebuild loses nothing, THEN re-read the host in the background so a switch or VM
+        // created since the window opened shows up. Both are no-ops on a first build with no host.
+        if (_inventory is not null) ApplyInventory(_inventory);
+        LoadHostInventoryAsync();
+    }
+
+    // ── Live host values (issue #41) ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Enumerates the host off the UI thread and hands the result to every registered picker.
+    ///
+    /// <para>This is the load-bearing thread rule of this issue: <see cref="HostInventory.Read"/> connects
+    /// to WMI and can stall for seconds on a degraded host, and Settings opening must NEVER wait on it —
+    /// the same reasoning as <see cref="LoadAdaptersAsync"/> (which this call now subsumes, so the window
+    /// makes ONE adapter enumeration rather than one per feature that wants the list). Nothing here can
+    /// fail loudly: HostInventory never throws, and an empty snapshot simply leaves every picker
+    /// suggestion-less — i.e. exactly the free-text box each one replaced.</para>
+    /// </summary>
+    private void LoadHostInventoryAsync() => Task.Run(() =>
+    {
+        var snapshot = HostInventory.Read();
+        _ui.TryEnqueue(() =>
+        {
+            if (_closed) return;
+            _inventory = snapshot;
+            ApplyInventory(snapshot);
+        });
+    });
+
+    /// <summary>
+    /// Pushes a snapshot into every registered picker. UI thread only. Each consumer is guarded
+    /// individually — one picker throwing must not leave the rest unpopulated — and the whole pass runs
+    /// with the re-entrancy guard held, because populating a control's items raises the very
+    /// SelectionChanged/TextChanged handlers that commit to config: without this, merely enumerating the
+    /// host would write config.json, and a config write raises ConfigReloaded, which re-evaluates the
+    /// network and can move a VM's switch. Opening Settings must not touch the network.
+    /// </summary>
+    private void ApplyInventory(HostInventory.Snapshot snapshot) => WithUpdatingSuppressed(() =>
+    {
+        foreach (var consumer in _sectionConsumers.Concat(_ruleConsumers))
+        {
+            try { consumer(snapshot); }
+            catch (Exception ex) { AppInfo.AppendCrashLogLine("SettingsWindow", $"ApplyInventory: {ex}"); }
+        }
+    });
+
+    /// <summary>
+    /// An editable picker for an identity field: it SUGGESTS the live values but accepts anything typed.
+    ///
+    /// <para>Editable — not a closed dropdown — is the whole design decision of issue #41. A rule is
+    /// legitimately written before the switch or VM it names exists, and the host may be offline or
+    /// Hyper-V unreachable when Settings is opened; a closed list would make those cases uneditable. So
+    /// the live values are an affordance that removes the retyping (and with it the silent-typo failure
+    /// mode), never a constraint. With no items it is precisely the TextBox it replaced.</para>
+    ///
+    /// <para><paramref name="live"/> pulls this field's values out of a snapshot; it is invoked on each
+    /// enumeration, under the re-entrancy guard.</para>
+    /// </summary>
+    private ComboBox SuggestionCombo(
+        string? value,
+        string placeholder,
+        Func<HostInventory.Snapshot, IReadOnlyList<string>> live,
+        Action<string> commit)
+    {
+        var combo = new ComboBox
+        {
+            IsEditable          = true,
+            Text                = value ?? "",
+            PlaceholderText     = placeholder,
+            MinWidth            = 220,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+
+        _consumerSink.Add(snapshot =>
+        {
+            // The user's current text is the authority, not the list: re-populating must never retype the
+            // field. Captured before and restored after, because assigning ItemsSource clears Text.
+            var current = combo.Text;
+            combo.ItemsSource = SettingsOptions.SuggestionItems(current, live(snapshot));
+            combo.Text        = current;
+        });
+
+        // Both paths, deliberately. LostFocus alone would lose a pick made just before the window is
+        // closed or the app is alt-tabbed away; SelectionChanged alone would miss free text, which is the
+        // case that must keep working. Committing twice is harmless — every ConfigManager mutator
+        // no-ops when the value is unchanged, so the redundant call never reaches the file.
+        combo.SelectionChanged += (_, _) =>
+        {
+            if (_updating) return;
+            commit(combo.SelectedItem as string ?? combo.Text);
+        };
+        combo.LostFocus += (_, _) =>
+        {
+            if (_updating) return;
+            commit(combo.Text);
+        };
+
+        // NOT optional, and the reason this control can be trusted with free text at all: an editable
+        // ComboBox raises TextSubmitted when the user commits text that matches no item, and its DEFAULT
+        // handling is to REVERT the box to the last selected value. That default is exactly backwards
+        // here — text matching no item is the case this field must support (a switch or VM that doesn't
+        // exist yet, or a host that couldn't be enumerated), so silently discarding it would reintroduce
+        // the closed-picklist behaviour this issue exists to avoid. Handled = true suppresses the revert
+        // and keeps what the user typed.
+        combo.TextSubmitted += (_, args) =>
+        {
+            args.Handled = true;
+            if (_updating) return;
+            commit(combo.Text);
+        };
+
+        return combo;
+    }
+
+    /// <summary>
+    /// A "pick from the live list" button that fills a field the user may equally well type into. Used
+    /// where the field is not itself a combo — the MAC box (whose validation gating must stay exactly as
+    /// it was) and the one-VM-per-line target boxes (where picking must ADD a line, not replace the text).
+    /// Disabled and self-explaining while there is nothing to offer, so it can never look broken on a
+    /// host that couldn't be enumerated.
+    /// </summary>
+    private DropDownButton PickerButton(
+        string content,
+        string emptyHint,
+        Func<HostInventory.Snapshot, IReadOnlyList<(string Label, string Value)>> live,
+        Action<string> picked)
+    {
+        var button = new DropDownButton { Content = content, IsEnabled = false };
+        var menu   = new MenuFlyout();
+        button.Flyout = menu;
+        menu.Items.Add(new MenuFlyoutItem { Text = emptyHint, IsEnabled = false });
+
+        _consumerSink.Add(snapshot =>
+        {
+            var options = live(snapshot);
+            menu.Items.Clear();
+            if (options.Count == 0)
+            {
+                menu.Items.Add(new MenuFlyoutItem { Text = emptyHint, IsEnabled = false });
+                button.IsEnabled = false;
+                return;
+            }
+
+            foreach (var (label, value) in options)
+            {
+                var v = value;   // capture per iteration
+                menu.Items.Add(new MenuFlyoutItem { Text = label, Command = new RelayCommand(() => picked(v)) });
+            }
+            button.IsEnabled = true;
+        });
+
+        return button;
     }
 
     // ── General ──────────────────────────────────────────────────────────────────
@@ -376,8 +559,9 @@ internal sealed partial class SettingsWindow : Window
     {
         var panel = Section("Managed VMs");
         panel.Children.Add(Description(
-            "What to do with each managed VM when the bridged network is lost (the switch falls back " +
-            "to the default). The action is cancelled if the bridge returns within the delay."));
+            "Which network adapter each managed VM is reconnected through, and what to do with the VM " +
+            "when the bridged network is lost (the switch falls back to the default). The action is " +
+            "cancelled if the bridge returns within the delay."));
 
         var vms = _config.Current.VirtualMachines;
         if (vms.Count == 0)
@@ -392,23 +576,63 @@ internal sealed partial class SettingsWindow : Window
         }
 
         foreach (var vm in vms)
-            panel.Children.Add(BuildVmRow(vm.Name, vm.OnBridgeLostAction, vm.OnBridgeLostDelaySeconds));
+            panel.Children.Add(BuildVmCard(vm));
 
         return panel;
     }
 
-    private UIElement BuildVmRow(string vmName, string? action, int delaySeconds)
+    /// <summary>
+    /// One managed VM: its network adapter (issue #41) and its on-bridge-lost action + delay.
+    ///
+    /// <para>A Card holding the VM's name over two <see cref="SettingRowPanel"/> rows, rather than the
+    /// single row this was: the NIC name is a second, unrelated setting and deserves its own labelled row
+    /// with its own description. Reusing SettingRowPanel (not a Grid) keeps issue #31's guarantee — each
+    /// row drops its control beneath the text when the window is too narrow for both — which a Grid would
+    /// have silently thrown away, and which issue #44's wider font makes matter more, not less.</para>
+    /// </summary>
+    private UIElement BuildVmCard(VmTarget vm)
     {
+        var vmName = vm.Name;
+
+        var content = new StackPanel { Spacing = 10 };
+        content.Children.Add(new TextBlock
+        {
+            Text         = vmName,
+            FontSize     = 14,
+            FontWeight   = FontWeights.SemiBold,
+            TextWrapping = TextWrapping.Wrap,
+        });
+
+        // ── Network adapter (issue #41) ──
+        // Previously reachable ONLY by hand-editing config.json — a VM with a renamed or second synthetic
+        // adapter silently never reconnected, and the file was the only fix. The suggestions are the VM's
+        // OWN adapters as Hyper-V reports them; free text stays valid because the VM may not exist yet.
+        var nicCombo = SuggestionCombo(
+            vm.NicName,
+            SettingsOptions.DefaultNicName,
+            snapshot => snapshot.NicNamesFor(vmName),
+            nic => Task.Run(() =>
+            {
+                try { _config.SetVmNicName(vmName, nic); }
+                catch (Exception ex) { WarnOnUi($"Could not save the network adapter for {vmName}:\n\n{ex.Message}"); }
+            }));
+        content.Children.Add(Row(
+            "Network adapter",
+            $"The VM adapter this app reconnects. Offers {vmName}'s own adapters when the host can be "
+            + $"read; any name can still be typed. Blank restores the default (\"{SettingsOptions.DefaultNicName}\").",
+            nicCombo));
+
+        // ── On bridge lost ──
         var actionCombo = new ComboBox { MinWidth = 150 };
         var delayCombo  = new ComboBox { MinWidth = 130 };
 
         WithUpdatingSuppressed(() =>
         {
             PopulateLabelCombo(actionCombo, SettingsOptions.BridgeLostActions,
-                SettingsOptions.BridgeLostActionToIndex(action));
+                SettingsOptions.BridgeLostActionToIndex(vm.OnBridgeLostAction));
 
-            LoadDelayCombo(delayCombo, SettingsOptions.NormalizeDelaySeconds(delaySeconds));
-            delayCombo.IsEnabled = SettingsOptions.NormalizeBridgeLostAction(action) is not null;
+            LoadDelayCombo(delayCombo, SettingsOptions.NormalizeDelaySeconds(vm.OnBridgeLostDelaySeconds));
+            delayCombo.IsEnabled = SettingsOptions.NormalizeBridgeLostAction(vm.OnBridgeLostAction) is not null;
         });
 
         void Commit()
@@ -420,27 +644,19 @@ internal sealed partial class SettingsWindow : Window
             Task.Run(() =>
             {
                 try { _config.SetVmBridgeLostAction(vmName, act, delay); }
-                catch (Exception ex)
-                {
-                    _ui.TryEnqueue(() =>
-                    {
-                        if (_closed) return;
-                        NativeMethods.Warn(
-                            $"Could not save the setting for {vmName}:\n\n{ex.Message}", AppInfo.Name);
-                    });
-                }
+                catch (Exception ex) { WarnOnUi($"Could not save the setting for {vmName}:\n\n{ex.Message}"); }
             });
         }
 
         actionCombo.SelectionChanged += (_, _) => Commit();
         delayCombo.SelectionChanged  += (_, _) => Commit();
 
-        // Two controls on the right, stacked label above them so the row stays readable.
         var controls = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
         controls.Children.Add(actionCombo);
         controls.Children.Add(delayCombo);
+        content.Children.Add(Row("On bridge lost", "Action · delay when the bridge is lost", controls));
 
-        return SettingRow(vmName, "Action · delay when the bridge is lost", controls);
+        return Card(content);
     }
 
     /// <summary>
@@ -492,12 +708,16 @@ internal sealed partial class SettingsWindow : Window
         });
 
         var fb = _config.Current.Fallback;
-        _fallbackSwitchBox = new TextBox { Text = fb.VirtualSwitch, MinWidth = 220 };
-        _fallbackSwitchBox.LostFocus += (_, _) => CommitFallback();
+        _fallbackSwitchCombo = SuggestionCombo(
+            fb.VirtualSwitch,
+            "Hyper-V switch name",
+            snapshot => snapshot.SwitchNames,
+            _ => CommitFallback());
         panel.Children.Add(SettingRow(
             "Fallback switch",
-            "Used when no rule matches (typically a NAT switch such as the Hyper-V \"Default Switch\").",
-            _fallbackSwitchBox));
+            "Used when no rule matches (typically a NAT switch such as the Hyper-V \"Default Switch\"). "
+            + "Offers the host's switches; any name can still be typed.",
+            _fallbackSwitchCombo));
 
         // One VM per line (fix 8): unambiguous even when a VM name contains a comma.
         _fallbackVmsBox = new TextBox
@@ -510,16 +730,52 @@ internal sealed partial class SettingsWindow : Window
         _fallbackVmsBox.LostFocus += (_, _) => CommitFallback();
         panel.Children.Add(SettingRow(
             "Fallback target VMs",
-            "VM names reconnected to the fallback switch — one per line.",
-            _fallbackVmsBox));
+            "VM names reconnected to the fallback switch — one per line. Add one from the host's VMs, "
+            + "or type a name (a VM that does not exist yet is allowed).",
+            WithVmPicker(_fallbackVmsBox, CommitFallback)));
 
         return panel;
     }
 
+    /// <summary>
+    /// Pairs a one-VM-per-line box with an "Add VM" picker fed by the host's discovered VMs (issue #41).
+    ///
+    /// <para>The box is kept — it round-trips a name containing a comma safely (fix 8) and is what makes
+    /// a not-yet-created VM expressible. The picker only APPENDS a line
+    /// (<see cref="SettingsOptions.AppendVmLine"/>), so it can neither replace what the user typed nor
+    /// duplicate a VM already listed.</para>
+    /// </summary>
+    private FrameworkElement WithVmPicker(TextBox vmsBox, Action commit)
+    {
+        var picker = PickerButton(
+            "Add VM",
+            "No VMs found on this host",
+            snapshot => [.. snapshot.VmNames.Select(v => (v, v))],
+            vmName =>
+            {
+                vmsBox.Text = SettingsOptions.AppendVmLine(vmsBox.Text, vmName);
+                commit();
+            });
+
+        var stack = new StackPanel { Spacing = 6, MinWidth = 220 };
+        stack.Children.Add(vmsBox);
+        stack.Children.Add(picker);
+        return stack;
+    }
+
+    /// <summary>
+    /// Rebuilds every rule card. Called both during a full <see cref="BuildSections"/> and on its own by
+    /// Add/Remove rule, so it owns the rule cards' picker registrations (issue #41): the previous cards'
+    /// callbacks are dropped — they capture controls this method is detaching — and the fresh ones are
+    /// populated from the cached snapshot, so a rule added after the host was read gets its switch and VM
+    /// suggestions immediately rather than only after the next enumeration.
+    /// </summary>
     private void RebuildRuleCards()
     {
         if (_rulesListPanel is null) return;
         _rulesListPanel.Children.Clear();
+
+        _ruleConsumers.Clear();
         if (_workingRules.Count == 0)
         {
             _rulesListPanel.Children.Add(Card(new TextBlock
@@ -528,8 +784,19 @@ internal sealed partial class SettingsWindow : Window
             }));
             return;
         }
-        foreach (var rule in _workingRules)
-            _rulesListPanel.Children.Add(BuildRuleCard(rule));
+
+        // Route the cards' registrations into the rule-scoped list, then always restore the sink — a
+        // section built after this one (or a later Add) must not land its callbacks in a list that
+        // RebuildRuleCards will clear out from under it.
+        _consumerSink = _ruleConsumers;
+        try
+        {
+            foreach (var rule in _workingRules)
+                _rulesListPanel.Children.Add(BuildRuleCard(rule));
+        }
+        finally { _consumerSink = _sectionConsumers; }
+
+        if (_inventory is not null) ApplyInventory(_inventory);
     }
 
     private void AddRule()
@@ -548,10 +815,20 @@ internal sealed partial class SettingsWindow : Window
 
         int row = 0;
 
-        TextBox TextField(string label, string? value, string? placeholder, Action<string> commit, Func<string, bool>? validate = null, bool multiline = false)
+        // Places an already-built control in the label/field grid. Split out of TextField so the fields
+        // that are no longer a bare TextBox (issue #41: the switch picker, and the boxes that gained a
+        // "pick from the host" affordance) sit on exactly the same grid rows as the ones that still are.
+        void Field(string label, FrameworkElement control)
         {
             var lbl = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, FontSize = 12, Opacity = 0.8 };
             Grid.SetRow(lbl, row); Grid.SetColumn(lbl, 0);
+            Grid.SetRow(control, row); Grid.SetColumn(control, 1);
+            grid.Children.Add(lbl); grid.Children.Add(control);
+            row++;
+        }
+
+        TextBox TextField(string label, string? value, string? placeholder, Action<string> commit, Func<string, bool>? validate = null, bool multiline = false, Func<TextBox, FrameworkElement>? wrap = null)
+        {
             var box = new TextBox { Text = value ?? "", PlaceholderText = placeholder ?? "", HorizontalAlignment = HorizontalAlignment.Stretch };
             if (multiline) { box.AcceptsReturn = true; box.TextWrapping = TextWrapping.Wrap; }
             box.LostFocus += (_, _) =>
@@ -569,9 +846,7 @@ internal sealed partial class SettingsWindow : Window
                 commit(box.Text);
                 CommitRules();
             };
-            Grid.SetRow(box, row); Grid.SetColumn(box, 1);
-            grid.Children.Add(lbl); grid.Children.Add(box);
-            row++;
+            Field(label, wrap is null ? box : wrap(box));
             return box;
         }
 
@@ -608,15 +883,35 @@ internal sealed partial class SettingsWindow : Window
         grid.Children.Add(prioLabel); grid.Children.Add(prioBox);
         row++;
 
+        // Adapter MAC keeps its TextBox and its EXACT validation gating (an invalid MAC is flagged and not
+        // persisted) — issue #41 only adds a way to fill it from a real adapter instead of transcribing a
+        // MAC by hand, which is the field most likely to be mistyped and the hardest to eyeball.
         TextField("Adapter MAC", rule.Conditions.AdapterMac, "AA:BB:CC:DD:EE:FF (optional)",
-            v => rule.Conditions.AdapterMac = SettingsOptions.CanonicalizeMac(v), SettingsOptions.IsValidMac);
+            v => rule.Conditions.AdapterMac = SettingsOptions.CanonicalizeMac(v), SettingsOptions.IsValidMac,
+            wrap: box => WithMacPicker(box, mac =>
+            {
+                rule.Conditions.AdapterMac = SettingsOptions.CanonicalizeMac(mac);
+                CommitRules();
+            }));
         TextField("IP subnet (CIDR)", rule.Conditions.IpCidr, "10.0.0.0/23 (optional)",
             v => rule.Conditions.IpCidr = SettingsOptions.BlankToNull(v), SettingsOptions.IsValidCidr);
-        TextField("Virtual switch", rule.VirtualSwitch, "Hyper-V switch name",
-            v => rule.VirtualSwitch = v.Trim());
+
+        // The switch a typo here silently costs everything: the rule matches the network, then binds
+        // nothing, and says so only in a log line (issue #17's failure). Suggest the host's real switches.
+        Field("Virtual switch", SuggestionCombo(
+            rule.VirtualSwitch,
+            "Hyper-V switch name",
+            snapshot => snapshot.SwitchNames,
+            v => { rule.VirtualSwitch = v.Trim(); CommitRules(); }));
+
         // One VM per line (not comma-separated) so a VM whose name contains a comma round-trips intact (fix 8).
         TextField("Target VMs", SettingsOptions.JoinVmLines(rule.TargetVms), "One VM name per line",
-            v => rule.TargetVms = SettingsOptions.ParseVmLines(v), multiline: true);
+            v => rule.TargetVms = SettingsOptions.ParseVmLines(v), multiline: true,
+            wrap: box => WithVmPicker(box, () =>
+            {
+                rule.TargetVms = SettingsOptions.ParseVmLines(box.Text);
+                CommitRules();
+            }));
 
         // Auto-start toggle.
         var autoLabel = new TextBlock { Text = "Auto-start VMs", VerticalAlignment = VerticalAlignment.Center, FontSize = 12, Opacity = 0.8 };
@@ -648,10 +943,44 @@ internal sealed partial class SettingsWindow : Window
         });
     }
 
+    /// <summary>
+    /// Pairs the MAC box with a picker listing the host's physical adapters (issue #41), writing the
+    /// chosen adapter's canonical MAC into the box. Adapters whose MAC is unknown are not offered —
+    /// <see cref="PhysicalAdapterInfo.Mac"/> is "—" in that case, and filling the field with a dash would
+    /// be worse than the retyping this replaces.
+    ///
+    /// <para>A picked MAC is by construction well-formed, so the invalid-value border the box may be
+    /// wearing is cleared — the field is now valid and must not keep saying otherwise.</para>
+    /// </summary>
+    private FrameworkElement WithMacPicker(TextBox macBox, Action<string> commit)
+    {
+        var picker = PickerButton(
+            "Pick adapter",
+            "No adapters found on this host",
+            snapshot =>
+            [
+                .. snapshot.Adapters
+                    .Where(a => SettingsOptions.IsValidMac(a.Mac) && !string.IsNullOrWhiteSpace(a.Mac) && a.Mac != "—")
+                    .Select(a => ($"{a.DisplayName} — {a.Mac}", a.Mac))
+            ],
+            mac =>
+            {
+                macBox.Text = SettingsOptions.CanonicalizeMac(mac) ?? mac;
+                macBox.ClearValue(Control.BorderBrushProperty);
+                macBox.ClearValue(Control.BorderThicknessProperty);
+                commit(macBox.Text);
+            });
+
+        var stack = new StackPanel { Spacing = 6, MinWidth = 220 };
+        stack.Children.Add(macBox);
+        stack.Children.Add(picker);
+        return stack;
+    }
+
     private void CommitFallback()
     {
-        if (_updating || _fallbackSwitchBox is null || _fallbackVmsBox is null) return;
-        var sw   = _fallbackSwitchBox.Text;
+        if (_updating || _fallbackSwitchCombo is null || _fallbackVmsBox is null) return;
+        var sw   = _fallbackSwitchCombo.Text;
         var vms  = SettingsOptions.ParseVmLines(_fallbackVmsBox.Text);
         Task.Run(() =>
         {
@@ -681,43 +1010,24 @@ internal sealed partial class SettingsWindow : Window
         // flaky USB-Ethernet dock. Never do it on the UI thread inside the ctor (that would freeze the
         // Settings window open — the "nothing happens" symptom). Show a placeholder now and fill the
         // rows in from a background thread when ready.
-        var loading = Card(new TextBlock { Text = "Loading adapters…", Opacity = 0.75 });
-        panel.Children.Add(loading);
-        LoadAdaptersAsync(panel, loading);
+        //
+        // The enumeration itself now arrives with the rest of the host inventory (issue #41), so the
+        // window makes ONE adapter read that both this section and the rules editor's MAC picker consume,
+        // rather than one per feature. Its own container panel, refilled wholesale on each snapshot, so a
+        // second enumeration (a config reload re-reads the host) refreshes these rows rather than being
+        // dropped on the floor by a stale index.
+        var rowsPanel = new StackPanel { Spacing = 8 };
+        rowsPanel.Children.Add(Card(new TextBlock { Text = "Loading adapters…", Opacity = 0.75 }));
+        panel.Children.Add(rowsPanel);
+
+        _consumerSink.Add(snapshot =>
+        {
+            rowsPanel.Children.Clear();
+            foreach (var r in BuildAdapterRows(snapshot.Adapters)) rowsPanel.Children.Add(r);
+        });
 
         return panel;
     }
-
-    /// <summary>
-    /// Enumerates physical adapters off the UI thread, then marshals back to replace the
-    /// "Loading adapters…" placeholder with the built rows (or a "none found" card). Wrapped so a
-    /// enumeration or build failure can neither crash the ctor nor leave the placeholder stuck.
-    /// </summary>
-    private void LoadAdaptersAsync(StackPanel panel, UIElement placeholder) => Task.Run(() =>
-    {
-        IReadOnlyList<PhysicalAdapterInfo> adapters;
-        try   { adapters = AdapterMatcher.GetPhysicalAdapters(); }
-        catch { adapters = []; }
-
-        _ui.TryEnqueue(() =>
-        {
-            if (_closed) return;
-            try
-            {
-                int idx = panel.Children.IndexOf(placeholder);
-                if (idx < 0) return;                 // section rebuilt/removed underneath us
-                panel.Children.RemoveAt(idx);
-
-                var rows = BuildAdapterRows(adapters);
-                for (int i = 0; i < rows.Count; i++)
-                    panel.Children.Insert(idx + i, rows[i]);
-            }
-            catch (Exception ex)
-            {
-                AppInfo.AppendCrashLogLine("SettingsWindow", $"LoadAdaptersAsync: {ex}");
-            }
-        });
-    });
 
     private List<UIElement> BuildAdapterRows(IReadOnlyList<PhysicalAdapterInfo> adapters)
     {
@@ -950,7 +1260,16 @@ internal sealed partial class SettingsWindow : Window
     /// <see cref="SettingRowPanel"/>, which owns that decision).  Child order is load-bearing: the panel
     /// arranges <c>Children[0]</c> as the text and <c>Children[1]</c> as the control.
     /// </summary>
-    private static Border SettingRow(string header, string? description, FrameworkElement control)
+    private static Border SettingRow(string header, string? description, FrameworkElement control) =>
+        Card(Row(header, description, control));
+
+    /// <summary>
+    /// The row itself, without the surrounding card — so several settings can share one card while each
+    /// keeps the responsive text/control layout (see <see cref="BuildVmCard"/>).  Child order is
+    /// load-bearing: <see cref="SettingRowPanel"/> arranges <c>Children[0]</c> as the text and
+    /// <c>Children[1]</c> as the control.
+    /// </summary>
+    private static SettingRowPanel Row(string header, string? description, FrameworkElement control)
     {
         var left = new StackPanel { Spacing = 2 };
         left.Children.Add(new TextBlock
@@ -971,8 +1290,18 @@ internal sealed partial class SettingsWindow : Window
         var row = new SettingRowPanel();
         row.Children.Add(left);
         row.Children.Add(control);
-        return Card(row);
+        return row;
     }
+
+    /// <summary>
+    /// Shows a warning from a background save, marshalled to the UI thread and dropped if the window has
+    /// since closed — the guard every one of these call sites needs and previously repeated inline.
+    /// </summary>
+    private void WarnOnUi(string message) => _ui.TryEnqueue(() =>
+    {
+        if (_closed) return;
+        NativeMethods.Warn(message, AppInfo.Name);
+    });
 
     private void WithUpdatingSuppressed(Action apply)
     {

@@ -331,6 +331,140 @@ public class ConfigManagerTests : IDisposable
         Assert.Equal("pause", before.OnBridgeLostAction);
     }
 
+    // ── SetVmNicName (issue #41) ────────────────────────────────────────────────
+    // The NIC name was reachable ONLY by hand-editing config.json before this. These lock the editor's
+    // contract: it persists, it round-trips an exotic hand-edited value, and — the trap this codebase has
+    // been bitten by — it cannot silently drop a field it doesn't name (ConfigManager.With rebuilds the
+    // WHOLE AppConfig per write, so anything omitted is serialised back as null and lost forever).
+
+    [Fact]
+    public void SetVmNicName_PersistsTheName()
+    {
+        var path = WriteTempConfig(new AppConfig { VirtualMachines = [new VmTarget { Name = "Alpha" }] });
+        using var mgr = MakeManager(path);
+
+        mgr.SetVmNicName("Alpha", "Ethernet 2");
+
+        Assert.Equal("Ethernet 2", Assert.Single(ReadConfig(path).VirtualMachines).NicName);
+    }
+
+    [Fact]
+    public void SetVmNicName_BlankRestoresTheHyperVDefault()
+    {
+        // An empty NIC name would match no adapter at all — worse than the default it replaced.
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [new VmTarget { Name = "Alpha", NicName = "Ethernet 2" }],
+        });
+        using var mgr = MakeManager(path);
+
+        mgr.SetVmNicName("Alpha", "   ");
+
+        Assert.Equal("Network Adapter", Assert.Single(ReadConfig(path).VirtualMachines).NicName);
+    }
+
+    [Fact]
+    public void SetVmNicName_ExoticHandEditedValueRoundTrips()
+    {
+        // A VM's adapter can be renamed to anything; this app is not the authority on what Hyper-V allows.
+        var path = WriteTempConfig(new AppConfig { VirtualMachines = [new VmTarget { Name = "Alpha" }] });
+        using var mgr = MakeManager(path);
+
+        mgr.SetVmNicName("Alpha", "  vNIC — LAN (2,5 Gb) ");
+
+        Assert.Equal("vNIC — LAN (2,5 Gb)", Assert.Single(ReadConfig(path).VirtualMachines).NicName);
+    }
+
+    [Fact]
+    public void SetVmNicName_CaseInsensitiveNameMatch()
+    {
+        var path = WriteTempConfig(new AppConfig { VirtualMachines = [new VmTarget { Name = "Alpha" }] });
+        using var mgr = MakeManager(path);
+
+        mgr.SetVmNicName("alpha", "Ethernet 2");
+
+        Assert.Equal("Ethernet 2", Assert.Single(ReadConfig(path).VirtualMachines).NicName);
+    }
+
+    [Fact]
+    public void SetVmNicName_UnknownVm_IsNoOp()
+    {
+        var path = WriteTempConfig(new AppConfig { VirtualMachines = [new VmTarget { Name = "Alpha" }] });
+        using var mgr = MakeManager(path);
+
+        mgr.SetVmNicName("Missing", "Ethernet 2");   // must not throw or add a VM
+
+        var vm = Assert.Single(ReadConfig(path).VirtualMachines);
+        Assert.Equal("Alpha", vm.Name);
+        Assert.Equal("Network Adapter", vm.NicName);
+    }
+
+    [Fact]
+    public void SetVmNicName_DoesNotMutateLiveVmOnUnchangedNoOp()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [new VmTarget { Name = "Alpha", NicName = "Ethernet 2" }],
+        });
+        using var mgr = MakeManager(path);
+        var before = mgr.Current.VirtualMachines[0];
+
+        mgr.SetVmNicName("Alpha", "Ethernet 2");   // identical to stored → no-op
+
+        Assert.Same(before, mgr.Current.VirtualMachines[0]);
+    }
+
+    [Fact]
+    public void SetVmNicName_PreservesTheVmsOwnOtherFields()
+    {
+        // A NIC edit rebuilds the VmTarget — a field dropped there silently disarms (or re-arms) a
+        // destructive bridge-lost action the user configured separately.
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines =
+            [
+                new VmTarget { Name = "Alpha", OnBridgeLostAction = "save", OnBridgeLostDelaySeconds = 120 },
+            ],
+        });
+        using var mgr = MakeManager(path);
+
+        mgr.SetVmNicName("Alpha", "Ethernet 2");
+
+        var vm = Assert.Single(ReadConfig(path).VirtualMachines);
+        Assert.Equal("Ethernet 2", vm.NicName);
+        Assert.Equal("save",       vm.OnBridgeLostAction);
+        Assert.Equal(120,          vm.OnBridgeLostDelaySeconds);
+    }
+
+    [Fact]
+    public void SetVmNicName_PreservesOtherVmsRulesFallbackLogLevelAndWindowRect()
+    {
+        // The With() regression guard: every field the writer does not name must survive the write.
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [new VmTarget { Name = "Alpha" }, new VmTarget { Name = "Beta", NicName = "Ethernet 9" }],
+            Rules           = [new NetworkRule { Name = "Office", Priority = 10, VirtualSwitch = "Bridged" }],
+            Fallback        = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Alpha"] },
+            LogLevel        = LogLevel.Warning,
+            SettingsWindowX = 100, SettingsWindowY = 200, SettingsWindowWidth = 900, SettingsWindowHeight = 700,
+        });
+        using var mgr = MakeManager(path);
+
+        mgr.SetVmNicName("Alpha", "Ethernet 2");
+
+        var cfg = ReadConfig(path);
+        Assert.Equal("Ethernet 2", cfg.VirtualMachines[0].NicName);
+        Assert.Equal("Ethernet 9", cfg.VirtualMachines[1].NicName);   // the other VM is untouched
+        Assert.Equal("Office",         Assert.Single(cfg.Rules).Name);
+        Assert.Equal("Default Switch", cfg.Fallback.VirtualSwitch);
+        Assert.Equal(["Alpha"],        cfg.Fallback.TargetVms);
+        Assert.Equal(LogLevel.Warning, cfg.LogLevel);
+        Assert.Equal(100, cfg.SettingsWindowX);
+        Assert.Equal(200, cfg.SettingsWindowY);
+        Assert.Equal(900, cfg.SettingsWindowWidth);
+        Assert.Equal(700, cfg.SettingsWindowHeight);
+    }
+
     // ── SaveRules (issue #23) ───────────────────────────────────────────────────
 
     [Fact]
