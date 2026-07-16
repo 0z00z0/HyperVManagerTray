@@ -743,6 +743,11 @@ internal sealed partial class SettingsWindow : Window
 
     // ── Maintenance ────────────────────────────────────────────────────────────────
 
+    // The last "Reload config from disk" confirmation, held here rather than on the TextBlock because a
+    // successful reload rebuilds the whole Maintenance section and would otherwise discard it (issue #39).
+    // Null = nothing to show (never reloaded, or the last reload failed and said so in a dialog instead).
+    private string? _reloadResultMessage;
+
     private UIElement BuildMaintenanceSection()
     {
         var panel = Section("Maintenance");
@@ -774,21 +779,60 @@ internal sealed partial class SettingsWindow : Window
         });
         openLog.Flyout = logMenu;
 
+        // Inline outcome for the happy path (issue #39). A modal for "it worked" is noise; silence,
+        // however, was worse — the button gave no signal at all, so a reload that parsed and one that
+        // threw looked identical from here.
+        var reloadResult = new TextBlock
+        {
+            TextWrapping      = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center,
+            Opacity           = 0.75,
+            // A successful reload rebuilds every section — including this one — so the confirmation is
+            // rendered from the field rather than written onto this instance, which by then is detached.
+            Text       = _reloadResultMessage ?? string.Empty,
+            Visibility = _reloadResultMessage is null ? Visibility.Collapsed : Visibility.Visible,
+        };
+
         var reload = new Button { Content = "Reload config from disk" };
         reload.Click += (_, _) => Task.Run(() =>
         {
-            _config.Load();
-            _ui.TryEnqueue(RefreshValuesFromConfig);
+            var outcome = _config.Load();
+            _ui.TryEnqueue(() =>
+            {
+                if (_closed) return;
+
+                // THE point of this issue: only re-render the window from ConfigManager.Current when the
+                // load actually succeeded. On a parse failure Current still holds the PREVIOUS config, so
+                // the old code's unconditional RefreshValuesFromConfig re-drew the user's stale values and
+                // presented them as what had just been read off disk — a surface asserting a state the app
+                // never confirmed. ShouldRebuildFromConfig is the gate; the dialog is the honest answer.
+                if (!ConfigLoadUi.ShouldRebuildFromConfig(outcome))
+                {
+                    // No rebuild happened, so this TextBlock is still the live one — clear it directly.
+                    // Leaving a previous "Reloaded — 3 rules, 2 VMs" on screen next to a failed reload
+                    // would be the same lie in a smaller font.
+                    _reloadResultMessage    = null;
+                    reloadResult.Text       = string.Empty;
+                    reloadResult.Visibility = Visibility.Collapsed;
+                    NativeMethods.Error(ConfigLoadUi.FailureMessage(outcome)!, AppInfo.Name);
+                    return;
+                }
+
+                _reloadResultMessage = ConfigLoadUi.SuccessMessage(outcome);
+                RefreshValuesFromConfig();   // rebuilds this section, which renders the message above
+            });
         });
 
         buttons.Children.Add(openConfig);
         buttons.Children.Add(openLog);
         buttons.Children.Add(reload);
+        buttons.Children.Add(reloadResult);
 
         panel.Children.Add(SettingRow(
             "Config & logs",
             "Open the raw config.json, open any of the app's log files (switcher, VM power, UI) or the logs folder, "
-            + "or re-read config.json from disk after an out-of-band edit.",
+            + "or re-read config.json from disk after an out-of-band edit. A reload that can't parse the file says "
+            + "so and changes nothing — the settings already loaded stay active.",
             buttons));
 
         var updateBtn = new Button { Content = "Check for updates" };

@@ -345,6 +345,10 @@ public sealed partial class DashboardWindow : Window
     private readonly Dictionary<string, VmCard> _cards = new(StringComparer.OrdinalIgnoreCase);
     private List<string> _cardOrder = [];
 
+    /// <summary>The "no VMs yet" card (issue #38), or null when real VM cards are showing. Tracked so
+    /// the empty state is built once and removed the moment the first VM lands in config.</summary>
+    private Border? _emptyState;
+
     /// <summary>Categorises everything that affects a card's row/button layout. Uses the shared
     /// <see cref="VmStateUi.ClassifyShape"/> so a transitional state gets its own shape (no power
     /// buttons) and rebuilds the card when the transition lands (issue #30, finding 3).</summary>
@@ -360,6 +364,31 @@ public sealed partial class DashboardWindow : Window
     private bool BuildCards(IReadOnlyList<VmStatus> statuses)
     {
         var vms = _config.Current.VirtualMachines;
+
+        // Zero managed VMs → an empty-state card (issue #38). Previously this method simply added no
+        // children, leaving the "VIRTUAL MACHINES" header floating over blank space — which reads as a
+        // broken window, not as "you haven't set anything up yet", and points at nothing. Note this
+        // MUST be handled before the SequenceEqual check below: on a fresh install both `vms` and
+        // `_cardOrder` are empty, so that check passes, the loop iterates nothing, and no card would
+        // ever be added.
+        if (vms.Count == 0)
+        {
+            if (_emptyState is not null) return false;   // already showing it
+            VmPanel.Children.Clear();
+            _cards.Clear();
+            _cardOrder = [];
+            _emptyState = BuildEmptyStateCard();
+            VmPanel.Children.Add(_emptyState);
+            return true;
+        }
+
+        // First VM added (config hot-reload) → drop the empty state and fall through to a real rebuild
+        // (_cardOrder is empty, so the wholesale branch below fires).
+        if (_emptyState is not null)
+        {
+            VmPanel.Children.Remove(_emptyState);
+            _emptyState = null;
+        }
 
         // VM set/order changed (config edit, first open) → rebuild the panel wholesale.
         if (!vms.Select(v => v.Name).SequenceEqual(_cardOrder, StringComparer.OrdinalIgnoreCase))
@@ -556,6 +585,28 @@ public sealed partial class DashboardWindow : Window
         var switchText = !string.IsNullOrWhiteSpace(s?.Switch) ? s!.Switch : "—";
         return $"{switchText}  ·  {_monitor.LastApplied?.RuleName ?? "—"}";
     }
+
+    /// <summary>
+    /// The zero-VMs card (issue #38). Same Border idiom as a real VM card so the section still reads as
+    /// a populated list rather than a rendering failure, and it names the ONE next action that matters.
+    /// Deliberately points at the tray icon rather than a specific menu item: issue #34 is relocating
+    /// the VM Power menu, and a signpost that names a menu path is a signpost that goes stale.
+    /// </summary>
+    private static Border BuildEmptyStateCard() => new()
+    {
+        CornerRadius    = new CornerRadius(6),
+        Padding         = new Thickness(10, 8, 10, 8),
+        Background      = (Brush)Application.Current.Resources["CardBackgroundFillColorDefaultBrush"],
+        BorderBrush     = (Brush)Application.Current.Resources["CardStrokeColorDefaultBrush"],
+        BorderThickness = new Thickness(1),
+        Child = new TextBlock
+        {
+            Text         = "No VMs are managed yet.\nRight-click the tray icon to add one.",
+            FontSize     = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Opacity      = 0.75,
+        },
+    };
 
     private VmCard BuildCard(VmTarget vm, VmStatus? s)
     {

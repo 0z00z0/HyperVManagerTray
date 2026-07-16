@@ -126,15 +126,6 @@ public partial class App : Application
             _httpClient    = new HttpClient();
             _updateChecker = new UpdateChecker(_httpClient, _loggerFactory.CreateLogger<UpdateChecker>());
 
-            if (!File.Exists(configPath))
-            {
-                NativeMethods.Error(
-                    $"config.json not found at:\n{configPath}\n\nPlace config.json next to the executable and restart.",
-                    AppInfo.Name);
-                ExitIntentionally();   // deliberate give-up — relaunching would just fail again
-                return;
-            }
-
             // Shared "vm-power" category logger → vm-power.log (issue #20): the begin+outcome audit
             // trail for every VM power action, from both the user (VmService) and automatic triggers
             // (NetworkMonitor autostart / on-bridge-lost).
@@ -146,12 +137,30 @@ public partial class App : Application
             UI.UiActivityLog.Logger = uiLog;
 
             _exeDir  = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
+
+            // A missing config.json is no longer fatal (issue #38): write the blank-slate default and
+            // carry on into the app, whose Settings editor and tray flows are how the first VM and rule
+            // get added anyway. Done here — before the ConfigManager and its watcher exist — so the
+            // write can't raise ConfigReloaded and kick off a switch re-evaluation. Balloon'd (not
+            // error-boxed) once the tray icon is up, so the user knows a file appeared next to the exe.
+            bool createdDefaultConfig = ConfigManager.CreateDefaultIfMissing(configPath, uiLog);
+
             _config  = new ConfigManager(configPath, uiLog, _logLevelSwitch);
             _hyperV  = new HyperVManager(_loggerFactory.CreateLogger<HyperVManager>());
             _vm      = new VmService(_loggerFactory.CreateLogger<VmService>(), powerLog);
             _monitor = new NetworkMonitor(_config, _hyperV, _vm, _loggerFactory.CreateLogger<NetworkMonitor>(), powerLog);
 
             InitTrayIcon();
+
+            // Config feedback needs the tray icon, so it lands here rather than at the load itself.
+            AnnounceConfigState(createdDefaultConfig);
+
+            // A later hand-edit that doesn't parse is announced once per broken save (issue #39) — the
+            // app keeps running on the previous settings, and staying quiet about that is how a user
+            // ends up debugging dock behaviour against rules that were never loaded.
+            _config.ConfigLoadFailed += (_, outcome) =>
+                ShowBalloon($"{AppInfo.Name} — config", ConfigLoadUi.BalloonMessage(outcome)!,
+                            isError: true, suppressWhenDashboardVisible: false);
 
             _monitor.SwitchApplied += OnSwitchApplied;
             _monitor.Start();
@@ -200,6 +209,34 @@ public partial class App : Application
             NativeMethods.Error($"Failed to start Hyper-V Manager Tray:\n\n{ex}", AppInfo.Name);
             ExitIntentionally();   // startup failed — relaunching would just fail again
         }
+    }
+
+    /// <summary>
+    /// Tells the user, once, what happened to config.json at startup — the two cases that used to be
+    /// silent or fatal:
+    /// <list type="bullet">
+    ///   <item><b>Created</b> (issue #38): there was no config, so the app wrote a blank-slate one.
+    ///         A balloon, not an error box: nothing is wrong, a file simply appeared.</item>
+    ///   <item><b>Corrupt</b> (issue #39): a file exists but doesn't parse. The app would otherwise
+    ///         start silently on an empty in-memory default — every rule the user wrote quietly absent,
+    ///         with no signal beyond a log line. Say so.</item>
+    /// </list>
+    /// Not suppressed by a visible dashboard: neither fact is shown anywhere else.
+    /// </summary>
+    private void AnnounceConfigState(bool createdDefault)
+    {
+        if (createdDefault)
+        {
+            ShowBalloon(AppInfo.Name,
+                        "No config.json was found, so a default one was created next to the app. "
+                        + "Add your VMs and network rules from Settings.",
+                        isError: false, suppressWhenDashboardVisible: false);
+            return;
+        }
+
+        if (ConfigLoadUi.BalloonMessage(_config!.LastLoad) is { } problem)
+            ShowBalloon($"{AppInfo.Name} — config", problem,
+                        isError: true, suppressWhenDashboardVisible: false);
     }
 
     /// <summary>Exits after telling <see cref="SelfHealWatchdog"/> this teardown is deliberate, so it doesn't relaunch.</summary>
