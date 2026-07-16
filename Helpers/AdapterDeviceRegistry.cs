@@ -75,4 +75,37 @@ internal static class AdapterDeviceRegistry
         if (key?.GetValue("FriendlyName") is string s) return (true, s);
         return (false, null);
     }
+
+    /// <summary>
+    /// Reads the raw <c>DeviceDesc</c> for a device instance (read-only). Unlike
+    /// <see cref="ReadFriendlyName"/>, this value is written by the driver's INF and is NEVER touched
+    /// by the rename — it is the factory description's ground truth (issue #33). The value may be in
+    /// INF-indirect form (<c>@oem241.inf,%rtl8153.devicedesc%;Realtek USB GbE Family Controller</c>) or
+    /// a plain literal; <see cref="AdapterNameRules.ParseFactoryDescription"/> does the (pure) parse.
+    /// </summary>
+    internal static (bool Present, string? Value) ReadDeviceDesc(string deviceInstanceId)
+    {
+        using var key = Registry.LocalMachine.OpenSubKey(EnumKeyPrefix + deviceInstanceId);
+        if (key?.GetValue("DeviceDesc") is string s) return (true, s);
+        return (false, null);
+    }
+
+    /// <summary>
+    /// The device's factory description — <see cref="ReadDeviceDesc"/> parsed by
+    /// <see cref="AdapterNameRules.ParseFactoryDescription"/> — or null when it is absent, unreadable,
+    /// or not parseable into a usable literal. Read-only and total: an unreadable key (missing device,
+    /// access denied, hive fault) yields null rather than an exception, so callers degrade to their own
+    /// fallback instead of failing the rename (issue #33).
+    /// </summary>
+    internal static string? ReadFactoryDescription(string deviceInstanceId)
+    {
+        try
+        {
+            return AdapterNameRules.ParseFactoryDescription(ReadDeviceDesc(deviceInstanceId).Value);
+        }
+        catch
+        {
+            return null;   // unreadable → caller falls back; never let ground-truth lookup throw
+        }
+    }
 }

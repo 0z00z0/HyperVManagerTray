@@ -339,4 +339,302 @@ public class AdapterRenameTests
         var r = AdapterNameRules.ResolveDeviceInstanceId(guid!, entries);
         Assert.False(r.Success);
     }
+
+    // ── ParseFactoryDescription: the INF-indirect form (issue #33) ───────────────
+
+    /// <summary>The exact value from the reporting machine — the case that motivated issue #33.</summary>
+    [Fact]
+    public void ParseFactory_InfIndirect_ReturnsLiteralAfterSeparator()
+    {
+        Assert.Equal(
+            "Realtek USB GbE Family Controller",
+            AdapterNameRules.ParseFactoryDescription(
+                @"@oem241.inf,%rtl8153.devicedesc%;Realtek USB GbE Family Controller"));
+    }
+
+    [Theory]
+    [InlineData(@"@netrtwlane.inf,%rtlwlan.devicedesc%;Realtek 8822CE Wireless LAN 802.11ac PCI-E NIC",
+                "Realtek 8822CE Wireless LAN 802.11ac PCI-E NIC")]
+    [InlineData(@"@net1ic.inf,%e1000.devicedesc%;Intel(R) Ethernet Connection I219-LM",
+                "Intel(R) Ethernet Connection I219-LM")]
+    public void ParseFactory_InfIndirect_RealWorldShapes(string raw, string expected)
+        => Assert.Equal(expected, AdapterNameRules.ParseFactoryDescription(raw));
+
+    /// <summary>
+    /// The literal is taken from the FIRST ';' — the INF-indirect format has exactly one separator, and
+    /// the '@inf,%key%' prefix can never contain one. Splitting on the LAST ';' would silently truncate
+    /// a display name that legitimately contains a semicolon.
+    /// </summary>
+    [Fact]
+    public void ParseFactory_InfIndirect_KeepsSemicolonInsideDisplayName()
+    {
+        Assert.Equal(
+            "Acme NIC; Model 5; rev B",
+            AdapterNameRules.ParseFactoryDescription(@"@acme.inf,%acme.devicedesc%;Acme NIC; Model 5; rev B"));
+    }
+
+    [Fact]
+    public void ParseFactory_InfIndirect_TrimsAroundLiteral()
+    {
+        Assert.Equal(
+            "Realtek USB GbE Family Controller",
+            AdapterNameRules.ParseFactoryDescription(@"  @oem241.inf,%k%;   Realtek USB GbE Family Controller   "));
+    }
+
+    // ── ParseFactoryDescription: the plain-literal form ──────────────────────────
+
+    /// <summary>Many devices store a plain literal with no '@inf,%key%;' prefix at all.</summary>
+    [Theory]
+    [InlineData("Realtek USB GbE Family Controller")]
+    [InlineData("Intel(R) Wi-Fi 6 AX201 160MHz")]
+    [InlineData("Hyper-V Virtual Ethernet Adapter")]
+    public void ParseFactory_PlainLiteral_ReturnedVerbatim(string raw)
+        => Assert.Equal(raw, AdapterNameRules.ParseFactoryDescription(raw));
+
+    /// <summary>
+    /// Without a leading '@' there is no indirect form to strip, so the whole value IS the literal —
+    /// semicolons included. This must NOT be split.
+    /// </summary>
+    [Fact]
+    public void ParseFactory_PlainLiteral_WithSemicolon_NotSplit()
+        => Assert.Equal("Acme NIC; Model 5", AdapterNameRules.ParseFactoryDescription("Acme NIC; Model 5"));
+
+    [Fact]
+    public void ParseFactory_PlainLiteral_Trimmed()
+        => Assert.Equal("Acme NIC", AdapterNameRules.ParseFactoryDescription("   Acme NIC   "));
+
+    // ── ParseFactoryDescription: unusable shapes all yield null, never a blank ───
+
+    /// <summary>An indirect form with no ';' carries no literal to fall back on — unusable.</summary>
+    [Fact]
+    public void ParseFactory_InfIndirect_NoSeparator_ReturnsNull()
+        => Assert.Null(AdapterNameRules.ParseFactoryDescription(@"@oem241.inf,%rtl8153.devicedesc%"));
+
+    /// <summary>A trailing ';' with nothing after it would otherwise yield an empty "original".</summary>
+    [Theory]
+    [InlineData(@"@oem241.inf,%rtl8153.devicedesc%;")]
+    [InlineData(@"@oem241.inf,%rtl8153.devicedesc%;   ")]
+    public void ParseFactory_InfIndirect_EmptyLiteral_ReturnsNull(string raw)
+        => Assert.Null(AdapterNameRules.ParseFactoryDescription(raw));
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t\r\n")]
+    public void ParseFactory_NullOrBlank_ReturnsNull(string? raw)
+        => Assert.Null(AdapterNameRules.ParseFactoryDescription(raw));
+
+    /// <summary>
+    /// Refuse a value carrying control characters rather than hand it back — the caller would otherwise
+    /// write it to the device on a later Reset.
+    /// </summary>
+    [Theory]
+    [InlineData("Acme\0NIC")]                     // embedded NUL
+    [InlineData("Acme\u0007NIC")]                // BEL
+    [InlineData("Acme\nNIC")]                     // newline
+    [InlineData("@acme.inf,%k%;Acme\0NIC")]       // ...also past the INF-indirect prefix
+    [InlineData("@acme.inf,%k%;Acme\u0007NIC")]
+    public void ParseFactory_ControlCharacters_ReturnsNull(string raw)
+        => Assert.Null(AdapterNameRules.ParseFactoryDescription(raw));
+
+    /// <summary>Whatever the input, the parse never yields an empty or whitespace-only name.</summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(@"@a.inf,%k%;")]
+    [InlineData(@"@a.inf,%k%")]
+    [InlineData("Realtek USB GbE Family Controller")]
+    [InlineData(@"@oem241.inf,%k%;Realtek USB GbE Family Controller")]
+    public void ParseFactory_NeverReturnsBlank(string? raw)
+    {
+        var parsed = AdapterNameRules.ParseFactoryDescription(raw);
+        if (parsed is not null) Assert.False(string.IsNullOrWhiteSpace(parsed));
+    }
+
+    // ── CaptureOriginal: DeviceDesc is preferred over FriendlyName (issue #33) ───
+
+    /// <summary>
+    /// THE BUG. The config record was lost (uninstall/reinstall) while the registry rename survived, so
+    /// FriendlyName already holds a PREVIOUS rename's output. The factory description must win — before
+    /// #33 this recorded "Dell docking (Petterhaugen)" as "the original" and Reset became a no-op.
+    /// </summary>
+    [Fact]
+    public void CaptureOriginal_PrefersFactoryOverAPriorRenamesOutput()
+    {
+        var c = AdapterNameRules.CaptureOriginal(
+            factoryDescription: "Realtek USB GbE Family Controller",
+            friendlyNamePresent: true,
+            friendlyName: "Dell docking (Petterhaugen)");
+
+        Assert.Equal("Realtek USB GbE Family Controller", c.OriginalFriendlyName);
+        Assert.False(c.OriginalWasAbsent);
+    }
+
+    /// <summary>
+    /// A device with no explicit FriendlyName displays its DeviceDesc literal, so writing that literal
+    /// back on Reset reproduces the original display exactly. Reset becomes AVAILABLE where it was not
+    /// before — and it is still a write, never a delete (§5.4).
+    /// </summary>
+    [Fact]
+    public void CaptureOriginal_FactoryDerivable_NoFriendlyName_IsStillRestorable()
+    {
+        var c = AdapterNameRules.CaptureOriginal("Realtek USB GbE Family Controller", false, null);
+
+        Assert.Equal("Realtek USB GbE Family Controller", c.OriginalFriendlyName);
+        Assert.False(c.OriginalWasAbsent);
+    }
+
+    // ── CaptureOriginal: the fallback is exactly the pre-#33 behaviour ───────────
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void CaptureOriginal_NoFactory_FallsBackToFriendlyName(string? factory)
+    {
+        var c = AdapterNameRules.CaptureOriginal(factory, true, "Realtek USB GbE Family Controller");
+
+        Assert.Equal("Realtek USB GbE Family Controller", c.OriginalFriendlyName);
+        Assert.False(c.OriginalWasAbsent);
+    }
+
+    /// <summary>Nothing to restore at all — Reset must not be offered, and must never delete.</summary>
+    [Fact]
+    public void CaptureOriginal_NoFactory_NoFriendlyName_MarksOriginalAbsent()
+    {
+        var c = AdapterNameRules.CaptureOriginal(null, false, null);
+
+        Assert.Equal(string.Empty, c.OriginalFriendlyName);
+        Assert.True(c.OriginalWasAbsent);
+    }
+
+    /// <summary>A present-but-null FriendlyName must record a blank, not throw.</summary>
+    [Fact]
+    public void CaptureOriginal_NoFactory_PresentButNullFriendlyName_RecordsBlank()
+    {
+        var c = AdapterNameRules.CaptureOriginal(null, true, null);
+
+        Assert.Equal(string.Empty, c.OriginalFriendlyName);
+        Assert.False(c.OriginalWasAbsent);
+    }
+
+    [Fact]
+    public void CaptureOriginal_TrimsFactoryDescription()
+        => Assert.Equal("Acme NIC", AdapterNameRules.CaptureOriginal("  Acme NIC  ", true, "Renamed").OriginalFriendlyName);
+
+    /// <summary>End to end from the raw registry value: the parse feeds the capture.</summary>
+    [Fact]
+    public void CaptureOriginal_FromRawDeviceDesc_RecoversFactoryName()
+    {
+        var factory = AdapterNameRules.ParseFactoryDescription(
+            @"@oem241.inf,%rtl8153.devicedesc%;Realtek USB GbE Family Controller");
+        var c = AdapterNameRules.CaptureOriginal(factory, true, "Dell docking (Petterhaugen)");
+
+        Assert.Equal("Realtek USB GbE Family Controller", c.OriginalFriendlyName);
+    }
+
+    // ── RepairOriginal: correcting records poisoned before the #33 fix ───────────
+
+    private static AdapterNameRules.OriginalCapture Stored(string original, bool absent = false)
+        => new(original, absent);
+
+    /// <summary>
+    /// The poisoned record from the issue: originalFriendlyName == currentFriendlyName == a prior
+    /// rename's output, while the true original is the factory description.
+    /// </summary>
+    [Fact]
+    public void RepairOriginal_PoisonedRecord_IsCorrectedToFactory()
+    {
+        var r = AdapterNameRules.RepairOriginal(
+            Stored("Dell docking (Petterhaugen)"), "Realtek USB GbE Family Controller");
+
+        Assert.NotNull(r);
+        Assert.Equal("Realtek USB GbE Family Controller", r!.OriginalFriendlyName);
+        Assert.False(r.OriginalWasAbsent);
+    }
+
+    /// <summary>Already correct → leave the record completely untouched (no needless config write).</summary>
+    [Fact]
+    public void RepairOriginal_AlreadyFactory_LeavesRecordUntouched()
+        => Assert.Null(AdapterNameRules.RepairOriginal(
+            Stored("Realtek USB GbE Family Controller"), "Realtek USB GbE Family Controller"));
+
+    /// <summary>
+    /// The conservative half of the rule, and the part that matters: with no ground truth to re-derive
+    /// from, the stored original is NEVER guessed at or blanked.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void RepairOriginal_NoDerivableFactory_LeavesRecordUntouched(string? factory)
+    {
+        Assert.Null(AdapterNameRules.RepairOriginal(Stored("Dell docking (Petterhaugen)"), factory));
+        Assert.Null(AdapterNameRules.RepairOriginal(Stored(string.Empty, absent: true), factory));
+    }
+
+    /// <summary>
+    /// A record marked "original absent" is repairable once a factory description IS derivable: the
+    /// device does have a restorable original after all, so Reset should be offered.
+    /// </summary>
+    [Fact]
+    public void RepairOriginal_OriginalWasAbsent_BecomesRestorableWhenFactoryDerivable()
+    {
+        var r = AdapterNameRules.RepairOriginal(
+            Stored(string.Empty, absent: true), "Realtek USB GbE Family Controller");
+
+        Assert.NotNull(r);
+        Assert.Equal("Realtek USB GbE Family Controller", r!.OriginalFriendlyName);
+        Assert.False(r.OriginalWasAbsent);
+    }
+
+    /// <summary>
+    /// The broad rule catches a record that was poisoned and then renamed AGAIN — where
+    /// original != current, so the narrower "original == current" signature would miss it.
+    /// </summary>
+    [Fact]
+    public void RepairOriginal_PoisonedThenRenamedAgain_IsStillCorrected()
+    {
+        var r = AdapterNameRules.RepairOriginal(
+            Stored("Dell docking (Petterhaugen)"), "Realtek USB GbE Family Controller");
+
+        Assert.NotNull(r);
+        Assert.Equal("Realtek USB GbE Family Controller", r!.OriginalFriendlyName);
+    }
+
+    /// <summary>Comparison is ordinal: a case/whitespace drift from the factory string is corrected.</summary>
+    [Theory]
+    [InlineData("realtek usb gbe family controller")]
+    [InlineData("Realtek USB GbE Family Controller ")]
+    public void RepairOriginal_DriftFromFactory_IsCorrected(string stored)
+    {
+        var r = AdapterNameRules.RepairOriginal(Stored(stored), "Realtek USB GbE Family Controller");
+
+        Assert.NotNull(r);
+        Assert.Equal("Realtek USB GbE Family Controller", r!.OriginalFriendlyName);
+    }
+
+    [Fact]
+    public void RepairOriginal_TrimsFactoryBeforeComparing()
+        => Assert.Null(AdapterNameRules.RepairOriginal(
+            Stored("Realtek USB GbE Family Controller"), "  Realtek USB GbE Family Controller  "));
+
+    /// <summary>
+    /// The self-healing invariant: whatever RepairOriginal yields for a derivable factory description
+    /// is exactly what CaptureOriginal would now write — repairing then re-capturing is stable.
+    /// </summary>
+    [Fact]
+    public void RepairOriginal_IsIdempotent()
+    {
+        const string factory = "Realtek USB GbE Family Controller";
+
+        var first = AdapterNameRules.RepairOriginal(Stored("Dell docking (Petterhaugen)"), factory);
+        Assert.NotNull(first);
+
+        // A second pass over the already-repaired record finds nothing left to do.
+        Assert.Null(AdapterNameRules.RepairOriginal(first!, factory));
+        Assert.Equal(AdapterNameRules.CaptureOriginal(factory, true, "Dell docking (Petterhaugen)"), first);
+    }
 }

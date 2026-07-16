@@ -28,12 +28,20 @@ public sealed class AdapterNameOverride
     /// <summary>PnP device instance id, e.g. <c>USB\VID_0BDA&amp;PID_8153\000002000000</c>.</summary>
     public string DeviceInstanceId { get; set; } = string.Empty;
 
-    /// <summary>The FriendlyName the device had before the first rename (empty when it had none).</summary>
+    /// <summary>
+    /// The name Reset restores: the device's FACTORY description, derived from the driver's
+    /// <c>DeviceDesc</c> — which a rename never touches — rather than from whatever
+    /// <c>FriendlyName</c> happened to be on disk at first-rename time (issue #33). Falls back to that
+    /// FriendlyName only when no factory description can be derived; empty when there is nothing to
+    /// restore. Records written before #33 are repaired in place on the next rename-flow run.
+    /// </summary>
     public string OriginalFriendlyName { get; set; } = string.Empty;
 
     /// <summary>
-    /// True when the device had no explicit FriendlyName before the first rename.  In that case Reset
-    /// is not offered (there is nothing to restore, and deleting is disallowed — see the type summary).
+    /// True when there is nothing to restore, so Reset is not offered (deleting is disallowed — see
+    /// the type summary).  Only reachable on the #33 fallback path: whenever a factory description IS
+    /// derivable it is restorable, so this stays false even for a device that carried no explicit
+    /// FriendlyName of its own.
     /// </summary>
     public bool OriginalWasAbsent { get; set; }
 

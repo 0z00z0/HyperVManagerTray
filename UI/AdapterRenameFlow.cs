@@ -66,6 +66,45 @@ internal sealed class AdapterRenameFlow
         var existing = _config.Current.AdapterNames.FirstOrDefault(o =>
             o.DeviceInstanceId.Equals(deviceInstanceId, StringComparison.OrdinalIgnoreCase));
 
+        // Ground truth for "the original" (issue #33): DeviceDesc is written by the driver's INF and is
+        // never touched by a rename, unlike FriendlyName — which, after an uninstall/reinstall wiped the
+        // config while the registry rename survived, holds a PREVIOUS rename's output. Read once here
+        // (read-only, never throws) and reuse for both the repair below and the capture in
+        // ApplyRenameAsync, so the flow does not hit the registry twice for the same value.
+        var factoryDescription = await Task.Run(() => AdapterDeviceRegistry.ReadFactoryDescription(deviceInstanceId));
+
+        // Repair a record whose stored "original" predates the #33 fix and may be a prior rename's
+        // output. Only ever corrects a record whose factory description we could positively re-derive;
+        // anything else is left completely untouched. See AdapterNameRules.RepairOriginal.
+        if (existing is not null)
+        {
+            var repaired = AdapterNameRules.RepairOriginal(
+                new AdapterNameRules.OriginalCapture(existing.OriginalFriendlyName, existing.OriginalWasAbsent),
+                factoryDescription);
+
+            if (repaired is not null)
+            {
+                UiActivityLog.Logger.LogInformation(
+                    "Rename flow: repairing saved original for '{Adapter}' — '{Stored}' → '{Factory}' (issue #33)",
+                    adapter.DisplayName, existing.OriginalFriendlyName, repaired.OriginalFriendlyName);
+
+                existing.OriginalFriendlyName = repaired.OriginalFriendlyName;
+                existing.OriginalWasAbsent    = repaired.OriginalWasAbsent;
+
+                // Persist immediately: the correction must survive even if the user cancels the dialog.
+                // Config-only — no device is touched here.
+                try { await Task.Run(() => _config.UpsertAdapterName(existing)); }
+                catch (Exception ex)
+                {
+                    // A failed repair must not block the rename — the in-memory record is already
+                    // corrected, so Reset works this session and the repair retries next time.
+                    UiActivityLog.Logger.LogWarning(
+                        "Rename flow: could not persist the repaired original for '{Adapter}': {Error}",
+                        adapter.DisplayName, ex.Message);
+                }
+            }
+        }
+
         // Reset is offered only when we have a real original to restore (never delete — §5.4).
         bool canReset = existing is not null
                         && !existing.OriginalWasAbsent
@@ -98,12 +137,17 @@ internal sealed class AdapterRenameFlow
         else
         {
             UiActivityLog.Logger.LogInformation("Rename flow: rename requested for '{Adapter}' → '{NewName}'", adapter.DisplayName, result.NewName);
-            await ApplyRenameAsync(adapter, deviceInstanceId, result.NewName!, existing);
+            await ApplyRenameAsync(adapter, deviceInstanceId, result.NewName!, existing, factoryDescription);
         }
     }
 
+    /// <param name="factoryDescription">
+    /// The device's DeviceDesc-derived factory description (null when it could not be derived), read
+    /// once by <see cref="RunAsync"/>. Ground truth for the saved original — see issue #33.
+    /// </param>
     private async Task ApplyRenameAsync(
-        PhysicalAdapterInfo adapter, string deviceInstanceId, string newName, AdapterNameOverride? existing)
+        PhysicalAdapterInfo adapter, string deviceInstanceId, string newName, AdapterNameOverride? existing,
+        string? factoryDescription)
     {
         if (!NativeMethods.Confirm(
                 "Rename this network adapter's description?\n\n" +
@@ -123,12 +167,17 @@ internal sealed class AdapterRenameFlow
             // Persist the true original BEFORE the first write so Reset can always restore it (§5.4).
             if (existing is null)
             {
+                // Prefer the factory description (issue #33): FriendlyName may already hold a previous
+                // rename's output whenever the config record was lost but the registry rename survived,
+                // and recording that would make Reset restore the name the user is escaping. The
+                // FriendlyName read stays as the fallback for when DeviceDesc yields nothing usable.
                 var (present, original) = await Task.Run(() => AdapterDeviceRegistry.ReadFriendlyName(deviceInstanceId));
+                var capture = AdapterNameRules.CaptureOriginal(factoryDescription, present, original);
                 var entry = new AdapterNameOverride
                 {
                     DeviceInstanceId     = deviceInstanceId,
-                    OriginalFriendlyName = present ? (original ?? string.Empty) : string.Empty,
-                    OriginalWasAbsent    = !present,
+                    OriginalFriendlyName = capture.OriginalFriendlyName,
+                    OriginalWasAbsent    = capture.OriginalWasAbsent,
                     Mac                  = adapter.Mac,
                     RenamedOn            = DateTime.Now.ToString("yyyy-MM-dd"),
                     CurrentFriendlyName  = newName,
