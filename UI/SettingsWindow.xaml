@@ -62,17 +62,28 @@
             </NavigationViewItem>
         </NavigationView.MenuItems>
 
-        <!-- App-identity footer, bottom-left of the pane — name + running version (filled in the ctor
-             from AppInfo, never hard-coded). -->
+        <!-- App-identity footer, bottom-left of the pane — product icon + name + running version (the
+             version is filled in the ctor from AppInfo, never hard-coded).
+
+             Issue #35: the icon is the PLATED product icon (Assets\AppIcon.png — the same face the exe,
+             taskbar and installer wear), NOT the flat tray glyph. The tray glyph's blue is one of four
+             live STATUS colours, so a static copy of it in an identity block would imply a state this
+             footer does not track (precisely what #37 landed to stop doing). The plate also keeps it from
+             reading as a seventh, label-less nav row beneath the transparent-background nav SVGs above. -->
         <NavigationView.PaneFooter>
             <StackPanel Margin="0,4,0,4">
                 <Border Height="1" Margin="16,0,16,8"
                         Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
-                <StackPanel Margin="16,4,16,12">
-                    <TextBlock Text="HyperVManagerTray" FontSize="12"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                    <TextBlock x:Name="VersionText" FontSize="11"
-                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"/>
+                <StackPanel Orientation="Horizontal" Spacing="8"
+                            Margin="16,4,16,12" VerticalAlignment="Center">
+                    <Image Source="ms-appx:///Assets/AppIcon.png"
+                           Width="36" Height="36" VerticalAlignment="Center"/>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="HyperVManagerTray" FontSize="12"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock x:Name="VersionText" FontSize="11"
+                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}"/>
+                    </StackPanel>
                 </StackPanel>
             </StackPanel>
         </NavigationView.PaneFooter>

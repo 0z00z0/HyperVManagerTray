@@ -186,6 +186,16 @@ internal sealed partial class SettingsWindow : Window
         var rect = ComputeInitialRect();
         try { AppWindow.MoveAndResize(rect); }
         catch (Exception ex) { AppInfo.AppendCrashLogLine("SettingsWindow", $"MoveAndResize: {ex}"); }
+
+        // Issue #36: this is the app's ONLY window with a real title bar (every other one is a frameless
+        // popup), so it is the only one that showed a default-coloured bar over the Mica BaseAlt backdrop
+        // and a generic icon in the taskbar / Alt-Tab. TitleBarTheme guards each step internally and
+        // cannot throw — chrome must never cost us the window (see SafeInit).
+        //
+        // Fully qualified deliberately: Microsoft.UI.Windowing (imported above for OverlappedPresenter)
+        // ships its OWN TitleBarTheme type, so the bare name is ambiguous. The sibling app qualifies its
+        // call the same way, for the same reason.
+        Helpers.TitleBarTheme.Apply(AppWindow, (Content as FrameworkElement)?.ActualTheme ?? ElementTheme.Default);
     }
 
     /// <summary>

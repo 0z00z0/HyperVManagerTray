@@ -33,6 +33,11 @@
     <Compile Include="..\Helpers\AppInfo.cs"          Link="Linked\AppInfo.cs" />
     <!-- Pure config↔UI mapping for the Settings window (issue #18). Only depends on LogLevel; no WinUI. -->
     <Compile Include="..\Helpers\SettingsOptions.cs"  Link="Linked\SettingsOptions.cs" />
+    <!-- Pure title-bar colour arithmetic (issue #36): theme→palette choice and the caption-button hover
+         blend. Numbers only. The WinUI glue that applies them to an AppWindow (Helpers\TitleBarTheme.cs)
+         is deliberately NOT linked — it touches AppWindow/ElementTheme and would drag the App SDK
+         runtime into this deliberately runtime-free test assembly. -->
+    <Compile Include="..\Helpers\TitleBarPalette.cs"  Link="Linked\TitleBarPalette.cs" />
     <!-- Pure Settings-window placement + row-layout arithmetic (issue #31): saved-vs-default choice,
          clamping a rect onto a connected monitor, the derived minimum size, and the row-stacking
          decision. Numbers only — no Win32, no XAML. Required by the linked NativeMethods.cs and

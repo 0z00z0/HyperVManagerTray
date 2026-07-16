@@ -8,6 +8,10 @@
                               check has something to find (framework-dependent legacy path).
       • Assets\TrayBlue.ico — the flat blue (Fallback state) VM glyph on a transparent background,
                               used by the Start-Menu shortcut so it matches the runtime tray icon.
+      • Assets\AppIcon.png  — the SAME plated product icon as AppIcon.ico, at 256×256, for XAML
+                              (issue #35). WinUI's <Image>/ms-appx:/// cannot load an .ico, so the
+                              Settings pane-footer identity block needs a PNG. Emitted here rather
+                              than hand-made so it can never drift from the .ico family.
 
 .DESCRIPTION
     The 0z0-guideline PRODUCT icon set (issue #26). Per 0z0-design/logo/GUIDE.md the studio [Ø]
@@ -172,12 +176,21 @@ $traySizes   = @(64, 48, 32, 24, 20, 16)
 $appIco   = Join-Path $assetsDir "AppIcon.ico"
 $legacyIco = Join-Path $assetsDir "app.ico"
 $trayIco  = Join-Path $assetsDir "TrayBlue.ico"
+$appPng   = Join-Path $assetsDir "AppIcon.png"
 
 Write-Ico $appIco   $platedSizes { param($s) New-PlatedBitmap $s }
 Write-Ico $legacyIco $platedSizes { param($s) New-PlatedBitmap $s }
 Write-Ico $trayIco  $traySizes   { param($s) New-FlatBitmap $s $cBlue }
 
+# XAML-consumable copy of the plated product icon (issue #35). Same New-PlatedBitmap renderer and
+# therefore the same v5 geometry and $cPlate/$cGlyph/$cDot palette as AppIcon.ico's 256px frame —
+# regenerating the family keeps the two in lockstep by construction. 256px so the Settings footer's
+# 36-DIP <Image> still downsamples cleanly at 175 % DPI.
+$pngBmp = New-PlatedBitmap 256
+try { $pngBmp.Save($appPng, [System.Drawing.Imaging.ImageFormat]::Png) } finally { $pngBmp.Dispose() }
+
 Write-Host "Generated product-icon family:" -ForegroundColor Green
 Write-Host "    $appIco"
 Write-Host "    $legacyIco"
 Write-Host "    $trayIco"
+Write-Host "    $appPng"
