@@ -366,4 +366,89 @@ public class SettingsOptionsTests
     public void EffectiveBridgeLostDelaySeconds_ClampsHandEditedValues(int stored, int expected) =>
         Assert.Equal(expected, SettingsOptions.EffectiveBridgeLostDelaySeconds(
             new VmTarget { Name = "Alpha", OnBridgeLostDelaySeconds = stored }));
+    // ── IsPersistableRule: never write an inert catch-all (the #31-batch review) ─────────
+
+    /// <summary>
+    /// The exact object Settings' "Add rule" button used to persist the instant it was clicked, before
+    /// the user had typed a character. It must not reach config.json.
+    /// </summary>
+    private static NetworkRule BlankTemplate() =>
+        new() { Name = "New rule", Priority = 100, VirtualSwitch = "" };
+
+    /// <summary>
+    /// Why this matters, in one test. A rule with no conditions matches EVERY network — that is
+    /// AdapterMatcher.MatchingNic's documented contract, not an accident — so the blank template wins
+    /// evaluation ahead of every real rule the user goes on to write, while its blank switch binds
+    /// nothing. Red icon, no reconnects, and because the active rule's name is then never "Fallback",
+    /// App.HandleBridgeTransition's bridgeJustLost edge never fires either: every VM's configured
+    /// on-bridge-lost pause/save/shutdown silently stops running. Issue #38's empty default config makes
+    /// this the ONLY rule on a fresh install — i.e. the first thing a new user clicks breaks the app,
+    /// quietly.
+    /// </summary>
+    [Fact]
+    public void IsPersistableRule_RejectsTheBlankAddRuleTemplate()
+    {
+        var blank = BlankTemplate();
+
+        Assert.True(SettingsOptions.DeclaresNoCondition(blank), "the blank template matches every network");
+        Assert.False(SettingsOptions.IsPersistableRule(blank));
+    }
+
+    /// <summary>A rule needs a switch to bind AND a condition saying when. Neither half alone is enough:
+    /// a conditionless rule is a catch-all however good its switch, and a switchless one binds nothing
+    /// however precise its conditions.</summary>
+    [Fact]
+    public void IsPersistableRule_NeedsBothASwitchAndACondition()
+    {
+        var conditionOnly = BlankTemplate();
+        conditionOnly.Conditions.IpCidr = "10.0.0.0/24";
+        Assert.False(SettingsOptions.IsPersistableRule(conditionOnly));   // no switch to bind
+
+        var switchOnly = BlankTemplate();
+        switchOnly.VirtualSwitch = "Bridged";
+        Assert.False(SettingsOptions.IsPersistableRule(switchOnly));      // matches everything
+
+        var complete = BlankTemplate();
+        complete.VirtualSwitch = "Bridged";
+        complete.Conditions.IpCidr = "10.0.0.0/24";
+        Assert.True(SettingsOptions.IsPersistableRule(complete));         // says what and when
+
+        var byMac = BlankTemplate();
+        byMac.VirtualSwitch = "Bridged";
+        byMac.Conditions.AdapterMac = "AA:BB:CC:DD:EE:FF";
+        Assert.True(SettingsOptions.IsPersistableRule(byMac));            // either condition qualifies
+    }
+
+    /// <summary>
+    /// Judge the CLEANED rule. ConfigManager.CleanRule drops a malformed MAC/CIDR to null, so a rule
+    /// whose only condition doesn't parse becomes a catch-all the moment it is written — it must be
+    /// treated as one here rather than on the strength of the unparseable text the user typed.
+    /// </summary>
+    [Fact]
+    public void IsPersistableRule_TreatsARuleWhoseOnlyConditionIsMalformedAsACatchAll()
+    {
+        var rule = BlankTemplate();
+        rule.VirtualSwitch = "Bridged";
+        rule.Conditions.IpCidr = "not-a-cidr";
+
+        // Believing the typed text, this looks like it declares a condition …
+        Assert.False(SettingsOptions.DeclaresNoCondition(rule));
+        // … but what would actually be persisted has none at all, so it matches every network.
+        var cleaned = HyperVManagerTray.Services.ConfigManager.CleanRule(rule);
+        Assert.True(SettingsOptions.DeclaresNoCondition(cleaned));
+        Assert.False(SettingsOptions.IsPersistableRule(cleaned));
+    }
+
+    /// <summary>Blank strings are not conditions — "" must not read as "match on this".</summary>
+    [Fact]
+    public void DeclaresNoCondition_TreatsBlanksAsNoCondition()
+    {
+        var rule = BlankTemplate();
+        rule.VirtualSwitch = "Bridged";
+        rule.Conditions.AdapterMac = "";
+        rule.Conditions.IpCidr     = "   ";
+
+        Assert.True(SettingsOptions.DeclaresNoCondition(rule));
+        Assert.False(SettingsOptions.IsPersistableRule(rule));
+    }
 }

@@ -589,10 +589,13 @@ public sealed partial class DashboardWindow : Window
 
     /// <summary>
     /// The zero-VMs card (issue #38). Same Border idiom as a real VM card so the section still reads as
-    /// a populated list rather than a rendering failure, and it names the ONE next action that matters.
-    /// Deliberately points at the tray icon rather than a specific menu item — a signpost that names a
-    /// menu path is a signpost that goes stale, which issue #34 then promptly demonstrated by replacing
-    /// the VM Power menu with "Manage VMs". This card needed no edit for that, which is the point.
+    /// a populated list rather than a rendering failure, and it names the next action that matters.
+    ///
+    /// <para>The copy is <see cref="VmConfigUi.NoManagedVmsMessage"/> — not a literal here — because the
+    /// comment that used to sit in its place claimed the card deliberately avoided naming a menu path
+    /// while the literal underneath named one ("use Manage VMs"), and nothing could notice the
+    /// contradiction. It lives with the rest of the managed-VMs copy now, with the reasoning attached to
+    /// the string itself and a test on it.</para>
     /// </summary>
     private static Border BuildEmptyStateCard() => new()
     {
@@ -603,9 +606,7 @@ public sealed partial class DashboardWindow : Window
         BorderThickness = new Thickness(1),
         Child = new TextBlock
         {
-            // Names the list to use, rather than leaving the user to find it (issue #42) — matching how
-            // the Settings and override messages point at the same place.
-            Text         = "No VMs are managed yet.\nRight-click the tray icon and use Manage VMs to add one.",
+            Text         = VmConfigUi.NoManagedVmsMessage,
             FontSize     = 12,
             TextWrapping = TextWrapping.Wrap,
             Opacity      = 0.75,

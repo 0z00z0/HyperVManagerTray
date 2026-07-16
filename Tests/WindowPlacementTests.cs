@@ -129,10 +129,57 @@ public class WindowPlacementTests
     [Fact]
     public void SettingsMinWidth_IsChromePlusCardPlusTheWidestFixedControl()
     {
-        Assert.Equal(384, WindowPlacement.SettingsChromeWidth);          // 320 nav pane + 48 padding + 16 scrollbar
-        Assert.Equal(30,  WindowPlacement.SettingsCardWidth);            // 14+14 padding + 1+1 border
-        Assert.Equal(288, WindowPlacement.SettingRowWidestFixedControl); // 150 action + 8 + 130 delay
-        Assert.Equal(702, WindowPlacement.SettingsMinWidth);
+        Assert.Equal(384, WindowPlacement.SettingsChromeWidth);   // 320 nav pane + 48 padding + 16 scrollbar
+        Assert.Equal(30,  WindowPlacement.SettingsCardWidth);     // 14+14 padding + 1+1 border
+
+        Assert.Equal(
+            WindowPlacement.SettingsChromeWidth + WindowPlacement.SettingsCardWidth
+                + Math.Max((int)WindowPlacement.SettingRowTextMinWidth, WindowPlacement.SettingRowWidestFixedControl),
+            WindowPlacement.SettingsMinWidth);
+    }
+
+    /// <summary>
+    /// The widest control is DERIVED from the row inventory, never restated beside it.
+    ///
+    /// <para>It was a bare <c>const 288</c>, justified by a doc-comment inventory ("150 action + 8 + 130
+    /// delay") that was true when issue #31 wrote it and false once #34/#41 added rows — the Override row
+    /// alone declares 160 + 8 + 160 = 328. Issue #44 then re-derived the number having re-checked only the
+    /// font, not the row set, because the comment presented the inventory as settled. A prose inventory
+    /// cannot be checked by anything; this one can be, and is.</para>
+    /// </summary>
+    [Fact]
+    public void SettingRowWidestFixedControl_IsTheMaximumOverTheRowInventory()
+    {
+        Assert.NotEmpty(WindowPlacement.SettingRowControlMinimums);
+        Assert.Equal(
+            WindowPlacement.SettingRowControlMinimums.Max(r => r.MinWidth),
+            WindowPlacement.SettingRowWidestFixedControl);
+
+        // Every entry names the row it came from, so a stale one can be traced back to a real control
+        // rather than guessed at — the failure that let 288 outlive its own justification twice.
+        Assert.All(WindowPlacement.SettingRowControlMinimums, r =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(r.Row));
+            Assert.True(r.MinWidth > 0);
+        });
+    }
+
+    /// <summary>
+    /// Every row in the inventory can show its control at its declared minimum when the window is at its
+    /// own minimum width and the row has stacked. This is what the floor is FOR, and it is asserted over
+    /// the whole row set rather than over one hand-picked row.
+    /// </summary>
+    [Fact]
+    public void AtTheMinimumWidth_EveryInventoriedRowsControlFits()
+    {
+        double rowWidth = WindowPlacement.SettingsMinWidth
+                        - WindowPlacement.SettingsChromeWidth
+                        - WindowPlacement.SettingsCardWidth;
+
+        Assert.All(WindowPlacement.SettingRowControlMinimums, r =>
+            Assert.True(r.MinWidth <= rowWidth,
+                $"'{r.Row}' declares {r.MinWidth} DIP but a stacked row at the minimum window width has "
+                + $"only {rowWidth} — it would be clipped out of the card, and RootScroll cannot scroll to it"));
     }
 
     /// <summary>
@@ -205,4 +252,108 @@ public class WindowPlacementTests
     [Fact]
     public void ShouldStackSettingRow_TreatsAnUnmeasuredControlAsZeroWide()
         => Assert.False(WindowPlacement.ShouldStackSettingRow(300, double.NaN));
+
+    // ── WrapStrip: a row of controls must never be laid out past the edge of its row ──────
+
+    private const double StripSpacing = 8;
+
+    /// <summary>The width a line of children occupies, including the gaps between them.</summary>
+    private static double LineWidth(IReadOnlyList<int> line, IReadOnlyList<double> widths) =>
+        line.Sum(i => widths[i]) + StripSpacing * (line.Count - 1);
+
+    /// <summary>
+    /// THE property: a child is never placed on a line too narrow to hold it. This is the clipping that
+    /// made the Override row unusable — a horizontal StackPanel reports its children's SUM however little
+    /// room it is given and arranges the overflow outside the row, where RootScroll (horizontal scrolling
+    /// disabled) clips it away entirely.
+    /// </summary>
+    [Theory]
+    [InlineData(288)]   // a stacked row at the window's minimum width
+    [InlineData(400)]
+    [InlineData(546)]   // a stacked row at the default width
+    public void WrapStrip_NeverOverfillsALine(double rowWidth)
+    {
+        // The real Override row: VM combo 160, switch combo 160, "Apply override" ≈ 120.
+        double[] widths = [160, 160, 120];
+
+        var lines = WindowPlacement.WrapStrip(widths, rowWidth, StripSpacing);
+
+        Assert.Equal(widths.Length, lines.Sum(l => l.Count));   // nothing dropped
+        Assert.All(lines, line =>
+            Assert.True(LineWidth(line, widths) <= rowWidth,
+                $"a line of {LineWidth(line, widths)} DIP was placed in a {rowWidth} DIP row — the "
+                + "overflow is clipped out of the card and cannot be scrolled to"));
+    }
+
+    /// <summary>
+    /// The Override row at the window's own minimum width — the reported symptom, in numbers. All three
+    /// controls need ~456 DIP; the row has 288. They must wrap onto more than one line rather than two of
+    /// them being clipped away.
+    /// </summary>
+    [Fact]
+    public void WrapStrip_WrapsTheOverrideRowAtTheMinimumWindowWidth()
+    {
+        double rowWidth = WindowPlacement.SettingsMinWidth
+                        - WindowPlacement.SettingsChromeWidth
+                        - WindowPlacement.SettingsCardWidth;
+        double[] widths = [160, 160, 120];
+
+        var lines = WindowPlacement.WrapStrip(widths, rowWidth, StripSpacing);
+
+        Assert.True(lines.Count > 1, "the row does not fit on one line, so it must use more than one");
+        Assert.All(lines, line => Assert.True(LineWidth(line, widths) <= rowWidth));
+    }
+
+    /// <summary>Order is preserved: wrapping is a line break, not a reshuffle.</summary>
+    [Fact]
+    public void WrapStrip_KeepsChildrenInOrder()
+    {
+        double[] widths = [160, 160, 120];
+        var flattened = WindowPlacement.WrapStrip(widths, 288, StripSpacing).SelectMany(l => l).ToList();
+        Assert.Equal([0, 1, 2], flattened);
+    }
+
+    /// <summary>When everything fits, the layout is the single line the StackPanel gave — nothing changes
+    /// at a comfortable width.</summary>
+    [Fact]
+    public void WrapStrip_KeepsOneLineWhenEverythingFits()
+    {
+        double[] widths = [160, 160, 120];
+        var lines = WindowPlacement.WrapStrip(widths, 1000, StripSpacing);
+        Assert.Equal([0, 1, 2], Assert.Single(lines));
+    }
+
+    /// <summary>
+    /// A child wider than the whole row gets a line to itself — there is nowhere better for it, and it
+    /// must not drag a sibling off the edge with it.
+    /// </summary>
+    [Fact]
+    public void WrapStrip_GivesAnOversizeChildItsOwnLine()
+    {
+        double[] widths = [400, 100];
+        var lines = WindowPlacement.WrapStrip(widths, 288, StripSpacing);
+
+        Assert.Equal(2, lines.Count);
+        Assert.Equal([0], lines[0]);
+        Assert.Equal([1], lines[1]);
+    }
+
+    /// <summary>
+    /// A not-yet-measured or unbounded row is "no decision yet — one line", the same reasoning
+    /// <see cref="WindowPlacement.ShouldStackSettingRow"/> applies to a non-positive width. Wrapping every
+    /// child onto its own line during the first measure pass would be a visible flap.
+    /// </summary>
+    [Theory]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NaN)]
+    [InlineData(0)]
+    public void WrapStrip_UsesOneLineWhenTheWidthIsUnknown(double width)
+    {
+        double[] widths = [160, 160, 120];
+        Assert.Equal([0, 1, 2], Assert.Single(WindowPlacement.WrapStrip(widths, width, StripSpacing)));
+    }
+
+    [Fact]
+    public void WrapStrip_HandlesNoChildren()
+        => Assert.Empty(WindowPlacement.WrapStrip([], 288, StripSpacing));
 }

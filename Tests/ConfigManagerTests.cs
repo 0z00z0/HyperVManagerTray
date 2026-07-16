@@ -1065,4 +1065,140 @@ public class ConfigManagerTests : IDisposable
 
         Assert.False(mgr.Load().Succeeded);
     }
+
+    // ── Concurrency: a mutator's snapshot must be built inside the save lock ──────────────
+
+    /// <summary>
+    /// An ILogger that runs a callback the first time it logs a message containing a given fragment.
+    /// The hook that makes the lost-update below DETERMINISTIC rather than a timing lottery: ConfigManager
+    /// logs its success line inside the save lock, after the file is written but BEFORE the read-back
+    /// updates <c>_config</c> — which is precisely the window in which another thread's snapshot of
+    /// <c>_config</c> is stale. Nothing production-only is exposed to arrange it; the logger is a normal
+    /// constructor dependency.
+    /// </summary>
+    private sealed class HookLogger(string fragment, Action hook) : ILogger
+    {
+        private int _fired;
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => null!;
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                                Func<TState, Exception?, string> formatter)
+        {
+            if (formatter(state, exception).Contains(fragment, StringComparison.Ordinal)
+                && Interlocked.Exchange(ref _fired, 1) == 0)
+                hook();
+        }
+    }
+
+    /// <summary>
+    /// The lost update the #31 review found: a cosmetic write silently eating a functional one.
+    ///
+    /// <para>Every mutator builds its whole-config snapshot with <c>With(...)</c>, i.e. by READING the
+    /// live config; the file is then written wholesale. Build that snapshot before taking the save lock
+    /// and two mutators become a read-modify-write race in which the loser writes its stale copy of every
+    /// field it did not touch back over the winner's work. Here: the user retypes a VM's NIC name and
+    /// closes the Settings window, so <c>SetVmNicName</c> (thread pool, from LostFocus) and
+    /// <c>SaveSettingsWindowRect</c> (UI thread, from OnClosed) overlap, and the window rect — which
+    /// cannot fail and which nobody is watching — reverts the NIC edit on disk. No error, nothing said,
+    /// and the VM silently stops being reconnected, which is the failure #41 exists to fix.</para>
+    ///
+    /// <para>The interleaving is forced, not raced: the rect save is launched from inside the NIC save's
+    /// own lock (via the success-log hook), at the one moment when <c>_config</c> is still stale. With
+    /// the snapshot built outside the lock the rect save reads that stale config and this test fails on
+    /// the NIC assert; with it built inside, the rect save blocks until the NIC save has completed and
+    /// reads what it wrote.</para>
+    /// </summary>
+    [Fact]
+    public async Task SaveSettingsWindowRect_CannotClobberAConcurrentNicEdit()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [new VmTarget { Name = "vm1", NicName = "Network Adapter" }],
+        });
+        _tempFiles.Add(path);
+
+        ConfigManager? mgr = null;
+        Task? rectSave = null;
+
+        // Fires inside SetVmNicName's lock: file written, _config NOT yet reloaded.
+        var logger = new HookLogger("NIC name for VM 'vm1'", () =>
+        {
+            rectSave = Task.Run(() => mgr!.SaveSettingsWindowRect(new WindowRect(10, 20, 900, 700)));
+            // Long enough for the rect save to reach its snapshot/lock. If it snapshots here it snapshots
+            // a config that still says "Network Adapter" — and then writes that back.
+            Thread.Sleep(250);
+        });
+
+        using (mgr = new ConfigManager(path, logger))
+        {
+            mgr.SetVmNicName("vm1", "Ethernet 2");
+            await rectSave!.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        var onDisk = ReadConfig(path);
+        Assert.Equal("Ethernet 2", Assert.Single(onDisk.VirtualMachines).NicName);   // the edit survived
+        Assert.Equal(900, onDisk.SettingsWindowWidth);                               // and so did the rect
+    }
+
+    // ── Issue #39: the broken-config balloon must re-arm after ANY successful load ────────
+
+    /// <summary>
+    /// Waits for <paramref name="condition"/>, polling — the FileSystemWatcher + 500 ms debounce is real
+    /// here, so these two announcements are driven the way the app drives them.
+    /// </summary>
+    private static bool WaitFor(Func<bool> condition, int timeoutMs = 8000)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition()) return true;
+            Thread.Sleep(50);
+        }
+        return condition();
+    }
+
+    /// <summary>
+    /// "Say it once" must not become "say it once, ever".
+    ///
+    /// <para>The say-it-once latch was set on a failed debounced load and re-armed ONLY there. But
+    /// <c>SaveAndReload</c> pauses the watcher, writes a valid file and calls <c>Load()</c> directly:
+    /// that load succeeds and the paused watcher never ticks, so the latch stayed set. Sequence:
+    /// the user breaks config.json by hand (balloon — correct); the user then changes anything at all
+    /// in the app, even just moving the Settings window and closing it; the user breaks the file again —
+    /// and now NOTHING is said. The app runs on rules the user never wrote and reports nothing, which is
+    /// exactly the issue #39 defect the latch exists to fix.</para>
+    ///
+    /// <para>Fixing it in <c>Load</c> — the one place every successful load flows through — is what makes
+    /// this hold for the debounce tick, the Reload button and every in-app save alike.</para>
+    /// </summary>
+    [Fact]
+    public void ABrokenConfigIsAnnouncedAgainAfterAnInAppSaveSucceeded()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [new VmTarget { Name = "vm1", NicName = "Network Adapter" }],
+        });
+        _tempFiles.Add(path);
+
+        using var mgr = new ConfigManager(path, NullLogger<ConfigManager>.Instance);
+        int announced = 0;
+        mgr.ConfigLoadFailed += (_, _) => Interlocked.Increment(ref announced);
+
+        // 1. The user breaks the file by hand. The watcher notices; this is announced.
+        File.WriteAllText(path, "{ this is not json");
+        Assert.True(WaitFor(() => Volatile.Read(ref announced) == 1), "the first breakage was never announced");
+
+        // 2. The user does something ordinary in the app. This writes a VALID file from the last good
+        //    config and reloads it directly — with the watcher paused, so no tick follows.
+        mgr.SaveSettingsWindowRect(new WindowRect(10, 20, 900, 700));
+        Assert.True(mgr.LastLoad.Succeeded, "the in-app save should have left a good config loaded");
+
+        // 3. The user breaks it again. This is NEWS: it must be announced again.
+        File.WriteAllText(path, "{ broken all over again — and then some");
+        Assert.True(WaitFor(() => Volatile.Read(ref announced) == 2),
+            "the second breakage was never announced — the say-it-once latch is stuck set, so the app is "
+            + "running on a config the user did not write and telling nobody");
+    }
 }

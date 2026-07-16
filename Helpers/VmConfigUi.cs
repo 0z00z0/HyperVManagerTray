@@ -57,6 +57,37 @@ public static class VmConfigUi
     }
 
     /// <summary>
+    /// Which of a VM's synthetic adapters a NEW managed VM is seeded with — the single answer both
+    /// add-a-VM surfaces use (the tray's "Manage VMs" list and Settings' add picker).
+    ///
+    /// <para><b>Why this is a shared function and not two one-liners.</b> It was two one-liners, and they
+    /// disagreed. <c>VmService.ReadDiscovered</c> kept one NIC per VM by assigning into a dictionary as
+    /// WMI rows arrived — so the LAST row won, in whatever order WMI happened to return them.
+    /// <c>SettingsWindow</c> took <c>NicNamesFor(name).FirstOrDefault()</c>, and
+    /// <c>HostInventory.ReadNicNames</c> sorts OrdinalIgnoreCase — so "Ethernet 2" beat "Network
+    /// Adapter". The same act on two surfaces therefore persisted a different adapter, and whichever
+    /// surface picked the non-primary NIC wrote a name <c>HyperVManager.FindSyntheticNic</c> never
+    /// matches: <c>ApplySwitchAsync</c> then returns false on every pass and the VM is silently never
+    /// reconnected — the exact failure issue #41 exists to fix. Issues #34/#47 built
+    /// <c>ManagedVmActions</c> and this class specifically so the two surfaces could not drift; the NIC
+    /// seed bypassed both. It doesn't now.</para>
+    ///
+    /// <para>Ordinal-ignore-case ordering, matching <c>HostInventory.ReadNicNames</c>: the choice among
+    /// several adapters is arbitrary either way, so the property that matters is that it is the SAME
+    /// arbitrary choice on both surfaces and stable between reads — not WMI's row order. An empty or
+    /// all-blank list yields the Hyper-V default, which is also what
+    /// <see cref="Services.ConfigManager.AddVmToConfig"/> falls back to, so the two agree by construction
+    /// rather than by coincidence.</para>
+    /// </summary>
+    public static string SeedNicName(IEnumerable<string>? nicNames) =>
+        (nicNames ?? [])
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Select(n => n.Trim())
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault()
+        ?? SettingsOptions.DefaultNicName;
+
+    /// <summary>
     /// The switches an override may target: the fallback plus every switch named by a rule. Shared by the
     /// tray's "Override VM switch" submenu and Settings → Network's override control so the two surfaces
     /// can't offer different sets. De-duplicated and ordered.
@@ -107,4 +138,19 @@ public static class VmConfigUi
     /// <summary>The failure text when the config write itself threw (a locked file, a read-only folder).</summary>
     public static string WriteFailedMessage(string vmName, string error) =>
         $"Could not update the managed VMs for {vmName}: {error}";
+
+    /// <summary>
+    /// The dashboard's zero-VMs card (issue #38). Names the two SURFACES that can add a VM — the tray icon
+    /// and Settings — and deliberately no menu path within either.
+    ///
+    /// <para><b>The rule this string broke once already.</b> Its own comment said it pointed at the tray
+    /// icon rather than a menu item because "a signpost that names a menu path is a signpost that goes
+    /// stale", citing issue #34 replacing the VM Power menu with "Manage VMs" — and the string underneath
+    /// nonetheless read "Right-click the tray icon and use Manage VMs to add one". It then went stale in
+    /// the predicted way: issue #47 added the Settings route, so naming only the tray became incomplete as
+    /// well as path-bound. Surfaces are durable; the items inside them are what move
+    /// (docs/STYLE.md: "a string can be false because the code moved").</para>
+    /// </summary>
+    public const string NoManagedVmsMessage =
+        "No VMs are managed yet.\nAdd one from the tray icon, or in Settings.";
 }
