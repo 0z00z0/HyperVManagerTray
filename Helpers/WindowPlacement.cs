@@ -49,6 +49,13 @@ public static class WindowPlacement
     /// Floor for a settings row's header/description column. Below this the text column starves and
     /// wraps toward one character per line — the collapse reported in issue #31. 180 DIP fits roughly
     /// 25 characters of the 11 px description per line, so a line break always falls between words.
+    ///
+    /// <para>Re-checked when the brand mono face landed (issue #44) — this is the ONE constant here
+    /// whose justification is a font metric rather than a declared width, so a wider face could in
+    /// principle have invalidated it. Cascadia Mono is fixed-advance at 0.586 em/char (measured from
+    /// the shipped .ttf), i.e. 6.45 DIP at 11 px, so 180 DIP still carries ~28 characters per line —
+    /// comfortably above the ~25 this floor was set for. The number therefore stands unchanged; it is
+    /// the reasoning behind it, not the value, that the font touched.</para>
     /// </summary>
     public const double SettingRowTextMinWidth = 180;
 
@@ -61,6 +68,14 @@ public static class WindowPlacement
     /// is text-sized instead (the Maintenance buttons) are handled by
     /// <see cref="ShouldStackSettingRow"/> at whatever width they turn out to need, which is why the
     /// minimum below does not have to grow with their label text.
+    ///
+    /// <para>Issue #44 (brand mono face) does not move this: it is the widest DECLARED minimum, and a
+    /// font only invalidates it if some control's CONTENT outgrows the MinWidth it declares. With
+    /// App.xaml's ControlContentThemeFontSize trimmed to 12.5 the widest combo item in the window
+    /// ("Trace — most verbose", the Log-level row) measures ~191 DIP against its declared MinWidth of
+    /// 200, so every settings control is still bounded by its own declared minimum and 288 remains the
+    /// largest of them. At the untrimmed 14 px that same item measures ~209 and WOULD have burst its
+    /// MinWidth — which is a second reason the trim is load-bearing, not cosmetic.</para>
     /// </summary>
     public const int SettingRowWidestFixedControl = 288;
 
