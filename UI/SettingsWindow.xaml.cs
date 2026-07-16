@@ -476,9 +476,14 @@ internal sealed partial class SettingsWindow : Window
         // off the UI thread (schtasks can take up to a couple of seconds).
         _startupToggle = new ToggleSwitch { OnContent = "On", OffContent = "Off" };
         _startupToggle.Toggled += OnStartupToggled;
+        // The description says what the SETTING does, not what the control is doing while it loads
+        // (issue #42): "Off until the status loads." leaked this window's own async read into a
+        // sentence meant to explain the feature. The brief pre-load Off state is not a lie the user
+        // needs warning about — LoadStartupStateAsync corrects it in place, and _userToggledStartup
+        // makes a toggle during the load win rather than be clobbered.
         panel.Children.Add(SettingRow(
             "Run on startup",
-            "Start automatically at sign-in (elevated scheduled task). Off until the status loads.",
+            "Start automatically at sign-in (elevated scheduled task).",
             _startupToggle));
         LoadStartupStateAsync();
 
@@ -1199,9 +1204,14 @@ internal sealed partial class SettingsWindow : Window
     private UIElement BuildAdaptersSection()
     {
         var panel = Section("Adapters");
+        // Worded to match RenameAdapterWindow's own explanation of the same act (issue #42), and saying
+        // "adapters" where it used to say "NICs". The two "Hyper-V Manager" mentions here and in that
+        // dialog DO mean Microsoft's MMC snap-in — one of the places the description surfaces — so they
+        // stay; it is this app's own popup title that must never claim that name.
         panel.Children.Add(Description(
-            "Rename a physical network adapter's Windows description (Device Manager, Hyper-V Manager, " +
-            "Settings). Renaming briefly drops that adapter's connection. Only real physical NICs are " +
+            "Rename a physical adapter's description — the text Device Manager, Hyper-V Manager and " +
+            "Windows Settings show for it. It does not change the adapter's Windows name (its connection " +
+            "alias). Renaming briefly drops that adapter's connection. Only real physical adapters are " +
             "listed — Bluetooth/VPN/virtual adapters are hidden."));
 
         // Adapter enumeration (AdapterMatcher.GetPhysicalAdapters) hits WMI/NDIS and can stall on a

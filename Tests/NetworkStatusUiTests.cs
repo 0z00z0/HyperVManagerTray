@@ -289,14 +289,20 @@ public class NetworkStatusUiTests
         Assert.Contains("Nothing was changed", msg);
     }
 
-    // The silent no-op path: a VM absent from config now explains itself.
+    // The silent no-op path: a VM this app does not manage now explains itself.
+    //
+    // Asserts "managed", not "config.json" (issue #42): the pinned vocabulary makes "managed VM" the
+    // user-facing phrase for a VM in config.json, and names the FILE only when the user is being
+    // pointed at the file itself — which here they are not, since the fix is to tick the VM in the
+    // tray's Manage VMs list. The message must still name the VM and disclaim any change; that is what
+    // this test was always really guarding.
     [Fact]
     public void OverrideNotConfiguredMessage_ExplainsTheNoOp()
     {
         var msg = OverrideNotConfiguredMessage("vGhost");
 
         Assert.Contains("vGhost", msg);
-        Assert.Contains("config.json", msg);
+        Assert.Contains("managed", msg);
         Assert.Contains("Nothing was changed", msg);
     }
 

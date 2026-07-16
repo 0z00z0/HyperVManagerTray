@@ -89,12 +89,23 @@ internal sealed class TrayMenu
         Flyout.Items.Add(_manageVmsMenu);
         Flyout.Items.Add(new MenuFlyoutSeparator());
 
-        // The window group. A "Check for updates" item belongs in this group when it is added (issue
-        // #46) — it is a window-opening command like these, not a quick command, and the sibling app
-        // orders it here. Deliberately left to that issue rather than smuggled in with this restructure.
-        Add("Settings…", ShowSettings);
-        Add("About…",    ShowAbout);
-        Add("Exit",      onExit);
+        // The window group, ordered as ChargeKeeper orders its own (issue #46): Settings…, then
+        // Check for updates, then About…, then Exit. Each opens a window rather than acting on the
+        // host, which is why "Check for updates" belongs here and not among the quick commands above.
+        //
+        // It is NOT redundant with the "Update available" badge, and the two must not be conflated:
+        // the badge appears only when a background check has ALREADY found a newer version, and it
+        // jumps straight to the release page. This item is the user ASKING — it runs a check now and
+        // reports the answer either way, including "you are up to date", which the badge can never
+        // say (its absence is indistinguishable from "not checked yet"). Restoring it fixes the
+        // regression Espen reported: without it the tray offered no way to ask.
+        //
+        // Settings → Maintenance → Updates keeps its own row; that is #34's Settings-is-the-superset
+        // rule working as intended, not a duplicate. All three routes call the one flow below.
+        Add("Settings…",         ShowSettings);
+        Add("Check for updates", () => _ = CheckForUpdatesAsync());
+        Add("About…",            ShowAbout);
+        Add("Exit",              onExit);
 
         RefreshState();
     }
@@ -228,8 +239,8 @@ internal sealed class TrayMenu
     /// <summary>
     /// Inserts (or updates) an "Update available" badge at the top of the tray menu.
     /// Safe to call more than once — subsequent calls only refresh the version text.
-    /// Clicking the badge opens the GitHub releases page immediately; the user can
-    /// get the full release-notes dialog via Settings → Check for updates.
+    /// Clicking the badge opens the GitHub releases page immediately; the full
+    /// release-notes dialog is one item away, under "Check for updates" (issue #46).
     /// </summary>
     public void SetUpdateBadge(UpdateChecker.CheckResult result)
     {

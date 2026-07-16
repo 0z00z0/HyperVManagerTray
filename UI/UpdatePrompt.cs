@@ -35,7 +35,8 @@ internal static class UpdatePrompt
                 case NativeMethods.UpdateAction.Update:
                     // Download in the background; Inno Setup's CloseApplications=yes restarts us.
                     NativeMethods.Info(
-                        $"Downloading v{result.LatestVersion}...\n\nThe installer will launch automatically when ready.",
+                        // "…", not "..." — the ellipsis character everywhere else in the app (issue #42).
+                        $"Downloading v{result.LatestVersion}…\n\nThe installer will launch automatically when ready.",
                         AppInfo.Name);
 
                     _ = Task.Run(async () =>

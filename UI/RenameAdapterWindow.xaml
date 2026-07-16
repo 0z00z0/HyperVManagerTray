@@ -11,7 +11,7 @@
     <Grid x:Name="Root">
         <StackPanel Padding="16,14,16,14" Spacing="8">
             <TextBlock x:Name="TitleText" FontSize="13" FontWeight="SemiBold"
-                       Text="Rename Adapter Description"/>
+                       Text="Rename adapter description"/>
 
             <TextBlock x:Name="ScopeText" FontSize="11" TextWrapping="Wrap"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>

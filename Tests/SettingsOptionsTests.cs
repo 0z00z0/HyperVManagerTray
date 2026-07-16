@@ -79,7 +79,10 @@ public class SettingsOptionsTests
     [InlineData(90,  "1 min 30 s")]
     [InlineData(300, "5 min")]
     [InlineData(3600, "1 h")]
-    [InlineData(5400, "1h 30m")]
+    // One style at every magnitude (issue #42) — this row asserted "1h 30m" while the row above it
+    // asserted "1 h" and the minutes rows assert "1 min 30 s": the picker mixed two conventions.
+    [InlineData(5400, "1 h 30 min")]
+    [InlineData(7260, "2 h 1 min")]
     public void FormatDelay_ReadsNaturally(int seconds, string expected)
         => Assert.Equal(expected, SettingsOptions.FormatDelay(seconds));
 
