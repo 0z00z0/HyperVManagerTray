@@ -26,6 +26,17 @@ namespace HyperVManagerTray.Services;
 /// <c>SettingsWindow.LoadHostInventoryAsync</c>. Nothing here may run on the UI thread: Settings opening
 /// must never wait on WMI.</para>
 ///
+/// <para><b>Leaves nothing behind.</b> Every query here disposes THREE things, not two: the
+/// <see cref="ManagementObjectSearcher"/>, the <see cref="ManagementObjectCollection"/> its
+/// <c>Get()</c> returns, and each <see cref="ManagementObject"/> in it. The collection is the one that
+/// is easy to miss and the one that costs: <c>Get()</c> defaults to <c>Rewindable=true</c>, so the
+/// collection takes its own <c>IEnumWbemClassObject</c> clone that disposing the searcher does not
+/// release. This is a long-lived tray process and <see cref="Read"/> runs on EVERY <c>BuildSections()</c>
+/// — every Settings open and every <c>RefreshValuesFromConfig</c> (add a VM, stop managing one, add the
+/// current network, reload) — so a leak of three per read is a leak per click, stranding live COM
+/// enumerators against <c>root\virtualization\v2</c> for as long as the app runs. A picker must cost the
+/// host nothing but a read, and that has to include what it hands back.</para>
+///
 /// <para>Deliberately standalone rather than a method on <see cref="VmService"/>: that service owns a
 /// long-lived scope, an event watcher, a metrics loop and refresh-failure recovery, all driven by the
 /// dashboard's lifetime. Settings needs one cold read with no subscription, and must work when the
@@ -103,7 +114,11 @@ public static class HostInventory
             var names = new List<string>();
             using var s = new ManagementObjectSearcher(scope,
                 new ObjectQuery("SELECT ElementName FROM Msvm_VirtualEthernetSwitch"));
-            foreach (ManagementObject o in s.Get())
+            // `using` on the COLLECTION too, not just the searcher and each object: Get() defaults to
+            // Rewindable=true, so the returned collection holds its own IEnumWbemClassObject clone which
+            // disposing the searcher does NOT release. See the Read() remarks for why that matters here.
+            using var results = s.Get();
+            foreach (ManagementObject o in results)
                 using (o)
                 {
                     var name = o["ElementName"] as string;
@@ -122,7 +137,8 @@ public static class HostInventory
         {
             using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
                 "SELECT ElementName, Name FROM Msvm_ComputerSystem WHERE Caption='Virtual Machine'"));
-            foreach (ManagementObject o in s.Get())
+            using var results = s.Get();   // Rewindable collection — its own enumerator to release
+            foreach (ManagementObject o in results)
                 using (o)
                 {
                     var name = o["ElementName"] as string ?? "";
@@ -151,7 +167,8 @@ public static class HostInventory
         {
             using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
                 "SELECT InstanceID, ElementName FROM Msvm_SyntheticEthernetPortSettingData"));
-            foreach (ManagementObject o in s.Get())
+            using var results = s.Get();   // Rewindable collection — its own enumerator to release
+            foreach (ManagementObject o in results)
                 using (o)
                 {
                     var instanceId = o["InstanceID"] as string ?? "";

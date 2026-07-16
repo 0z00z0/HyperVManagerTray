@@ -63,26 +63,60 @@ public static class WindowPlacement
     public const double SettingRowColumnSpacing = 12;
 
     /// <summary>
-    /// The widest control any settings row declares a fixed minimum for: the Managed-VMs row's
-    /// action ComboBox (MinWidth 150) + 8 spacing + delay ComboBox (MinWidth 130). Rows whose control
-    /// is text-sized instead (the Maintenance buttons) are handled by
-    /// <see cref="ShouldStackSettingRow"/> at whatever width they turn out to need, which is why the
-    /// minimum below does not have to grow with their label text.
+    /// Every settings row that declares a fixed minimum width for its control, and what that row needs.
+    /// <see cref="SettingRowWidestFixedControl"/> is the maximum over this table — a value DERIVED from
+    /// the row set rather than a number restated beside a prose inventory of it.
     ///
-    /// <para>Issue #44 (brand mono face) does not move this: it is the widest DECLARED minimum, and a
-    /// font only invalidates it if some control's CONTENT outgrows the MinWidth it declares. With
-    /// App.xaml's ControlContentThemeFontSize trimmed to 12.5 the widest combo item in the window
-    /// ("Trace — most verbose", the Log-level row) measures ~191 DIP against its declared MinWidth of
-    /// 200, so every settings control is still bounded by its own declared minimum and 288 remains the
-    /// largest of them. At the untrimmed 14 px that same item measures ~209 and WOULD have burst its
-    /// MinWidth — which is a second reason the trim is load-bearing, not cosmetic.</para>
+    /// <para><b>Why a table.</b> The constant was 288, justified in a comment as "the Managed-VMs action
+    /// ComboBox (150) + 8 + delay ComboBox (130)". That was true when issue #31 wrote it and false by the
+    /// time #34/#41 had added rows — the Override row alone declares 160 + 8 + 160 = 328 — and #44 then
+    /// re-derived the number having re-checked only the FONT, not the row set, because the comment
+    /// presented the inventory as settled. A prose list of rows in a doc-comment cannot be checked by
+    /// anything; this one is checked by <c>WindowPlacementTests</c>, and a new row that forgets to appear
+    /// here is a row whose entry the test can name as missing rather than a silent 40-DIP shortfall.</para>
+    ///
+    /// <para><b>What belongs here.</b> A row whose control declares a MinWidth, at that MinWidth. A row
+    /// whose control is a <c>ControlStrip</c> contributes its WIDEST SINGLE CHILD, not the sum: the strip
+    /// wraps, so that is genuinely all it needs. A row whose control is text-sized and shrinkable (a lone
+    /// button, the startup ToggleSwitch) contributes nothing — <see cref="ShouldStackSettingRow"/> gives
+    /// it whatever it turns out to need.</para>
+    ///
+    /// <para><b>What a font change can still invalidate</b> (issue #44's real question): a control whose
+    /// CONTENT outgrows the MinWidth it declares. With App.xaml's ControlContentThemeFontSize trimmed to
+    /// 12.5 the widest combo item in the window ("Trace — most verbose", the Log-level row) measures ~191
+    /// DIP against its declared 200, so every entry below is still bounded by its own declared minimum. At
+    /// the untrimmed 14 px that item measures ~209 and WOULD have burst it — which is why that trim is
+    /// load-bearing, not cosmetic.</para>
     /// </summary>
-    public const int SettingRowWidestFixedControl = 288;
+    public static readonly IReadOnlyList<(string Row, int MinWidth)> SettingRowControlMinimums =
+    [
+        // General
+        ("Log level — ComboBox MinWidth 200",                                     200),
+        // Managed VMs
+        ("Start managing a VM — combo MinWidth 220 over the Add button",          220),
+        ("Network adapter — SuggestionCombo MinWidth 220",                        220),
+        ("On bridge lost — ControlStrip: action combo 150 | delay combo 130",     150),
+        // Network
+        ("Fallback switch — SuggestionCombo MinWidth 220",                        220),
+        ("Fallback target VMs — box MinWidth 220 over the Add VM picker",         220),
+        ("Override VM switch — ControlStrip: VM 160 | switch 160 | Apply btn",    160),
+        // Rows whose control is a lone shrinkable button or a wrapping strip of them (Maintenance's
+        // Config & logs / Network / Updates, the Adapters rename rows, the startup ToggleSwitch) declare
+        // no minimum and are deliberately absent — see the remarks.
+    ];
 
     /// <summary>
-    /// First-open width (DIP): chrome + card + the widest fixed control + spacing + a comfortable text
-    /// column, so every row opens side-by-side as designed rather than stacked.
-    /// 384 + 30 + 288 + 12 + 246 = 960.
+    /// The widest minimum any settings row's control declares — the maximum over
+    /// <see cref="SettingRowControlMinimums"/>. Feeds <see cref="SettingsMinWidth"/>.
+    /// </summary>
+    public static int SettingRowWidestFixedControl => SettingRowControlMinimums.Max(r => r.MinWidth);
+
+    /// <summary>
+    /// First-open width (DIP): wide enough that the rows open as designed rather than immediately
+    /// stacked. Deliberately its own number and NOT derived from
+    /// <see cref="SettingRowWidestFixedControl"/>: this is a comfort judgement about how the window
+    /// should look on opening, whereas the minimum is a correctness floor, and deriving the two from one
+    /// term made a floor change silently resize the window every user opens.
     /// </summary>
     public const int SettingsDefaultWidth = 960;
 
@@ -90,13 +124,18 @@ public static class WindowPlacement
     public const int SettingsDefaultHeight = 760;
 
     /// <summary>
-    /// Minimum width (DIP). The floor is the point below which even a *stacked* row could not show
-    /// its content: chrome (384) + card (30) + the wider of the text-column floor (180) and the
-    /// widest fixed control (288) → 384 + 30 + 288 = 702. Between this and
-    /// <see cref="SettingsDefaultWidth"/> rows stack individually (see <see cref="ShouldStackSettingRow"/>);
-    /// at or above it no row's text can be squeezed below <see cref="SettingRowTextMinWidth"/>.
+    /// Minimum width (DIP). The floor is the point below which even a *stacked* row could not show its
+    /// content: chrome (384) + card (30) + the wider of the text-column floor (180) and
+    /// <see cref="SettingRowWidestFixedControl"/>. Between this and <see cref="SettingsDefaultWidth"/>
+    /// rows stack individually (see <see cref="ShouldStackSettingRow"/>).
+    ///
+    /// <para>Note what this floor is and is not. It guarantees that a row's control can show itself at
+    /// its declared minimum. It is NOT what stops a multi-control row overflowing the card — a constant
+    /// cannot do that job at every width, and trying to made it wrong twice (see
+    /// <see cref="SettingRowControlMinimums"/>). <c>ControlStrip</c> holds that guarantee, by wrapping.</para>
     /// </summary>
-    public const int SettingsMinWidth = SettingsChromeWidth + SettingsCardWidth + SettingRowWidestFixedControl;
+    public static int SettingsMinWidth =>
+        SettingsChromeWidth + SettingsCardWidth + Math.Max((int)SettingRowTextMinWidth, SettingRowWidestFixedControl);
 
     /// <summary>
     /// Minimum height (DIP). The nav pane is the tallest thing that cannot scroll: 6 items × 40 = 240,
@@ -125,6 +164,56 @@ public static class WindowPlacement
         if (double.IsNaN(controlWidth) || controlWidth < 0) controlWidth = 0;
 
         return availableWidth < SettingRowTextMinWidth + SettingRowColumnSpacing + controlWidth;
+    }
+
+    /// <summary>
+    /// Groups a horizontal run of controls into wrapped lines: which child indices share each line, given
+    /// their natural widths, the width available and the gap between them. Backs <c>ControlStrip</c>.
+    ///
+    /// <para>Pure, so the load-bearing property is testable without a GUI: <b>a child is never placed on a
+    /// line that cannot hold it</b> — the clipping that made the Override row unusable at the window's
+    /// minimum width. A child WIDER than the whole row still gets a line to itself (there is nowhere
+    /// better for it, and it is then the panel's reported desired width, so the row above can react),
+    /// but it never shares one.</para>
+    /// </summary>
+    /// <param name="childWidths">Each child's natural (unconstrained) desired width, in order.</param>
+    /// <param name="availableWidth">Room for the run. Infinite/NaN means "no constraint" — one line.</param>
+    /// <param name="spacing">Gap between adjacent children on a line.</param>
+    /// <returns>One list of child indices per line, in order. Empty when there are no children.</returns>
+    public static IReadOnlyList<IReadOnlyList<int>> WrapStrip(
+        IReadOnlyList<double> childWidths, double availableWidth, double spacing)
+    {
+        if (childWidths is null || childWidths.Count == 0) return [];
+
+        // Unbounded or not-yet-measured: one line, the natural layout. A zero/NaN width must not wrap
+        // every child onto its own line during the first measure pass, the same reason
+        // ShouldStackSettingRow treats a non-positive width as "no decision yet".
+        if (double.IsNaN(availableWidth) || double.IsInfinity(availableWidth) || availableWidth <= 0)
+            return [[.. Enumerable.Range(0, childWidths.Count)]];
+
+        var lines   = new List<IReadOnlyList<int>>();
+        var current = new List<int>();
+        double used = 0;
+
+        for (int i = 0; i < childWidths.Count; i++)
+        {
+            double w = double.IsNaN(childWidths[i]) ? 0 : Math.Max(0, childWidths[i]);
+            double needed = current.Count == 0 ? w : used + spacing + w;
+
+            if (current.Count > 0 && needed > availableWidth)
+            {
+                lines.Add(current);
+                current = [];
+                used = 0;
+                needed = w;
+            }
+
+            current.Add(i);
+            used = needed;
+        }
+
+        if (current.Count > 0) lines.Add(current);
+        return lines;
     }
 
     /// <summary>

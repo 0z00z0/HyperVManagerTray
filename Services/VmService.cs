@@ -747,20 +747,32 @@ public sealed class VmService : IDisposable
 
     private List<DiscoveredVm> ReadDiscovered(ManagementScope scope, Dictionary<string, VmIdentity> vms)
     {
-        var nicByVm = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        // ALL of each VM's synthetic NIC names, not just the last row WMI happened to return: the pick
+        // among them is VmConfigUi.SeedNicName's, shared with Settings' add-a-VM picker so the two
+        // surfaces cannot seed a new managed VM with different adapters (see that method's remarks).
+        // Collecting every name is what lets the choice be made by a rule rather than by row order.
+        var nicsByVm = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            // Guest/synthetic NIC display name per VM (best-effort; falls back to a default below).
             using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
                 "SELECT InstanceID, ElementName FROM Msvm_SyntheticEthernetPortSettingData"));
-            foreach (ManagementObject o in s.Get())
+            using var results = s.Get();
+            foreach (ManagementObject o in results)
                 using (o)
-                    if (MatchVm(o["InstanceID"] as string ?? "", vms) is { } name)
-                        nicByVm[name] = o["ElementName"] as string ?? "Network Adapter";
+                {
+                    if (MatchVm(o["InstanceID"] as string ?? "", vms) is not { } name) continue;
+                    var nic = (o["ElementName"] as string)?.Trim();
+                    if (string.IsNullOrEmpty(nic)) continue;
+
+                    var list = nicsByVm.TryGetValue(name, out var existing) ? existing : nicsByVm[name] = [];
+                    if (!list.Contains(nic, StringComparer.OrdinalIgnoreCase)) list.Add(nic);
+                }
         }
         catch (Exception ex) { _logger.LogWarning(ex, "Discovered-VM NIC read failed"); }
 
-        return vms.Keys.Select(name => new DiscoveredVm(name, nicByVm.GetValueOrDefault(name, "Network Adapter"))).ToList();
+        return vms.Keys
+            .Select(name => new DiscoveredVm(name, VmConfigUi.SeedNicName(nicsByVm.GetValueOrDefault(name))))
+            .ToList();
     }
 
     private Dictionary<string, string> ReadIps(ManagementScope scope, Dictionary<string, VmIdentity> vms)

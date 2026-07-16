@@ -72,6 +72,20 @@ internal sealed partial class SettingsWindow : Window
     // open (deep copies of config rules); edits mutate it in place and persist via _config.SaveRules, so
     // a reload-driven re-sort of _config.Current can't reorder controls mid-edit.
     private readonly List<NetworkRule> _workingRules = [];
+
+    // The rules "Add rule" created that the user has not yet filled in far enough to mean anything
+    // (issue #48 / the #31-batch review). Tracked by REFERENCE — _workingRules holds the live objects the
+    // cards mutate in place, and NetworkRule has no identity of its own (two blank drafts are equal by
+    // value), so reference identity is the only thing that can tell "the draft I just added" from "a rule
+    // that came off disk".
+    //
+    // Membership means one thing only: CommitRules must not write this rule out until it is persistable.
+    // A rule loaded from config.json is NEVER a draft — it round-trips verbatim however incomplete it is,
+    // because the user (or a hand edit) put it there deliberately and silently deleting it on the next
+    // unrelated edit would be the config-eating bug in reverse. A draft leaves this set the moment it
+    // becomes persistable and is thereafter an ordinary rule.
+    private readonly HashSet<NetworkRule> _draftRules = new(ReferenceEqualityComparer.Instance);
+
     private StackPanel? _rulesListPanel;
     private ComboBox?   _fallbackSwitchCombo;
     private TextBox?    _fallbackVmsBox;
@@ -648,23 +662,46 @@ internal sealed partial class SettingsWindow : Window
             combo.Text = current;
         });
 
-        addBtn.Click += async (_, _) =>
+        addBtn.Click += (_, _) => _ = AddVmAsync();
+
+        // Not `async void`: a throw out of an async void handler is a stowed exception, which takes the
+        // whole tray process down rather than failing one button. AddVmAsync owns its own try/catch.
+        async Task AddVmAsync()
         {
-            var name = (combo.SelectedItem as string ?? combo.Text)?.Trim();
-            if (string.IsNullOrEmpty(name)) return;
+            try
+            {
+                // combo.Text, NOT `SelectedItem as string ?? combo.Text`. On an editable ComboBox picking
+                // an item sets Text too, so Text is the authority for both paths — whereas SelectedItem
+                // holds the LAST pick and survives the user clearing the box and typing something else
+                // (TextSubmitted is handled above precisely to keep that typed text). Reading SelectedItem
+                // first meant "pick vDev, clear the box, type vBuild, click Add" added vDev — the
+                // not-yet-created VM being the very case this free-text combo exists for. SuggestionCombo
+                // gets this right by only reading SelectedItem inside SelectionChanged, where it is the
+                // thing that just changed; this call site has no such excuse.
+                var name = combo.Text?.Trim();
+                if (string.IsNullOrEmpty(name)) return;
 
-            // The VM's own adapter, when the host could be read and reports one — the same value the tray
-            // passes. Blank is fine: AddVmToConfig falls back to the Hyper-V default ("Network Adapter"),
-            // and the NIC row on the card that appears is there to correct it.
-            var nic = _inventory?.NicNamesFor(name).FirstOrDefault() ?? "";
+                // The VM's own adapter, when the host could be read and reports one. VmConfigUi.SeedNicName
+                // is the SAME pick the tray's "Manage VMs" list makes (via VmService.ReadDiscovered) — the
+                // two surfaces previously disagreed about which of several adapters to seed, and the loser
+                // wrote a NIC name that matches nothing, so the VM silently never reconnected. With no
+                // host read it yields the Hyper-V default, which is what AddVmToConfig would have applied
+                // to a blank anyway; the NIC row on the card that appears is there to correct it.
+                var nic = VmConfigUi.SeedNicName(_inventory?.NicNamesFor(name));
 
-            if (!await _managedVms.AddAsync(name, nic)) return;
-            if (_closed) return;
-            // The VM list is built from _config.Current, which AddAsync has just confirmed — rebuild so
-            // the new card appears. Same path the Reload button uses; every populate is guarded, so the
-            // rebuild itself commits nothing.
-            RefreshValuesFromConfig();
-        };
+                if (!await _managedVms.AddAsync(name, nic)) return;
+                if (_closed) return;
+                // The VM list is built from _config.Current, which AddAsync has just confirmed — rebuild so
+                // the new card appears. Same path the Reload button uses; every populate is guarded, so the
+                // rebuild itself commits nothing.
+                RefreshValuesFromConfig();
+            }
+            catch (Exception ex)
+            {
+                AppInfo.AppendCrashLogLine("SettingsWindow", $"AddVm: {ex}");
+                if (!_closed) NativeMethods.Warn($"Could not add the VM:\n\n{ex.Message}", AppInfo.Name);
+            }
+        }
 
         var stack = new StackPanel { Spacing = 6, MinWidth = 220 };
         stack.Children.Add(combo);
@@ -704,12 +741,22 @@ internal sealed partial class SettingsWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
         };
         var stopBtn = new Button { Content = "Stop managing" };
-        stopBtn.Click += async (_, _) =>
+        stopBtn.Click += (_, _) => _ = StopManagingAsync();
+
+        async Task StopManagingAsync()
         {
-            if (!await _managedVms.RemoveAsync(vmName)) return;   // cancelled, or not confirmed — say nothing more
-            if (_closed) return;
-            RefreshValuesFromConfig();   // this card's VM is gone from _config.Current — re-render without it
-        };
+            try
+            {
+                if (!await _managedVms.RemoveAsync(vmName)) return;   // cancelled, or not confirmed — say nothing more
+                if (_closed) return;
+                RefreshValuesFromConfig();   // this card's VM is gone from _config.Current — re-render without it
+            }
+            catch (Exception ex)
+            {
+                AppInfo.AppendCrashLogLine("SettingsWindow", $"StopManaging: {ex}");
+                if (!_closed) NativeMethods.Warn($"Could not stop managing {vmName}:\n\n{ex.Message}", AppInfo.Name);
+            }
+        }
 
         var header = new Grid { ColumnSpacing = 8 };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -768,7 +815,9 @@ internal sealed partial class SettingsWindow : Window
         actionCombo.SelectionChanged += (_, _) => Commit();
         delayCombo.SelectionChanged  += (_, _) => Commit();
 
-        var controls = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        // ControlStrip, not a horizontal StackPanel: 150 + 8 + 130 does not fit a narrow row, and a
+        // StackPanel answers that by putting the delay combo outside the card where it cannot be reached.
+        var controls = new ControlStrip { VerticalAlignment = VerticalAlignment.Center };
         controls.Children.Add(actionCombo);
         controls.Children.Add(delayCombo);
         content.Children.Add(Row("On bridge lost", "Action · delay when the bridge is lost", controls));
@@ -803,6 +852,10 @@ internal sealed partial class SettingsWindow : Window
 
         // Snapshot config into the working list the editor mutates.
         _workingRules.Clear();
+        // Every rule here came off disk, so none of them is a draft — see _draftRules. Clearing this
+        // alongside _workingRules keeps the two in step: a stale reference left behind would mark no
+        // live rule (the objects are all new) but would leak for the window's lifetime.
+        _draftRules.Clear();
         foreach (var r in _config.Current.Rules) _workingRules.Add(ConfigManager.CleanRule(r));
 
         panel.Children.Add(new TextBlock
@@ -818,21 +871,28 @@ internal sealed partial class SettingsWindow : Window
         // adapter's description, MAC and subnet in one step (issue #34 moved it here from the tray). The
         // latter is the better path whenever the user is standing on the network they want a rule for,
         // which is why it sits directly beside the former rather than in a menu somewhere.
-        var addButtons = new StackPanel
-        {
-            Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 2, 0, 0),
-        };
+        var addButtons = new ControlStrip { Margin = new Thickness(0, 2, 0, 0) };
         var addBtn = new Button { Content = "Add rule" };
         addBtn.Click += (_, _) => AddRule();
         var addCurrentBtn = new Button { Content = "Add current network" };
-        addCurrentBtn.Click += async (_, _) =>
+        addCurrentBtn.Click += (_, _) => _ = AddCurrentNetworkAsync();
+
+        async Task AddCurrentNetworkAsync()
         {
-            await _network.AddCurrentAsBridgedAsync();
-            if (_closed) return;
-            // The rule was written straight to config (not through _workingRules), so the editor above is
-            // now a rule short. Re-render from config rather than leaving it stale.
-            RefreshValuesFromConfig();
-        };
+            try
+            {
+                await _network.AddCurrentAsBridgedAsync();
+                if (_closed) return;
+                // The rule was written straight to config (not through _workingRules), so the editor above is
+                // now a rule short. Re-render from config rather than leaving it stale.
+                RefreshValuesFromConfig();
+            }
+            catch (Exception ex)
+            {
+                AppInfo.AppendCrashLogLine("SettingsWindow", $"AddCurrentNetwork: {ex}");
+                if (!_closed) NativeMethods.Warn($"Could not add the current network:\n\n{ex.Message}", AppInfo.Name);
+            }
+        }
         addButtons.Children.Add(addBtn);
         addButtons.Children.Add(addCurrentBtn);
         panel.Children.Add(addButtons);
@@ -916,17 +976,28 @@ internal sealed partial class SettingsWindow : Window
             Content   = "Apply override",
             IsEnabled = vmNames.Count > 0 && switches.Count > 0,
         };
-        applyBtn.Click += async (_, _) =>
+        applyBtn.Click += (_, _) => _ = ApplyOverrideAsync();
+
+        async Task ApplyOverrideAsync()
         {
+            // SelectedItem is right HERE, unlike the add-VM box: both of these combos are closed
+            // picklists (IsEditable is false), so there is no typed text for it to disagree with.
             if (vmCombo.SelectedItem is not string vm || switchCombo.SelectedItem is not string sw) return;
             UiActivityLog.Logger.LogInformation("Settings: Override switch '{Vm}' → '{Switch}'", vm, sw);
-            await _network.OverrideSwitchAsync(vm, sw);
-        };
+            try { await _network.OverrideSwitchAsync(vm, sw); }
+            catch (Exception ex)
+            {
+                AppInfo.AppendCrashLogLine("SettingsWindow", $"ApplyOverride: {ex}");
+                if (!_closed) NativeMethods.Warn($"Could not override the switch for {vm}:\n\n{ex.Message}", AppInfo.Name);
+            }
+        }
 
-        var controls = new StackPanel
-        {
-            Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center,
-        };
+        // ControlStrip, not a horizontal StackPanel — this row is the reason ControlStrip exists. Its
+        // three controls need ~460 DIP; a settings row at the window's own minimum width has 288, and a
+        // StackPanel spent the difference by putting the switch combo and Apply button outside the card,
+        // clipped by RootScroll (horizontal scrolling is disabled) and therefore simply gone. The
+        // override was unusable at the minimum size the window itself enforces.
+        var controls = new ControlStrip { VerticalAlignment = VerticalAlignment.Center };
         controls.Children.Add(vmCombo);
         controls.Children.Add(switchCombo);
         controls.Children.Add(applyBtn);
@@ -1002,11 +1073,27 @@ internal sealed partial class SettingsWindow : Window
         if (_inventory is not null) ApplyInventory(_inventory);
     }
 
+    /// <summary>
+    /// Adds a blank rule to the editor for the user to fill in — in the editor ONLY. It is registered as a
+    /// draft (see <see cref="_draftRules"/>), so <see cref="CommitRules"/> leaves it out of config.json
+    /// until it names a switch and at least one condition.
+    ///
+    /// <para><b>Why it is not written immediately.</b> It used to be: the click persisted
+    /// <c>{name:"New rule", priority:100, virtualSwitch:"", conditions:{}}</c> before the user had typed a
+    /// character, and a rule with no conditions matches EVERY network while a blank switch binds nothing —
+    /// red icon, no reconnects, and (because the active rule is then never "Fallback") every VM's
+    /// on-bridge-lost action silently stops firing. <see cref="SettingsOptions.IsPersistableRule"/>
+    /// carries the full reasoning. Nothing is lost by waiting: the card is on screen and every field
+    /// commits, so the rule is written the moment it can actually do something.</para>
+    /// </summary>
     private void AddRule()
     {
-        _workingRules.Add(new NetworkRule { Name = "New rule", Priority = 100, VirtualSwitch = "" });
+        var draft = new NetworkRule { Name = "New rule", Priority = 100, VirtualSwitch = "" };
+        _workingRules.Add(draft);
+        _draftRules.Add(draft);
         RebuildRuleCards();
-        CommitRules();
+        // No CommitRules() here — there is by construction nothing yet to commit, and writing the draft is
+        // the bug. The first field edit calls CommitRules and persists it once it qualifies.
     }
 
     private UIElement BuildRuleCard(NetworkRule rule)
@@ -1057,7 +1144,13 @@ internal sealed partial class SettingsWindow : Window
         var nameBox = new TextBox { Text = rule.Name, PlaceholderText = "Rule name", HorizontalAlignment = HorizontalAlignment.Stretch };
         nameBox.LostFocus += (_, _) => { if (_updating) return; rule.Name = nameBox.Text.Trim(); CommitRules(); };
         var removeBtn = new Button { Content = "Remove" };
-        removeBtn.Click += (_, _) => { _workingRules.Remove(rule); RebuildRuleCards(); CommitRules(); };
+        removeBtn.Click += (_, _) =>
+        {
+            _workingRules.Remove(rule);
+            _draftRules.Remove(rule);   // no-op for a rule off disk; drops the reference for a discarded draft
+            RebuildRuleCards();
+            CommitRules();
+        };
         var header = new Grid { ColumnSpacing = 8 };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -1127,11 +1220,28 @@ internal sealed partial class SettingsWindow : Window
         return Card(grid);
     }
 
+    /// <summary>
+    /// Persists the editor's rules. Snapshots the working list so the background write sees a stable copy,
+    /// and drops any still-blank draft (see <see cref="_draftRules"/> / <see cref="AddRule"/>) so a rule
+    /// that would match every network and bind nothing never reaches the file.
+    /// </summary>
     private void CommitRules()
     {
         if (_updating) return;
-        // Snapshot the working list so the background write sees a stable copy.
-        var snapshot = _workingRules.Select(ConfigManager.CleanRule).ToList();
+
+        var snapshot = new List<NetworkRule>(_workingRules.Count);
+        foreach (var rule in _workingRules)
+        {
+            // Judge the CLEANED rule, not the typed one: CleanRule drops a malformed MAC/CIDR to null, so
+            // a draft whose only condition doesn't parse is still a catch-all and must not be written.
+            var cleaned = ConfigManager.CleanRule(rule);
+            if (_draftRules.Contains(rule))
+            {
+                if (!SettingsOptions.IsPersistableRule(cleaned)) continue;   // still blank — leave it in the editor
+                _draftRules.Remove(rule);   // it does something now; from here it is an ordinary rule
+            }
+            snapshot.Add(cleaned);
+        }
         Task.Run(() =>
         {
             try { _config.SaveRules(snapshot); }
@@ -1270,7 +1380,9 @@ internal sealed partial class SettingsWindow : Window
     {
         var panel = Section("Maintenance");
 
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        // ControlStrip: four controls at ~640 DIP natural. No sane minimum window width covers that
+        // (it would take ~1050), so these wrap rather than being clipped out of the card.
+        var buttons = new ControlStrip();
 
         var openConfig = new Button { Content = "Open config.json" };
         openConfig.Click += (_, _) => Shell.OpenOrReveal(ConfigManager.GetConfigPath());
@@ -1336,8 +1448,11 @@ internal sealed partial class SettingsWindow : Window
                     return;
                 }
 
+                // Set immediately before the rebuild that renders it, and cleared by that rebuild's own
+                // caller for every OTHER path — see RefreshValuesFromConfig. The message is a claim about
+                // a disk read that just happened, so only the code that just did one may leave it set.
                 _reloadResultMessage = ConfigLoadUi.SuccessMessage(outcome);
-                RefreshValuesFromConfig();   // rebuilds this section, which renders the message above
+                RefreshValuesFromConfig(keepReloadResult: true);   // rebuilds this section, which renders it
             });
         });
 
@@ -1356,7 +1471,7 @@ internal sealed partial class SettingsWindow : Window
         // ── The network tools (issue #34) ──
         // "Re-check network now" is ALSO a tray quick command — a convenience copy there, per the policy
         // that this window is the complete surface. "Repair host networking" is here ONLY.
-        var networkButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var networkButtons = new ControlStrip();
 
         var recheckBtn = new Button { Content = "Re-check network now" };
         recheckBtn.Click += (_, _) => _ = _network.ReCheckNetworkAsync();
@@ -1429,9 +1544,24 @@ internal sealed partial class SettingsWindow : Window
     /// The visible category is preserved (panel visibility is owned by the nav, which BuildSections leaves
     /// untouched). _userToggledStartup is reset so the fresh startup toggle re-reads the real task state.
     /// </summary>
-    private void RefreshValuesFromConfig()
+    /// <param name="keepReloadResult">
+    /// True ONLY from the "Reload config from disk" button, which has just done the disk read
+    /// <see cref="_reloadResultMessage"/> reports and set the message for this rebuild to render.
+    ///
+    /// <para>It defaults to false because that message is a claim about a read that happened, and the
+    /// other callers of this method — adding a VM, stopping managing one, adding the current network —
+    /// perform no read at all. They rebuild the Maintenance section too, which re-rendered a leftover
+    /// "Reloaded — 3 rules, 2 VMs" verbatim: a line asserting a disk read-back that never took place,
+    /// with counts that are now simply wrong (the VM just added is not in them). The failure path already
+    /// cleared it for exactly this reason; the success path never did, so the staleness only appeared
+    /// AFTER a reload had succeeded once. Clearing by default makes the message the reload button's alone
+    /// — the honest scope for it — rather than something every other path is trusted to remember to
+    /// clear. See docs/STYLE.md: report what was verified, not what was attempted.</para>
+    /// </param>
+    private void RefreshValuesFromConfig(bool keepReloadResult = false)
     {
         if (_closed) return;
+        if (!keepReloadResult) _reloadResultMessage = null;
         _userToggledStartup = false;
         try { BuildSections(); }
         catch (Exception ex) { AppInfo.AppendCrashLogLine("SettingsWindow", $"RefreshValuesFromConfig: {ex}"); }

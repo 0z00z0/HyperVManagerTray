@@ -36,7 +36,9 @@ public sealed class ConfigManager : IDisposable
     private readonly LogLevelSwitch? _levelSwitch;
     private readonly FileSystemWatcher _watcher;
     private readonly System.Threading.Timer _debounceTimer;
-    private AppConfig _config = new();
+    // volatile: written by Load (which runs on the debounce timer thread, on a UI-dispatched Reload, and
+    // inside _saveLock) and read by Current from every thread in the app without taking the lock.
+    private volatile AppConfig _config = new();
     // Serialises SaveAndReload so overlapping saves (the rules editor commits each control edit via a
     // fire-and-forget Task.Run, so rapid edits can overlap) queue instead of colliding — otherwise a
     // second File.WriteAllText can hit the prior write's FileShare handle (spurious "could not save"),
@@ -70,10 +72,17 @@ public sealed class ConfigManager : IDisposable
     public ConfigLoadOutcome LastLoad { get; private set; } = ConfigLoadOutcome.Success(0, 0);
 
     // True once a failed load has been announced, so a debounce storm (editors save repeatedly) or a
-    // long-broken file doesn't balloon on every tick. Cleared by the next successful load, so a NEW
-    // breakage always announces itself — the same say-it-once/re-arm discipline App applies to a failed
-    // switch apply (_lastNotifiedFailure).
-    private bool _failureAnnounced;
+    // long-broken file doesn't balloon on every tick. Cleared by the next successful load — in
+    // <see cref="Load"/> itself, NOT here in the debounce path, which is the whole point: SaveAndReload
+    // pauses the watcher, writes a valid file and calls Load() directly, so a re-arm that lived only in
+    // OnDebounceElapsed would never run for an in-app edit. The latch would then stay stuck true after
+    // (broken file → balloon → user changes anything in Settings), and the NEXT breakage would be
+    // swallowed in silence — the app running on rules the user never wrote and saying nothing, which is
+    // precisely the issue #39 defect this latch exists to fix. Same say-it-once/re-arm discipline App
+    // applies to a failed switch apply (_lastNotifiedFailure).
+    //
+    // volatile: set on the debounce timer thread, cleared by any thread that completes a successful Load.
+    private volatile bool _failureAnnounced;
 
     public ConfigManager(string configPath, ILogger logger, LogLevelSwitch? levelSwitch = null)
     {
@@ -108,6 +117,11 @@ public sealed class ConfigManager : IDisposable
             var loaded = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? new AppConfig();
             loaded.Rules = [.. loaded.Rules.OrderBy(r => r.Priority)];
             _config = loaded;
+            // The file parsed, so the next failure is news again. This is the ONE place every successful
+            // load flows through — the constructor, the debounce tick, SaveAndReload's read-back and the
+            // Maintenance Reload button all land here — which is exactly why the re-arm belongs here and
+            // not in any single caller (see _failureAnnounced).
+            _failureAnnounced = false;
             // Apply the loaded verbosity to the live gate immediately (issue #22) — this is the single
             // place every path (startup, UpdateLogLevel's SaveAndReload, a manual file edit) flows through.
             if (_levelSwitch is not null) _levelSwitch.MinimumLevel = loaded.LogLevel;
@@ -140,7 +154,7 @@ public sealed class ConfigManager : IDisposable
             return;
         }
 
-        _failureAnnounced = false;   // parsed again — re-arm for the next breakage
+        // No re-arm here: Load() already cleared _failureAnnounced when it succeeded, for every caller.
         try { ConfigReloaded?.Invoke(this, _config); }
         catch (Exception ex) { _logger.LogError(ex, "A ConfigReloaded subscriber threw an exception"); }
     }
@@ -150,52 +164,55 @@ public sealed class ConfigManager : IDisposable
     /// The FileSystemWatcher is paused during the write to avoid a redundant debounced reload.
     /// </summary>
     public void AddBridgedRule(NetworkRule rule) => SaveAndReload(
-        With(rules: [.. _config.Rules, rule]),
-        $"Rule '{rule.Name}' added and saved to {_configPath}",
+        () => new SaveRequest(
+            With(rules: [.. _config.Rules, rule]),
+            $"Rule '{rule.Name}' added and saved to {_configPath}"),
         $"Failed to save new rule '{rule.Name}'");
 
     /// <summary>
     /// Appends a new <see cref="VmTarget"/> to config.json and reloads.
     /// Does nothing if a VM with the same name is already present.
     /// </summary>
-    public void AddVmToConfig(string name, string nicName)
-    {
-        if (_config.VirtualMachines.Any(v => v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+    public void AddVmToConfig(string name, string nicName) => SaveAndReload(
+        () =>
         {
-            _logger.LogInformation("AddVmToConfig: '{Name}' is already in config — skipping.", name);
-            return;
-        }
+            if (_config.VirtualMachines.Any(v => v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            {
+                _logger.LogInformation("AddVmToConfig: '{Name}' is already in config — skipping.", name);
+                return null;
+            }
 
-        var newVm = new VmTarget
-        {
-            Name    = name,
-            NicName = string.IsNullOrWhiteSpace(nicName) ? "Network Adapter" : nicName,
-        };
+            var newVm = new VmTarget
+            {
+                Name    = name,
+                NicName = SettingsOptions.NormalizeNicName(nicName),
+            };
 
-        SaveAndReload(
-            With(vms: [.. _config.VirtualMachines, newVm]),
-            $"VM '{name}' added and saved to {_configPath}",
-            $"Failed to save new VM '{name}'");
-    }
+            return new SaveRequest(
+                With(vms: [.. _config.VirtualMachines, newVm]),
+                $"VM '{name}' added and saved to {_configPath}");
+        },
+        $"Failed to save new VM '{name}'");
 
     /// <summary>
     /// Removes the named VM from config.json and reloads.
     /// Does nothing if no VM with that name exists.
     /// </summary>
-    public void RemoveVmFromConfig(string name)
-    {
-        if (!_config.VirtualMachines.Any(v => v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+    public void RemoveVmFromConfig(string name) => SaveAndReload(
+        () =>
         {
-            _logger.LogInformation("RemoveVmFromConfig: '{Name}' not found in config — skipping.", name);
-            return;
-        }
+            if (!_config.VirtualMachines.Any(v => v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            {
+                _logger.LogInformation("RemoveVmFromConfig: '{Name}' not found in config — skipping.", name);
+                return null;
+            }
 
-        SaveAndReload(
-            With(vms: [.. _config.VirtualMachines.Where(v =>
-                !v.Name.Equals(name, StringComparison.OrdinalIgnoreCase))]),
-            $"VM '{name}' removed and saved to {_configPath}",
-            $"Failed to remove VM '{name}'");
-    }
+            return new SaveRequest(
+                With(vms: [.. _config.VirtualMachines.Where(v =>
+                    !v.Name.Equals(name, StringComparison.OrdinalIgnoreCase))]),
+                $"VM '{name}' removed and saved to {_configPath}");
+        },
+        $"Failed to remove VM '{name}'");
 
     /// <summary>
     /// Persists a new <see cref="AppConfig.LogLevel"/> to config.json and reloads (issue #18 —
@@ -204,19 +221,20 @@ public sealed class ConfigManager : IDisposable
     /// The reload runs through <see cref="Load"/>, which applies the new level to the live
     /// <see cref="LogLevelSwitch"/> immediately — all logs pick it up with no restart (issue #22).
     /// </summary>
-    public void UpdateLogLevel(LogLevel level)
-    {
-        if (_config.LogLevel == level)
+    public void UpdateLogLevel(LogLevel level) => SaveAndReload(
+        () =>
         {
-            _logger.LogInformation("UpdateLogLevel: already {Level} — skipping.", level);
-            return;
-        }
+            if (_config.LogLevel == level)
+            {
+                _logger.LogInformation("UpdateLogLevel: already {Level} — skipping.", level);
+                return null;
+            }
 
-        SaveAndReload(
-            With(logLevel: level),
-            $"Log level set to {level} and saved to {_configPath}",
-            $"Failed to save log level {level}");
-    }
+            return new SaveRequest(
+                With(logLevel: level),
+                $"Log level set to {level} and saved to {_configPath}");
+        },
+        $"Failed to save log level {level}");
 
     /// <summary>
     /// Updates the "when the bridged network is lost" action and delay for a managed VM (issue #18 —
@@ -230,44 +248,45 @@ public sealed class ConfigManager : IDisposable
     /// so a failed save (e.g. an OneDrive/AV file lock) can't leave <c>_config</c> diverged from disk
     /// with a possibly-destructive action armed (the NetworkMonitor reads these values live).
     /// </remarks>
-    public void SetVmBridgeLostAction(string vmName, string? action, int delaySeconds)
-    {
-        var vm = _config.VirtualMachines.FirstOrDefault(v =>
-            v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase));
-        if (vm is null)
+    public void SetVmBridgeLostAction(string vmName, string? action, int delaySeconds) => SaveAndReload(
+        () =>
         {
-            _logger.LogInformation("SetVmBridgeLostAction: '{Name}' not found in config — skipping.", vmName);
-            return;
-        }
+            var vm = _config.VirtualMachines.FirstOrDefault(v =>
+                v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase));
+            if (vm is null)
+            {
+                _logger.LogInformation("SetVmBridgeLostAction: '{Name}' not found in config — skipping.", vmName);
+                return null;
+            }
 
-        // Honour the XML-doc's promise: canonicalise the action and clamp the delay before persisting.
-        var normalizedAction = SettingsOptions.NormalizeBridgeLostAction(action);
-        var normalizedDelay  = SettingsOptions.NormalizeDelaySeconds(delaySeconds);
+            // Honour the XML-doc's promise: canonicalise the action and clamp the delay before persisting.
+            var normalizedAction = SettingsOptions.NormalizeBridgeLostAction(action);
+            var normalizedDelay  = SettingsOptions.NormalizeDelaySeconds(delaySeconds);
 
-        if (vm.OnBridgeLostAction == normalizedAction && vm.OnBridgeLostDelaySeconds == normalizedDelay)
-        {
-            _logger.LogInformation("SetVmBridgeLostAction: '{Name}' already {Action} ({Delay}s) — skipping.",
-                vmName, normalizedAction ?? "none", normalizedDelay);
-            return;
-        }
+            if (vm.OnBridgeLostAction == normalizedAction && vm.OnBridgeLostDelaySeconds == normalizedDelay)
+            {
+                _logger.LogInformation("SetVmBridgeLostAction: '{Name}' already {Action} ({Delay}s) — skipping.",
+                    vmName, normalizedAction ?? "none", normalizedDelay);
+                return null;
+            }
 
-        SaveAndReload(
-            With(vms:
-            [
-                .. _config.VirtualMachines.Select(v =>
-                    v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase)
-                        ? new VmTarget
-                          {
-                              Name                     = v.Name,
-                              NicName                  = v.NicName,
-                              OnBridgeLostAction       = normalizedAction,
-                              OnBridgeLostDelaySeconds = normalizedDelay,
-                          }
-                        : v)
-            ]),
-            $"Bridge-lost action for VM '{vmName}' set to {normalizedAction ?? "none"} ({normalizedDelay}s) and saved to {_configPath}",
-            $"Failed to save bridge-lost action for VM '{vmName}'");
-    }
+            return new SaveRequest(
+                With(vms:
+                [
+                    .. _config.VirtualMachines.Select(v =>
+                        v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase)
+                            ? new VmTarget
+                              {
+                                  Name                     = v.Name,
+                                  NicName                  = v.NicName,
+                                  OnBridgeLostAction       = normalizedAction,
+                                  OnBridgeLostDelaySeconds = normalizedDelay,
+                              }
+                            : v)
+                ]),
+                $"Bridge-lost action for VM '{vmName}' set to {normalizedAction ?? "none"} ({normalizedDelay}s) and saved to {_configPath}");
+        },
+        $"Failed to save bridge-lost action for VM '{vmName}'");
 
     /// <summary>
     /// Updates which of a managed VM's network adapters the app reconnects
@@ -283,40 +302,41 @@ public sealed class ConfigManager : IDisposable
     /// hand-edited bridge-lost action can't be dropped by a NIC edit) replaces the target in a new list,
     /// swapped in only via <see cref="Load"/> after a successful write.
     /// </remarks>
-    public void SetVmNicName(string vmName, string? nicName)
-    {
-        var vm = _config.VirtualMachines.FirstOrDefault(v =>
-            v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase));
-        if (vm is null)
+    public void SetVmNicName(string vmName, string? nicName) => SaveAndReload(
+        () =>
         {
-            _logger.LogInformation("SetVmNicName: '{Name}' not found in config — skipping.", vmName);
-            return;
-        }
+            var vm = _config.VirtualMachines.FirstOrDefault(v =>
+                v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase));
+            if (vm is null)
+            {
+                _logger.LogInformation("SetVmNicName: '{Name}' not found in config — skipping.", vmName);
+                return null;
+            }
 
-        var normalized = SettingsOptions.NormalizeNicName(nicName);
-        if (string.Equals(vm.NicName, normalized, StringComparison.Ordinal))
-        {
-            _logger.LogInformation("SetVmNicName: '{Name}' already uses '{Nic}' — skipping.", vmName, normalized);
-            return;
-        }
+            var normalized = SettingsOptions.NormalizeNicName(nicName);
+            if (string.Equals(vm.NicName, normalized, StringComparison.Ordinal))
+            {
+                _logger.LogInformation("SetVmNicName: '{Name}' already uses '{Nic}' — skipping.", vmName, normalized);
+                return null;
+            }
 
-        SaveAndReload(
-            With(vms:
-            [
-                .. _config.VirtualMachines.Select(v =>
-                    v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase)
-                        ? new VmTarget
-                          {
-                              Name                     = v.Name,
-                              NicName                  = normalized,
-                              OnBridgeLostAction       = v.OnBridgeLostAction,
-                              OnBridgeLostDelaySeconds = v.OnBridgeLostDelaySeconds,
-                          }
-                        : v)
-            ]),
-            $"NIC name for VM '{vmName}' set to '{normalized}' and saved to {_configPath}",
-            $"Failed to save the NIC name for VM '{vmName}'");
-    }
+            return new SaveRequest(
+                With(vms:
+                [
+                    .. _config.VirtualMachines.Select(v =>
+                        v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase)
+                            ? new VmTarget
+                              {
+                                  Name                     = v.Name,
+                                  NicName                  = normalized,
+                                  OnBridgeLostAction       = v.OnBridgeLostAction,
+                                  OnBridgeLostDelaySeconds = v.OnBridgeLostDelaySeconds,
+                              }
+                            : v)
+                ]),
+                $"NIC name for VM '{vmName}' set to '{normalized}' and saved to {_configPath}");
+        },
+        $"Failed to save the NIC name for VM '{vmName}'");
 
     /// <summary>
     /// Replaces the entire rules list (issue #23 — the Network editor). Each rule is sanitised through a
@@ -332,15 +352,19 @@ public sealed class ConfigManager : IDisposable
         ArgumentNullException.ThrowIfNull(rules);
         var cleaned = rules.Select(CleanRule).ToList();
 
-        if (RulesEqual(cleaned, _config.Rules))
-        {
-            _logger.LogInformation("SaveRules: rules unchanged — skipping.");
-            return;
-        }
-
         SaveAndReload(
-            With(rules: cleaned),
-            $"Saved {cleaned.Count} network rule(s) to {_configPath}",
+            () =>
+            {
+                if (RulesEqual(cleaned, _config.Rules))
+                {
+                    _logger.LogInformation("SaveRules: rules unchanged — skipping.");
+                    return null;
+                }
+
+                return new SaveRequest(
+                    With(rules: cleaned),
+                    $"Saved {cleaned.Count} network rule(s) to {_configPath}");
+            },
             "Failed to save network rules");
     }
 
@@ -351,19 +375,29 @@ public sealed class ConfigManager : IDisposable
     /// </summary>
     public void SetFallback(string virtualSwitch, IEnumerable<string> targetVms)
     {
-        var sw      = string.IsNullOrWhiteSpace(virtualSwitch) ? _config.Fallback.VirtualSwitch : virtualSwitch.Trim();
         var targets = SettingsOptions.CleanVmList(targetVms ?? []);
 
-        if (sw.Equals(_config.Fallback.VirtualSwitch, StringComparison.Ordinal)
-            && targets.SequenceEqual(_config.Fallback.TargetVms, StringComparer.Ordinal))
-        {
-            _logger.LogInformation("SetFallback: unchanged — skipping.");
-            return;
-        }
-
         SaveAndReload(
-            With(fallback: new FallbackAction { VirtualSwitch = sw, TargetVms = targets }),
-            $"Fallback switch set to '{sw}' ({targets.Count} target VM(s)) and saved to {_configPath}",
+            () =>
+            {
+                // Blank keeps the CURRENT switch, so this read of _config.Fallback belongs inside the lock
+                // with the comparison it feeds — otherwise a blank save could resolve against a fallback
+                // another mutator is concurrently replacing.
+                var sw = string.IsNullOrWhiteSpace(virtualSwitch)
+                    ? _config.Fallback.VirtualSwitch
+                    : virtualSwitch.Trim();
+
+                if (sw.Equals(_config.Fallback.VirtualSwitch, StringComparison.Ordinal)
+                    && targets.SequenceEqual(_config.Fallback.TargetVms, StringComparer.Ordinal))
+                {
+                    _logger.LogInformation("SetFallback: unchanged — skipping.");
+                    return null;
+                }
+
+                return new SaveRequest(
+                    With(fallback: new FallbackAction { VirtualSwitch = sw, TargetVms = targets }),
+                    $"Fallback switch set to '{sw}' ({targets.Count} target VM(s)) and saved to {_configPath}");
+            },
             "Failed to save fallback switch");
     }
 
@@ -421,16 +455,17 @@ public sealed class ConfigManager : IDisposable
     /// for the same device is replaced (so a re-rename updates <c>CurrentFriendlyName</c> without
     /// losing the true original).
     /// </summary>
-    public void UpsertAdapterName(AdapterNameOverride entry)
-    {
-        var others = _config.AdapterNames
-            .Where(a => !a.DeviceInstanceId.Equals(entry.DeviceInstanceId, StringComparison.OrdinalIgnoreCase));
+    public void UpsertAdapterName(AdapterNameOverride entry) => SaveAndReload(
+        () =>
+        {
+            var others = _config.AdapterNames
+                .Where(a => !a.DeviceInstanceId.Equals(entry.DeviceInstanceId, StringComparison.OrdinalIgnoreCase));
 
-        SaveAndReload(
-            With(adapterNames: [.. others, entry]),
-            $"Adapter-name record for '{entry.DeviceInstanceId}' saved to {_configPath}",
-            $"Failed to save adapter-name record for '{entry.DeviceInstanceId}'");
-    }
+            return new SaveRequest(
+                With(adapterNames: [.. others, entry]),
+                $"Adapter-name record for '{entry.DeviceInstanceId}' saved to {_configPath}");
+        },
+        $"Failed to save adapter-name record for '{entry.DeviceInstanceId}'");
 
     /// <summary>
     /// Persists the Settings window's last on-screen rect (physical px) to config.json (issue #31), so
@@ -444,48 +479,84 @@ public sealed class ConfigManager : IDisposable
     /// VM's switch) every time Settings is closed, and an open Settings window would rebuild all of its
     /// sections in response to its own write.  Throws on a write failure like the other mutators; the
     /// caller (a <c>Closed</c> handler) is expected to swallow it — a lost rect is cosmetic.
+    ///
+    /// <para><b>Cosmetic, but not harmless if it races.</b> This runs on the UI thread from
+    /// <c>OnClosed</c>, at the exact moment the window's last LostFocus commit may still be in flight on
+    /// a thread-pool thread — and <see cref="With"/> rewrites the WHOLE file, so a snapshot taken here
+    /// against a stale <c>_config</c> would write that thread's edit back out of existence. The snapshot
+    /// (and the unchanged-check, which is equally a read of <c>_config</c>) are therefore built inside
+    /// the save lock like every other mutator's; see <see cref="SaveAndReload"/>.</para>
     /// </remarks>
-    public void SaveSettingsWindowRect(WindowRect rect)
-    {
-        if (_config.SettingsWindowX      == rect.X     && _config.SettingsWindowY      == rect.Y &&
-            _config.SettingsWindowWidth  == rect.Width && _config.SettingsWindowHeight == rect.Height)
+    public void SaveSettingsWindowRect(WindowRect rect) => SaveAndReload(
+        () =>
         {
-            _logger.LogDebug("SaveSettingsWindowRect: unchanged — skipping.");
-            return;
-        }
+            if (_config.SettingsWindowX      == rect.X     && _config.SettingsWindowY      == rect.Y &&
+                _config.SettingsWindowWidth  == rect.Width && _config.SettingsWindowHeight == rect.Height)
+            {
+                _logger.LogDebug("SaveSettingsWindowRect: unchanged — skipping.");
+                return null;
+            }
 
-        SaveAndReload(
-            With(settingsWindowRect: rect),
-            $"Settings window rect {rect.Width}×{rect.Height} at ({rect.X},{rect.Y}) saved to {_configPath}",
-            "Failed to save the Settings window rect",
-            raiseReloaded: false);
-    }
+            return new SaveRequest(
+                With(settingsWindowRect: rect),
+                $"Settings window rect {rect.Width}×{rect.Height} at ({rect.X},{rect.Y}) saved to {_configPath}");
+        },
+        "Failed to save the Settings window rect",
+        raiseReloaded: false);
+
+    /// <summary>What a mutator decided to write: the whole-config snapshot, and the line to log once it
+    /// lands. Returned by the builder <see cref="SaveAndReload"/> runs INSIDE the save lock.</summary>
+    private readonly record struct SaveRequest(AppConfig Config, string SuccessMessage);
 
     /// <summary>
-    /// Serialises <paramref name="updated"/> to config.json, reloads, and (unless
-    /// <paramref name="raiseReloaded"/> is false) raises <see cref="ConfigReloaded"/> — with the
-    /// watcher paused so the write itself doesn't trigger a second, debounced reload.  On failure the
-    /// error is logged and rethrown so the caller can surface it.  Shared by every config-mutating
-    /// method.
+    /// Runs <paramref name="build"/> and, if it asked for a write, serialises its snapshot to config.json,
+    /// reloads, and (unless <paramref name="raiseReloaded"/> is false) raises <see cref="ConfigReloaded"/>
+    /// — with the watcher paused so the write itself doesn't trigger a second, debounced reload.  On
+    /// failure the error is logged and rethrown so the caller can surface it.  Shared by every
+    /// config-mutating method.
     /// </summary>
-    /// <param name="successMessage">Message logged on success (already fully formatted).</param>
+    /// <param name="build">
+    /// Builds the snapshot to write, or returns <c>null</c> to write nothing (the mutator found its value
+    /// already stored, or its target VM absent).
+    ///
+    /// <para><b>This runs INSIDE <see cref="_saveLock"/>, and that is load-bearing — not a detail.</b> A
+    /// mutator's snapshot is built from <c>_config</c> via <see cref="With"/>, i.e. it is a read of the
+    /// live config; every unnamed field falls through to the value <c>_config</c> holds AT BUILD TIME.
+    /// Building it before taking the lock therefore made every mutator a read-modify-write race with
+    /// every other one, and <see cref="With"/> writes the WHOLE file, so the loser did not merely lose
+    /// its own field — it wrote its stale copy of every OTHER field back over the winner's.
+    ///
+    /// The reported case (a code review of the #31 batch): the user retypes a VM's NIC name in the
+    /// Settings combo and then closes the window. LostFocus fires <c>SetVmNicName</c> on a thread-pool
+    /// thread, which builds its snapshot; <c>OnClosed</c> fires <see cref="SaveSettingsWindowRect"/> on
+    /// the UI thread, which reads the OLD VirtualMachines list; the NIC write takes the lock and lands;
+    /// the rect write then takes the lock and puts the old VM list back. The edit is gone from disk, with
+    /// no error and nothing said — a cosmetic write silently eating a functional one. Building inside the
+    /// lock makes each mutator read the config the previous one just wrote.</para>
+    ///
+    /// <para>The same applies to a mutator's no-op/absent guards, which are also reads of <c>_config</c>:
+    /// they belong inside the builder, so "is this VM present?" and "is this value already stored?" are
+    /// answered against the same config the snapshot is built from.</para>
+    /// </param>
     /// <param name="failureMessage">Message logged if the write throws.</param>
     /// <param name="raiseReloaded">
     /// False to persist and refresh <see cref="Current"/> without notifying subscribers — for a write
     /// no subscriber cares about (see <see cref="SaveSettingsWindowRect"/>).  Defaults to true so every
     /// existing caller keeps its current behaviour.
     /// </param>
-    private void SaveAndReload(AppConfig updated, string successMessage, string failureMessage,
-                               bool raiseReloaded = true)
+    private void SaveAndReload(Func<SaveRequest?> build, string failureMessage, bool raiseReloaded = true)
     {
-        // Serialise the whole write+reload so concurrent saves queue rather than clobbering each other.
+        // Serialise the whole build+write+reload so concurrent saves queue rather than clobbering each
+        // other. The build is inside deliberately — see the <paramref name="build"/> remarks.
         lock (_saveLock)
         {
+            if (build() is not { } request) return;   // nothing to write
+
             _watcher.EnableRaisingEvents = false;
             try
             {
-                File.WriteAllText(_configPath, JsonSerializer.Serialize(updated, WriteOptions));
-                _logger.LogInformation("{Message}", successMessage);
+                File.WriteAllText(_configPath, JsonSerializer.Serialize(request.Config, WriteOptions));
+                _logger.LogInformation("{Message}", request.SuccessMessage);
 
                 // We just serialised this object ourselves, so a failed read-back is a bug (or the file
                 // was clobbered between the write and the read) — either way _config still holds the
@@ -518,6 +589,12 @@ public sealed class ConfigManager : IDisposable
     /// <see cref="AppConfig"/> initialiser each — a hand-written copy that silently drops a field (a
     /// real drift risk as fields are added) can't happen when every unspecified field falls through to
     /// the live value.
+    ///
+    /// <para><b>Call only from inside <see cref="_saveLock"/></b> — i.e. only from a
+    /// <see cref="SaveAndReload"/> builder. "Every unspecified field falls through to the live value" is
+    /// precisely what makes this a read of <c>_config</c>, and therefore what makes calling it outside
+    /// the lock a lost update of every field the caller did not name. See the remarks on
+    /// <see cref="SaveAndReload"/>'s <c>build</c> parameter.</para>
     /// </summary>
     private AppConfig With(
         List<VmTarget>? vms = null,

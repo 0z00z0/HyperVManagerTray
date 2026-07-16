@@ -163,4 +163,80 @@ public class VmConfigUiTests
         var msg = VmConfigUi.WriteFailedMessage("DevBox", "The process cannot access the file");
         Assert.Contains("The process cannot access the file", msg);
     }
+
+    // ── SeedNicName: the one answer both add-a-VM surfaces use (issue #41) ────────────────
+
+    /// <summary>
+    /// THE property, and the bug that made it necessary. The tray seeded a new managed VM's NIC from
+    /// <c>VmService.ReadDiscovered</c>, which assigned into a dictionary per WMI row — so the LAST row
+    /// won, in whatever order WMI returned them. Settings seeded from
+    /// <c>HostInventory.NicNamesFor(vm).FirstOrDefault()</c>, and that list is sorted. Same act, two
+    /// surfaces, two different adapters persisted; whichever one picked the non-primary NIC wrote a name
+    /// <c>FindSyntheticNic</c> never matches, so <c>ApplySwitchAsync</c> failed every pass and the VM was
+    /// silently never reconnected — the failure #41 exists to fix.
+    ///
+    /// <para>Order-independence is exactly what the tray's path lacked, so it is what this asserts.</para>
+    /// </summary>
+    [Fact]
+    public void SeedNicName_IsIndependentOfTheOrderTheNamesArriveIn()
+    {
+        // The order WMI happens to return the rows in ("last row wins" gave "Network Adapter") …
+        var asWmiReturnedThem = VmConfigUi.SeedNicName(["Ethernet 2", "Network Adapter"]);
+        // … versus the sorted order the inventory hands Settings ("first wins" gave "Ethernet 2").
+        var asSettingsSawThem = VmConfigUi.SeedNicName(["Network Adapter", "Ethernet 2"]);
+
+        Assert.Equal(asSettingsSawThem, asWmiReturnedThem);
+    }
+
+    /// <summary>Deterministic between reads, matching HostInventory's OrdinalIgnoreCase ordering: the
+    /// pick among several adapters is arbitrary, but it must be the SAME arbitrary pick every time.</summary>
+    [Fact]
+    public void SeedNicName_PicksTheFirstNameInOrdinalIgnoreCaseOrder()
+    {
+        Assert.Equal("Ethernet 2", VmConfigUi.SeedNicName(["Network Adapter", "Ethernet 2"]));
+        Assert.Equal("Ethernet 2", VmConfigUi.SeedNicName(["Ethernet 2"]));
+        // Case-insensitive ordering, so a lowercase name still sorts ahead of a later letter rather than
+        // ahead of everything (an Ordinal sort would put "ethernet 2" AFTER "Network Adapter").
+        Assert.Equal("ethernet 2", VmConfigUi.SeedNicName(["Network Adapter", "ethernet 2"]));
+    }
+
+    /// <summary>
+    /// A VM the host couldn't be read for (or that doesn't exist yet) seeds the Hyper-V default — the
+    /// same value <c>ConfigManager.AddVmToConfig</c> falls back to for a blank, so the two agree by
+    /// construction. Never an empty name, which would match no adapter at all.
+    /// </summary>
+    [Fact]
+    public void SeedNicName_FallsBackToTheHyperVDefault()
+    {
+        Assert.Equal(SettingsOptions.DefaultNicName, VmConfigUi.SeedNicName(null));
+        Assert.Equal(SettingsOptions.DefaultNicName, VmConfigUi.SeedNicName([]));
+    }
+
+    /// <summary>Blank/whitespace rows are not names — they must not be seeded in place of a real one.</summary>
+    [Fact]
+    public void SeedNicName_IgnoresBlankNames()
+    {
+        Assert.Equal("Network Adapter", VmConfigUi.SeedNicName(["", "   ", "Network Adapter"]));
+        Assert.Equal(SettingsOptions.DefaultNicName, VmConfigUi.SeedNicName(["", "  "]));
+        Assert.Equal("Ethernet 2", VmConfigUi.SeedNicName(["  Ethernet 2  "]));   // trimmed
+    }
+
+    // ── The dashboard's empty state (issues #38 / #42) ────────────────────────────────────
+
+    /// <summary>
+    /// The card's own comment claimed it deliberately named no menu path — "a signpost that names a menu
+    /// path is a signpost that goes stale" — directly above a string reading "Right-click the tray icon
+    /// and use Manage VMs to add one". It then went stale exactly as predicted: #47 added a Settings
+    /// route the card never mentioned. Names surfaces, never the items inside them (docs/STYLE.md).
+    /// </summary>
+    [Fact]
+    public void NoManagedVmsMessage_NamesBothRoutesAndNoMenuPath()
+    {
+        var msg = VmConfigUi.NoManagedVmsMessage;
+
+        Assert.Contains("tray", msg, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Settings", msg, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Manage VMs", msg, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Right-click", msg, StringComparison.OrdinalIgnoreCase);
+    }
 }

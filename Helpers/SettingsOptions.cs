@@ -146,6 +146,44 @@ public static class SettingsOptions
         string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
     /// <summary>
+    /// True when a rule declares no match condition at all — neither a MAC nor a CIDR.
+    ///
+    /// <para><b>Such a rule matches EVERY network.</b> That is not a quirk, it is
+    /// <c>AdapterMatcher.MatchingNic</c>'s documented contract ("a rule with no conditions matches the
+    /// current primary adapter unconditionally"): a null <c>AdapterMac</c> passes the MAC test, and a
+    /// null <c>IpCidr</c> returns the NIC there and then. Combined with the first-match-wins evaluation
+    /// order, one conditionless rule at a low priority shadows every rule after it and permanently
+    /// suppresses the fallback.</para>
+    /// </summary>
+    public static bool DeclaresNoCondition(Models.NetworkRule? rule) =>
+        BlankToNull(rule?.Conditions?.AdapterMac) is null && BlankToNull(rule?.Conditions?.IpCidr) is null;
+
+    /// <summary>
+    /// True when a rule is complete enough to be worth writing to config.json: it names a virtual switch
+    /// to bind, AND it declares at least one condition saying WHEN to bind it.
+    ///
+    /// <para><b>What this exists to stop.</b> Settings' "Add rule" button used to persist its blank
+    /// template — <c>{name:"New rule", priority:100, virtualSwitch:"", conditions:{}}</c> — the instant
+    /// it was clicked, before the user had typed anything. Both halves of that are harmful, and the
+    /// combination is worse than either. No conditions means it matches every network
+    /// (<see cref="DeclaresNoCondition"/>), so it wins evaluation ahead of any real rule the user goes on
+    /// to write; a blank switch means the bind then fails, which paints the tray icon red. Because the
+    /// active result's rule name is that rule's and never "Fallback",
+    /// <c>App.HandleBridgeTransition</c>'s <c>bridgeJustLost</c> edge can never fire either — so every
+    /// VM's configured on-bridge-lost pause/save/shutdown silently stops running. Issue #38's empty
+    /// default config makes this blank rule the ONLY rule on a fresh install, i.e. the first thing a new
+    /// user does breaks the app quietly.</para>
+    ///
+    /// <para>Judge a rule by its CLEANED form (<c>ConfigManager.CleanRule</c>), which drops a malformed
+    /// MAC or CIDR to null: a rule whose only condition is unparseable is a catch-all once persisted, so
+    /// it must be treated as one here rather than on the strength of the text the user typed.</para>
+    /// </summary>
+    public static bool IsPersistableRule(Models.NetworkRule? rule) =>
+        rule is not null
+        && !string.IsNullOrWhiteSpace(rule.VirtualSwitch)
+        && !DeclaresNoCondition(rule);
+
+    /// <summary>
     /// Splits a comma- and/or newline-separated VM list into a cleaned list: trimmed, blanks dropped,
     /// duplicates removed case-insensitively (first spelling wins). Backs both the rule and fallback
     /// target-VM editors so a hand-edited config value round-trips predictably.
