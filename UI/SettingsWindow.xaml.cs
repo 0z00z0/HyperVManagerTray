@@ -695,8 +695,27 @@ internal sealed partial class SettingsWindow : Window
         var openConfig = new Button { Content = "Open config.json" };
         openConfig.Click += (_, _) => Shell.OpenOrReveal(ConfigManager.GetConfigPath());
 
-        var openLog = new Button { Content = "Open log file" };
-        openLog.Click += (_, _) => Shell.OpenOrReveal(AppInfo.LogFile);
+        // The app now writes three separate logs (switcher.log, vm-power.log, ui.log — issues #20/#21),
+        // so a single "Open log file" button no longer covers them. Expose each one, plus a reveal of
+        // the whole data folder (which also surfaces crash.log).
+        var openLog = new DropDownButton { Content = "Open log" };
+        var logMenu = new MenuFlyout();
+        void AddLogItem(string text, string path) =>
+            logMenu.Items.Add(new MenuFlyoutItem
+            {
+                Text = text,
+                Command = new RelayCommand(() => Shell.OpenOrReveal(path)),
+            });
+        AddLogItem("Switcher log", AppInfo.LogFile);
+        AddLogItem("VM power log", AppInfo.VmPowerLog);
+        AddLogItem("UI log", AppInfo.UiLog);
+        logMenu.Items.Add(new MenuFlyoutSeparator());
+        logMenu.Items.Add(new MenuFlyoutItem
+        {
+            Text = "Open logs folder",
+            Command = new RelayCommand(() => Shell.OpenOrReveal(AppInfo.DataDir)),
+        });
+        openLog.Flyout = logMenu;
 
         var reload = new Button { Content = "Reload config from disk" };
         reload.Click += (_, _) => Task.Run(() =>
@@ -711,7 +730,8 @@ internal sealed partial class SettingsWindow : Window
 
         panel.Children.Add(SettingRow(
             "Config & logs",
-            "Open the raw config.json or the log file, or re-read config.json from disk after an out-of-band edit.",
+            "Open the raw config.json, open any of the app's log files (switcher, VM power, UI) or the logs folder, "
+            + "or re-read config.json from disk after an out-of-band edit.",
             buttons));
 
         var updateBtn = new Button { Content = "Check for updates" };
