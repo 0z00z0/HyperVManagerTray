@@ -86,6 +86,12 @@
     <Content Include="Assets\TrayBlue.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <!-- Two-tone Settings nav icons (product blue #3B7EC4 line + green #359E6A accent), mirroring
+         the sibling app's duotone nav set. Shipped as SVG assets so ms-appx:///Assets/nav/*.svg
+         resolves for the NavigationView ImageIcons. -->
+    <Content Include="Assets\nav\*.svg">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
   <!-- The unit-test project lives under Tests\ (its own csproj). Keep its sources out of the

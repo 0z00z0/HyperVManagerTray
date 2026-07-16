@@ -31,26 +31,34 @@
             <SolidColorBrush x:Key="NavigationViewContentBackground" Color="Transparent"/>
             <SolidColorBrush x:Key="NavigationViewContentGridBorderBrush" Color="Transparent"/>
             <Thickness x:Key="NavigationViewContentGridBorderThickness">0</Thickness>
+            <!-- The left-pane item template wraps the Icon in a Viewbox bound to
+                 NavigationViewItemOnLeftIconBoxHeight (default 16px), which would scale the two-tone
+                 ImageIcons down to ~16px. Alias that theme resource to NavIconSize so the icon box and
+                 every ImageIcon W/H stay in lockstep — mirrors the sibling app's Settings nav. -->
+            <x:Double x:Key="NavIconSize">28</x:Double>
+            <StaticResource x:Key="NavigationViewItemOnLeftIconBoxHeight" ResourceKey="NavIconSize"/>
         </NavigationView.Resources>
 
+        <!-- Two-tone SVG nav icons (product blue line + green accent) rather than monochrome Segoe
+             glyphs — shown via ImageIcon/SvgImageSource, matching the sibling app's Settings nav. -->
         <NavigationView.MenuItems>
             <NavigationViewItem Content="General" Tag="General" IsSelected="True">
-                <NavigationViewItem.Icon><FontIcon Glyph="&#xE713;"/></NavigationViewItem.Icon>
+                <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/general.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
             </NavigationViewItem>
             <NavigationViewItem Content="Managed VMs" Tag="Vms">
-                <NavigationViewItem.Icon><FontIcon Glyph="&#xE977;"/></NavigationViewItem.Icon>
+                <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/vms.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
             </NavigationViewItem>
             <NavigationViewItem Content="Network" Tag="Network">
-                <NavigationViewItem.Icon><FontIcon Glyph="&#xE774;"/></NavigationViewItem.Icon>
+                <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/network.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
             </NavigationViewItem>
             <NavigationViewItem Content="Adapters" Tag="Adapters">
-                <NavigationViewItem.Icon><FontIcon Glyph="&#xE839;"/></NavigationViewItem.Icon>
+                <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/adapters.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
             </NavigationViewItem>
             <NavigationViewItem Content="Maintenance" Tag="Maintenance">
-                <NavigationViewItem.Icon><FontIcon Glyph="&#xE90F;"/></NavigationViewItem.Icon>
+                <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/maintenance.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
             </NavigationViewItem>
             <NavigationViewItem Content="About" Tag="About">
-                <NavigationViewItem.Icon><FontIcon Glyph="&#xE946;"/></NavigationViewItem.Icon>
+                <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/about.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
             </NavigationViewItem>
         </NavigationView.MenuItems>
 
