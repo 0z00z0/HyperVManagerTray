@@ -35,6 +35,27 @@ When the two disagree, **GitHub wins** — `TODO.md` is regenerated/corrected fr
 An automated assistant working in this repo keeps both surfaces in sync as part of any task that
 changes work status — it is not a manual afterthought.
 
+## Ad-hoc requests from chat
+
+Requests arrive mid-conversation — "Settings should store X", "the icons are wrong", a screenshot of
+a broken layout. Capture them at **chat speed** and enrich them **in the background**, never the
+other way round:
+
+1. **File first, immediately.** Create the issue straight from what was asked, near-verbatim, plus
+   whatever came with it (screenshot, log, config). No code reading, no root-causing, no design, no
+   deliberation. The point is to have it recorded in seconds and keep the conversation moving.
+2. **Label on a best guess.** One `type` + the most likely `area:`. A wrong label is cheap and gets
+   corrected in step 3.
+3. **Then hand it to an agent.** Spawn a subagent whose entire job is to read that issue and fill it
+   out — reproduce or confirm the behaviour, root-cause it, name the affected files, sketch the
+   implementation, add acceptance criteria — and write the result back into the issue body. It works
+   while the conversation carries on.
+4. **Sync `TODO.md`**, as with any new work.
+
+Why: investigating before filing spends the user's turnaround on work a background agent does just as
+well, and risks the request being half-remembered by the time it's written down. The issue is the
+handoff — get it on paper, then deepen it.
+
 ## Label taxonomy
 
 Every open issue carries **one `type`**, **one or more `area:`**, and optionally a **status**.
