@@ -30,24 +30,32 @@ public static class AdapterNameRules
     public sealed record NameValidation(bool IsValid, string Sanitized, string? Error);
 
     /// <summary>
-    /// Validates a user-supplied adapter name: trims it, then requires 1–<see cref="MaxNameLength"/>
+    /// Validates a user-supplied adapter DESCRIPTION: trims it, then requires 1–<see cref="MaxNameLength"/>
     /// characters, no control characters, and only Unicode letters/digits, spaces, or
     /// <see cref="AllowedPunctuation"/>. Returns the trimmed candidate alongside the verdict.
+    ///
+    /// <para><b>The messages say "description", never "name" (issue #42).</b> This validates the field the
+    /// rename dialog calls "New description", and every message around it — the dialog's own caption and
+    /// labels, the no-op and uniqueness verdicts below, the outcome reports — already says "description".
+    /// These three said "name", which is the exact drift that made a WORKING rename look broken: Windows'
+    /// own "name" for an adapter is its connection alias (what ncpa.cpl shows), a different string this
+    /// feature does not touch. A validation error is the worst place to reintroduce that ambiguity — it is
+    /// read at precisely the moment the user is unsure what they are editing.</para>
     /// </summary>
     public static NameValidation ValidateName(string? input)
     {
         var trimmed = (input ?? string.Empty).Trim();
 
         if (trimmed.Length == 0)
-            return new NameValidation(false, string.Empty, "Enter a name.");
+            return new NameValidation(false, string.Empty, "Enter a description.");
 
         if (trimmed.Length > MaxNameLength)
-            return new NameValidation(false, trimmed, $"Name is too long (max {MaxNameLength} characters).");
+            return new NameValidation(false, trimmed, $"The description is too long (max {MaxNameLength} characters).");
 
         foreach (var c in trimmed)
         {
             if (char.IsControl(c))
-                return new NameValidation(false, trimmed, "Name may not contain control characters.");
+                return new NameValidation(false, trimmed, "The description may not contain control characters.");
 
             bool allowed = char.IsLetterOrDigit(c) || c == ' ' || AllowedPunctuation.IndexOf(c) >= 0;
             if (!allowed)

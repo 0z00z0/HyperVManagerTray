@@ -697,6 +697,45 @@ public class AdapterRenameTests
     public void ValidateNewName_RejectsEmpty()
         => Assert.False(AdapterNameRules.ValidateNewName("   ", "Realtek USB GbE", Array.Empty<string>()).IsValid);
 
+    // ── Vocabulary: these messages say "description", never "name" (#42) ─────────
+
+    /// <summary>
+    /// Every validation error for this field calls it the <b>description</b> — the string the rename
+    /// actually writes — and never "name", which in Windows' own vocabulary is the adapter's connection
+    /// alias (what ncpa.cpl shows) and is a different string this feature does not touch.
+    ///
+    /// <para>This is pinned by a test because the drift has already cost a real bug report: on
+    /// 2026-07-16 a WORKING rename was reported as broken, because the UI called the description a
+    /// "name" and it therefore appeared not to have changed the thing the user was looking at. A
+    /// validation error is the worst place to reintroduce that ambiguity — it is read exactly when the
+    /// user is least sure what they are editing.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("")]              // empty       → "Enter a description."
+    [InlineData("   ")]           // whitespace  → same
+    [InlineData("Wi-Fi|rm")]      // bad character
+    [InlineData("Wi\tFi")]        // control character (a visible escape, not an invisible byte)
+    public void ValidateName_ErrorsSayDescriptionNotName(string input)
+    {
+        var v = AdapterNameRules.ValidateName(input);
+
+        Assert.False(v.IsValid);
+        Assert.NotNull(v.Error);
+        Assert.DoesNotContain("name", v.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The length error names the field too — it is built from MaxNameLength, so it is the one
+    /// error whose text is interpolated and the easiest to let drift back to "Name is too long".</summary>
+    [Fact]
+    public void ValidateName_TooLongErrorSaysDescription()
+    {
+        var v = AdapterNameRules.ValidateName(new string('a', AdapterNameRules.MaxNameLength + 1));
+
+        Assert.False(v.IsValid);
+        Assert.Contains("description", v.Error!, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("name", v.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
     // ── Outcome reporting: never claim a success we have not verified (#15/#40) ──
 
     private const string Intended = "Dell docking (Petterhaugen)";

@@ -57,7 +57,14 @@ public static class SettingsOptions
     public static int NormalizeDelaySeconds(int seconds) =>
         seconds < 0 ? 30 : Math.Min(seconds, 86_400);
 
-    /// <summary>Human label for a delay in seconds ("Immediate" for 0, "90 s", "5 min", "1h 30m").</summary>
+    /// <summary>
+    /// Human label for a delay in seconds ("Immediate" for 0, "45 s", "1 min 30 s", "5 min",
+    /// "1 h 30 min").
+    ///
+    /// <para>One style throughout (issue #42): every unit is spaced and spelled the same way at every
+    /// magnitude. The hours branch used to switch to a compact, unspaced "1h 30m" while the minutes
+    /// branch said "1 min 30 s", so a single picker showed two conventions in one drop-down.</para>
+    /// </summary>
     public static string FormatDelay(int seconds)
     {
         if (seconds <= 0) return "Immediate";
@@ -65,7 +72,7 @@ public static class SettingsOptions
         int m = seconds / 60, s = seconds % 60;
         if (m < 60) return s == 0 ? $"{m} min" : $"{m} min {s} s";
         int h = m / 60; m %= 60;
-        return m == 0 ? $"{h} h" : $"{h}h {m}m";
+        return m == 0 ? $"{h} h" : $"{h} h {m} min";
     }
 
     // ── Log level (AppConfig.LogLevel) ──────────────────────────────────────────

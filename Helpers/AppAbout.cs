@@ -12,9 +12,13 @@ namespace HyperVManagerTray.Helpers;
 /// </summary>
 internal static class AppAbout
 {
+    // Second sentence corrected in issue #42: it promised "VM power and state directly from the system
+    // tray", which #34 made false — that restructure removed every power verb from the tray menu on
+    // purpose (a native Win32 menu cannot show progress or report failure). Power now lives on the
+    // dashboard, one LEFT-click on the tray icon away (App.LeftClickCommand → ToggleDashboard).
     private const string Description =
         "Automatically connects Hyper-V VMs to the right virtual switch when the host changes networks. " +
-        "Manage VM power and state directly from the system tray.";
+        "Click the tray icon for a dashboard with VM power and state.";
 
     private const string RepoUrl = "https://github.com/0z00z0/HyperVManagerTray";
 

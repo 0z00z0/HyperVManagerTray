@@ -213,19 +213,22 @@ internal sealed class NetworkActions
         // a convenient starting point; Cancel here aborts the whole "add rule" flow.
         var defaultName = info.AdapterDescription.Length > 40 ? info.AdapterDescription[..40].TrimEnd() : info.AdapterDescription;
         var name = await TextPromptWindow.ShowAsync(
-            "Add Current Network",
-            $"Name this network (adapter: {info.AdapterDescription}):",
+            "Add current network",
+            $"Name this network (adapter description: {info.AdapterDescription}):",
             defaultName);
         if (name is null) return;
 
+        // The rule summary names each field with the pinned vocabulary (issue #42): the value beside
+        // "Adapter" is the adapter's DESCRIPTION, not its Windows name/alias — the very distinction
+        // whose absence made a working rename look broken.
         if (!NativeMethods.Confirm(
                 $"Add the following rule?\n\n" +
-                $"  Name    :  {name}\n" +
-                $"  Adapter :  {info.AdapterDescription}\n" +
-                $"  MAC     :  {info.Mac}\n" +
-                $"  Network :  {info.IpCidr}\n" +
-                $"  Switch  :  {bridgedSwitch}",
-                "Add Current Network"))
+                $"  Name                :  {name}\n" +
+                $"  Adapter description :  {info.AdapterDescription}\n" +
+                $"  MAC                 :  {info.Mac}\n" +
+                $"  Network             :  {info.IpCidr}\n" +
+                $"  Virtual switch      :  {bridgedSwitch}",
+                "Add current network"))
             return;
 
         var rule = new NetworkRule

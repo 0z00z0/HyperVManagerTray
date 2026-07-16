@@ -95,6 +95,7 @@ public sealed partial class DashboardWindow : Window
         _vm      = vm;
 
         InitializeComponent();
+        TitleText.Text = AppInfo.Name;   // issue #42 — never the MMC snap-in's name
         ConfigureWindowChrome();
 
         _vm.StatusesChanged   += OnVmStatusesChanged;
@@ -602,7 +603,9 @@ public sealed partial class DashboardWindow : Window
         BorderThickness = new Thickness(1),
         Child = new TextBlock
         {
-            Text         = "No VMs are managed yet.\nRight-click the tray icon to add one.",
+            // Names the list to use, rather than leaving the user to find it (issue #42) — matching how
+            // the Settings and override messages point at the same place.
+            Text         = "No VMs are managed yet.\nRight-click the tray icon and use Manage VMs to add one.",
             FontSize     = 12,
             TextWrapping = TextWrapping.Wrap,
             Opacity      = 0.75,
@@ -698,8 +701,11 @@ public sealed partial class DashboardWindow : Window
             cpu = AddMeter(rows, "CPU", $"{s.Cpu}%",                s.Cpu / 100.0);
             mem = AddMeter(rows, "Mem", $"{s.MemAssignedMb:N0} MB", s.MemoryFraction);
         }
+        // "VHD", not "Disk" (issue #42): the value is the summed size of the VM's VHD FILES on the
+        // host (VmService.RefreshVhd → FileInfo.Length), not the guest's disk usage or free space.
+        // Labelled "Disk" beside CPU/Mem it read as a guest metric, which it is not.
         if (s is not null && s.VhdBytes > 0)
-            disk = AddMeter(rows, "Disk", $"{s.VhdGb:N1} GB", -1);
+            disk = AddMeter(rows, "VHD", $"{s.VhdGb:N1} GB", -1);
 
         // ── Power buttons ────────────────────────────────────────────────────
         var buttonsPanel = BuildButtons(vm, s);
@@ -832,7 +838,10 @@ public sealed partial class DashboardWindow : Window
     private static string PowerVerbLabel(VmOpKind kind) => kind switch
     {
         VmOpKind.Start    => "Start",
-        VmOpKind.Shutdown => "Shutdown",
+        // "Shut down", not "Shutdown": it is the verb the user invokes, and the Settings bridge-lost
+        // picker has always said "Shut down" (SettingsOptions.BridgeLostActions) — the app disagreed
+        // with itself about its own vocabulary (issue #42).
+        VmOpKind.Shutdown => "Shut down",
         VmOpKind.Pause    => "Pause",
         VmOpKind.Save     => "Save",
         VmOpKind.Resume   => "Resume",

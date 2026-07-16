@@ -34,8 +34,10 @@
         </Grid.Resources>
         <StackPanel Spacing="14">
 
-            <!-- Title -->
-            <TextBlock Text="Hyper-V Manager"
+            <!-- Title. Text is set in the constructor from AppInfo.Name (issue #42): the literal
+                 "Hyper-V Manager" here was EXACTLY Microsoft's MMC snap-in name, so the popup claimed
+                 to be a tool it is not. AppInfo.Name is the one source of truth for the product name. -->
+            <TextBlock x:Name="TitleText"
                        FontSize="13" FontWeight="SemiBold"
                        Foreground="{ThemeResource TextFillColorPrimaryBrush}"/>
 

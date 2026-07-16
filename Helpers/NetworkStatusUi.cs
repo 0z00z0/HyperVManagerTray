@@ -153,10 +153,13 @@ public static class NetworkStatusUi
     public static string? FailureMessage(
         SwitchApplyStatus status, string switchName, string adapterName, IReadOnlyList<string> failedVms) => status switch
     {
+        // "virtual switch", not a bare "switch" (issue #42): each of these is read alone in a balloon,
+        // so each is a first mention, and "switch" next to "network" in the same sentence is precisely
+        // the pair the pinned vocabulary exists to keep apart.
         SwitchApplyStatus.BindFailed =>
-            $"Could not bind switch '{switchName}' to '{adapterName}'. The VM is not on this network — see switcher.log.",
+            $"Could not bind virtual switch '{switchName}' to '{adapterName}'. The VM is not on this network — see switcher.log.",
         SwitchApplyStatus.VmConnectFailed =>
-            $"Could not connect {DescribeVms(failedVms)} to switch '{switchName}' — see switcher.log.",
+            $"Could not connect {DescribeVms(failedVms)} to virtual switch '{switchName}' — see switcher.log.",
         _ => null,
     };
 
@@ -195,12 +198,17 @@ public static class NetworkStatusUi
 
     /// <summary>The "Override VM switch" failure text — the action silently no-opped before issue #37.</summary>
     public static string OverrideFailedMessage(string vmName, string switchName) =>
-        $"Could not move {vmName} to switch '{switchName}' — see switcher.log. Nothing was changed.";
+        $"Could not move {vmName} to virtual switch '{switchName}' — see switcher.log. Nothing was changed.";
 
-    /// <summary>The "Override VM switch" text for a VM that isn't in config (a silent no-op before
-    /// issue #37 — <c>ManualOverrideAsync</c> simply returned).</summary>
+    /// <summary>The "Override VM switch" text for a VM this app does not manage (a silent no-op before
+    /// issue #37 — <c>ManualOverrideAsync</c> simply returned).
+    ///
+    /// <para>Says "managed VM", not "in config.json", and "network adapter", not "NIC" (issue #42): the
+    /// user's mental model is the tray's Manage VMs list, not the file behind it, and the fix is to tick
+    /// the VM there — so the message names the thing they can act on.</para></summary>
     public static string OverrideNotConfiguredMessage(string vmName) =>
-        $"{vmName} is not in config.json, so its NIC name is unknown. Nothing was changed.";
+        $"{vmName} is not a managed VM, so its network adapter is unknown. Nothing was changed.\n\n" +
+        "Start managing it from the tray's Manage VMs list, then try again.";
 
     /// <summary>Renders a failed-VM list for a one-line message: "'a'", "'a' and 'b'", "'a', 'b' and 'c'".
     /// Falls back to a neutral phrase for an empty list so a message never reads "Could not connect  to …".</summary>
