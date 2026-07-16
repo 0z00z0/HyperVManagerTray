@@ -222,4 +222,101 @@ public class SettingsOptionsTests
     [InlineData(200_000, 100_000)]
     public void NormalizePriority_Clamps(int input, int expected)
         => Assert.Equal(expected, SettingsOptions.NormalizePriority(input));
+
+    // ── SuggestionItems (issue #41) ─────────────────────────────────────────────
+    // The pickers are ASSISTIVE, never restrictive. These tests pin that promise: the live values are
+    // offered, but a value the live list has never heard of is never dropped — a rule is legitimately
+    // written before the switch or VM it names exists, and the host may be offline entirely.
+
+    [Fact]
+    public void SuggestionItems_OffersTheLiveValuesSorted()
+        => Assert.Equal(["Bridged", "Default Switch", "NAT"],
+                        SettingsOptions.SuggestionItems(null, ["NAT", "Bridged", "Default Switch"]));
+
+    [Fact]
+    public void SuggestionItems_KeepsACurrentValueTheHostDoesNotHave()
+    {
+        // The load-bearing case: a rule prepared for a not-yet-created switch must still show its own
+        // value — first, so it reads as the current choice rather than buried among the live ones.
+        var items = SettingsOptions.SuggestionItems("Not-Yet-Created", ["Bridged", "NAT"]);
+        Assert.Equal(["Not-Yet-Created", "Bridged", "NAT"], items);
+    }
+
+    [Fact]
+    public void SuggestionItems_DoesNotDuplicateACurrentValueTheHostAlsoHas()
+        => Assert.Equal(["Bridged", "NAT"], SettingsOptions.SuggestionItems("Bridged", ["NAT", "Bridged"]));
+
+    [Fact]
+    public void SuggestionItems_CurrentValueMatchesLiveCaseInsensitively()
+        // "bridged" and "Bridged" are the same switch — offering both would invite the typo this removes.
+        => Assert.Equal(["Bridged"], SettingsOptions.SuggestionItems("bridged", ["Bridged"]));
+
+    [Fact]
+    public void SuggestionItems_DropsBlanksAndDeduplicatesLiveValues()
+        => Assert.Equal(["Bridged"], SettingsOptions.SuggestionItems("  ", ["Bridged", "  ", "bridged", ""]));
+
+    [Fact]
+    public void SuggestionItems_TrimsTheCurrentValue()
+        => Assert.Equal(["Bridged"], SettingsOptions.SuggestionItems("  Bridged  ", []));
+
+    [Fact]
+    public void SuggestionItems_NoLiveValues_YieldsJustTheCurrentOne()
+        // Host offline / enumeration failed: the picker degrades to the text box it replaced, and the
+        // user's own value is still there. This is a supported state, not an error.
+        => Assert.Equal(["Bridged"], SettingsOptions.SuggestionItems("Bridged", null));
+
+    [Fact]
+    public void SuggestionItems_NothingAtAll_IsEmptyNotNull()
+        => Assert.Empty(SettingsOptions.SuggestionItems(null, null));
+
+    // ── NormalizeNicName (issue #41) ────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(null,             "Network Adapter")]
+    [InlineData("",               "Network Adapter")]
+    [InlineData("   ",            "Network Adapter")]
+    [InlineData("Ethernet 2",     "Ethernet 2")]
+    [InlineData("  Ethernet 2  ", "Ethernet 2")]
+    [InlineData("vNIC — LAN",     "vNIC — LAN")]
+    public void NormalizeNicName_BlankBecomesTheDefaultAndTheRestIsPreserved(string? input, string expected)
+        => Assert.Equal(expected, SettingsOptions.NormalizeNicName(input));
+
+    // ── AppendVmLine (issue #41) ────────────────────────────────────────────────
+    // Picking a VM from the host must ADD to what the user has, never replace it.
+
+    [Fact]
+    public void AppendVmLine_AddsToAnEmptyBox()
+        => Assert.Equal("Alpha", SettingsOptions.AppendVmLine("", "Alpha"));
+
+    [Fact]
+    public void AppendVmLine_AppendsWithoutDiscardingExistingNames()
+        => Assert.Equal(["Alpha", "Beta"],
+                        SettingsOptions.ParseVmLines(SettingsOptions.AppendVmLine("Alpha", "Beta")));
+
+    [Fact]
+    public void AppendVmLine_AlreadyListed_IsUnchanged()
+        => Assert.Equal("Alpha", SettingsOptions.AppendVmLine("Alpha", "Alpha"));
+
+    [Fact]
+    public void AppendVmLine_AlreadyListedInAnotherCase_IsUnchanged()
+        => Assert.Equal("Alpha", SettingsOptions.AppendVmLine("Alpha", "ALPHA"));
+
+    [Fact]
+    public void AppendVmLine_BlankName_IsUnchanged()
+        => Assert.Equal("Alpha", SettingsOptions.AppendVmLine("Alpha", "  "));
+
+    [Fact]
+    public void AppendVmLine_PreservesAVmNameContainingAComma()
+        // The newline representation (fix 8) must survive the picker too.
+        => Assert.Equal(["Web, App", "Db"],
+                        SettingsOptions.ParseVmLines(SettingsOptions.AppendVmLine("Web, App", "Db")));
+
+    [Fact]
+    public void AppendVmLine_PickedValueSerialisesIdenticallyToTheHandTypedEquivalent()
+    {
+        // Acceptance criterion: a value chosen from a picker round-trips exactly as if it were typed.
+        var picked    = SettingsOptions.ParseVmLines(SettingsOptions.AppendVmLine("Alpha", "Beta"));
+        var handTyped = SettingsOptions.ParseVmLines("Alpha\r\nBeta");
+        Assert.Equal(handTyped, picked);
+    }
 }

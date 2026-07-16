@@ -270,6 +270,55 @@ public sealed class ConfigManager : IDisposable
     }
 
     /// <summary>
+    /// Updates which of a managed VM's network adapters the app reconnects
+    /// (<see cref="VmTarget.NicName"/>) — issue #41. This was previously reachable ONLY by hand-editing
+    /// config.json: a VM with a renamed or second synthetic adapter silently never reconnected, and the
+    /// file was the only fix. Blank restores the Hyper-V default ("Network Adapter") rather than
+    /// persisting an empty name that would match no adapter at all. No-op when the VM is absent or the
+    /// value is already stored.
+    /// </summary>
+    /// <remarks>
+    /// Follows the same discipline as <see cref="SetVmBridgeLostAction"/>: the live <see cref="VmTarget"/>
+    /// is never mutated — a fresh copy carrying the new NIC name (and every other field verbatim, so a
+    /// hand-edited bridge-lost action can't be dropped by a NIC edit) replaces the target in a new list,
+    /// swapped in only via <see cref="Load"/> after a successful write.
+    /// </remarks>
+    public void SetVmNicName(string vmName, string? nicName)
+    {
+        var vm = _config.VirtualMachines.FirstOrDefault(v =>
+            v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase));
+        if (vm is null)
+        {
+            _logger.LogInformation("SetVmNicName: '{Name}' not found in config — skipping.", vmName);
+            return;
+        }
+
+        var normalized = SettingsOptions.NormalizeNicName(nicName);
+        if (string.Equals(vm.NicName, normalized, StringComparison.Ordinal))
+        {
+            _logger.LogInformation("SetVmNicName: '{Name}' already uses '{Nic}' — skipping.", vmName, normalized);
+            return;
+        }
+
+        SaveAndReload(
+            With(vms:
+            [
+                .. _config.VirtualMachines.Select(v =>
+                    v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase)
+                        ? new VmTarget
+                          {
+                              Name                     = v.Name,
+                              NicName                  = normalized,
+                              OnBridgeLostAction       = v.OnBridgeLostAction,
+                              OnBridgeLostDelaySeconds = v.OnBridgeLostDelaySeconds,
+                          }
+                        : v)
+            ]),
+            $"NIC name for VM '{vmName}' set to '{normalized}' and saved to {_configPath}",
+            $"Failed to save the NIC name for VM '{vmName}'");
+    }
+
+    /// <summary>
     /// Replaces the entire rules list (issue #23 — the Network editor). Each rule is sanitised through a
     /// fresh copy before it is written (name/switch trimmed, priority clamped, a valid MAC canonicalised,
     /// CIDR/MAC blanks→null, an INVALID MAC/CIDR dropped to null, target-VM list cleaned) so a malformed
