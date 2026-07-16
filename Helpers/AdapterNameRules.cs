@@ -114,6 +114,145 @@ public static class AdapterNameRules
     }
 
     /// <summary>
+    /// Extracts the device's FACTORY description from a raw <c>DeviceDesc</c> registry value
+    /// (issue #33), or null when no usable literal can be derived.
+    ///
+    /// <para><b>Why this exists.</b> The saved "original" adapter name used to be captured by reading
+    /// whatever <c>FriendlyName</c> was on disk at first-rename time. That is correct on a true first
+    /// rename, but the two stores have different lifetimes: the rename lives in the registry (survives
+    /// an uninstall) while the config record lives next to the exe (does not). After an
+    /// uninstall/reinstall — or a wiped/hand-edited config — the flow sees no record while
+    /// <c>FriendlyName</c> already holds a PREVIOUS rename's output, and faithfully records that as
+    /// "the original". Reset then restores the very name the user was escaping. <c>DeviceDesc</c> sits
+    /// on the same Enum key, is never touched by the rename, and therefore is the actual ground truth.</para>
+    ///
+    /// <para><b>The two forms.</b> <c>DeviceDesc</c> is either an INF-indirect string
+    /// <c>@oem241.inf,%rtl8153.devicedesc%;Realtek USB GbE Family Controller</c> — an <c>@inf,%key%</c>
+    /// prefix, a <c>;</c>, then the literal Windows falls back on — or a plain literal with no prefix
+    /// at all (<c>Realtek USB GbE Family Controller</c>). Both are common; the parse must handle both.</para>
+    ///
+    /// <para><b>The rule.</b> Only a leading <c>@</c> marks the indirect form, so the literal is taken
+    /// as everything after the FIRST <c>;</c> — the format has exactly one separator, so a <c>;</c>
+    /// appearing INSIDE the display name is part of the name and must survive (splitting on the LAST
+    /// <c>;</c> would truncate it). Without a leading <c>@</c> the whole trimmed value IS the literal
+    /// and is returned verbatim, <c>;</c> and all. Every unusable shape — null, empty, whitespace, an
+    /// indirect form with no <c>;</c> (nothing to fall back to), a trailing <c>;</c> with nothing after
+    /// it, or a value carrying control characters — returns null rather than a blank or a garbage
+    /// <c>@inf,%key%</c> string, so the caller can degrade to its own fallback (see
+    /// <see cref="CaptureOriginal"/>). Never returns an empty or whitespace-only string.</para>
+    ///
+    /// <para>Pure so the whole parse is unit-testable with no live NIC and no registry. The read
+    /// itself lives in <see cref="AdapterDeviceRegistry.ReadDeviceDesc"/> and is READ-only.</para>
+    /// </summary>
+    /// <param name="deviceDesc">The raw <c>DeviceDesc</c> value, or null when absent/unreadable.</param>
+    public static string? ParseFactoryDescription(string? deviceDesc)
+    {
+        var value = (deviceDesc ?? string.Empty).Trim();
+        if (value.Length == 0) return null;
+
+        if (value[0] == '@')
+        {
+            // INF-indirect: @<inf>,%<strkey>%;<literal>. The literal is everything past the FIRST ';'.
+            int semi = value.IndexOf(';');
+            if (semi < 0) return null;              // no literal to fall back on — unusable
+            value = value[(semi + 1)..].Trim();
+            if (value.Length == 0) return null;     // trailing ';' with nothing after it
+        }
+
+        // Defensive: a control character here would be bizarre. Refuse rather than return it, so the
+        // caller falls back instead of writing it to the device on a later Reset.
+        foreach (var c in value)
+            if (char.IsControl(c)) return null;
+
+        return value;
+    }
+
+    /// <summary>
+    /// What to persist as an adapter's "original" name: the value to restore on Reset, and whether the
+    /// device had nothing to restore at all.
+    /// </summary>
+    /// <param name="OriginalFriendlyName">The name Reset should write back (empty when there is none).</param>
+    /// <param name="OriginalWasAbsent">True when nothing can be restored, so Reset must not be offered.</param>
+    public sealed record OriginalCapture(string OriginalFriendlyName, bool OriginalWasAbsent);
+
+    /// <summary>
+    /// Decides what to record as the "original" on an adapter's first rename (issue #33): the
+    /// <c>DeviceDesc</c>-derived factory description when one could be derived, otherwise a safe
+    /// fallback to the pre-#33 behaviour.
+    ///
+    /// <para><b>Preferred path.</b> A non-empty <paramref name="factoryDescription"/> is ground truth —
+    /// it is never touched by a rename, so it cannot be a previous rename's output. Recorded with
+    /// <c>OriginalWasAbsent=false</c> even when the device carries no explicit <c>FriendlyName</c>:
+    /// Windows displays the <c>DeviceDesc</c> literal in that case, so writing that same literal back
+    /// on Reset reproduces the original display exactly. That deliberately makes Reset AVAILABLE where
+    /// it previously was not, and it is still never a delete (§5.4).</para>
+    ///
+    /// <para><b>Fallback path.</b> When the factory description is missing/unreadable/unparseable, this
+    /// degrades to exactly the pre-#33 behaviour: record the on-disk <c>FriendlyName</c>, or mark the
+    /// original absent when there is none. That path can still capture a prior rename's output as "the
+    /// original" — it is strictly no worse than today, and it is the only thing left to record once
+    /// ground truth is unavailable. It never throws and never records a blank as if it were a name.</para>
+    ///
+    /// <para>Pure, so both paths are unit-testable without a device.</para>
+    /// </summary>
+    /// <param name="factoryDescription">Result of <see cref="ParseFactoryDescription"/>; null when underivable.</param>
+    /// <param name="friendlyNamePresent">Whether the device has an explicit <c>FriendlyName</c> on disk.</param>
+    /// <param name="friendlyName">That <c>FriendlyName</c> (null when absent).</param>
+    public static OriginalCapture CaptureOriginal(
+        string? factoryDescription, bool friendlyNamePresent, string? friendlyName)
+    {
+        var factory = (factoryDescription ?? string.Empty).Trim();
+        if (factory.Length > 0)
+            return new OriginalCapture(factory, false);
+
+        return friendlyNamePresent
+            ? new OriginalCapture(friendlyName ?? string.Empty, false)
+            : new OriginalCapture(string.Empty, true);
+    }
+
+    /// <summary>
+    /// Repairs an ALREADY-STORED "original" that was captured before issue #33 was fixed, or null when
+    /// the record must be left untouched.
+    ///
+    /// <para><b>The damage.</b> Records written by the old capture path can hold a previous rename's
+    /// output as the "original" — on the reporting machine, <c>originalFriendlyName</c> and
+    /// <c>currentFriendlyName</c> are both <c>"Dell docking (Petterhaugen)"</c> while the true original
+    /// is <c>"Realtek USB GbE Family Controller"</c>. Reset is a no-op there, and the factory name is
+    /// unrecoverable through the app. Those records need correcting in place; a fix that only helps
+    /// future renames leaves them broken forever.</para>
+    ///
+    /// <para><b>The rule.</b> Repair whenever the factory description can be POSITIVELY re-derived and
+    /// the stored original differs from it; leave the record completely untouched when it cannot
+    /// (<paramref name="factoryDescription"/> null/empty) or when it already matches. This is broader
+    /// than matching only the poisoned <c>original == current</c> signature — that narrower test misses
+    /// a record poisoned and then renamed again — and it establishes one self-healing invariant: the
+    /// stored original equals the factory description whenever that description is derivable, which is
+    /// exactly what <see cref="CaptureOriginal"/> now writes.</para>
+    ///
+    /// <para><b>The accepted trade-off.</b> An original that is genuinely a pre-existing custom
+    /// <c>FriendlyName</c> — set by an OEM or by hand BEFORE this app ever renamed the device — also
+    /// differs from the factory description and is therefore also rewritten to it. That case is
+    /// indistinguishable from the poisoned one (both are "a non-factory name in the original slot"),
+    /// and the outcome is benign: Reset restores the factory description, which is what issue #33's
+    /// acceptance criteria ask for, and it is never a delete. The conservative half of the rule is the
+    /// part that matters — a record whose ground truth cannot be read is never guessed at.</para>
+    /// </summary>
+    /// <param name="stored">The currently persisted original.</param>
+    /// <param name="factoryDescription">Result of <see cref="ParseFactoryDescription"/>; null when underivable.</param>
+    /// <returns>The corrected capture, or null to leave the stored record alone.</returns>
+    public static OriginalCapture? RepairOriginal(OriginalCapture stored, string? factoryDescription)
+    {
+        var factory = (factoryDescription ?? string.Empty).Trim();
+        if (factory.Length == 0) return null;   // no ground truth — never guess
+
+        if (!stored.OriginalWasAbsent
+            && string.Equals(stored.OriginalFriendlyName, factory, StringComparison.Ordinal))
+            return null;                        // already correct
+
+        return new OriginalCapture(factory, false);
+    }
+
+    /// <summary>
     /// True when <paramref name="candidate"/> does not collide (case-insensitively, ignoring
     /// surrounding whitespace) with any name in <paramref name="existingNames"/>. Windows does not
     /// enforce unique adapter descriptions, so the app must (investigation §5.5). The caller is
