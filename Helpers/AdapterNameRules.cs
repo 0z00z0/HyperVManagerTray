@@ -59,6 +59,116 @@ public static class AdapterNameRules
     }
 
     /// <summary>
+    /// Validates a candidate description against every in-dialog rule at once (issue #40): the
+    /// character/length policy of <see cref="ValidateName"/>, then the no-op check against the
+    /// adapter's current description, then uniqueness against the other adapters.
+    ///
+    /// <para>Pure and combined so the dialog can render ONE inline error as the user types rather than
+    /// stacking a message box per failed rule — #40 collapses the consent stack, and a validation
+    /// message box is still a box. The order matters: an invalid name is reported as invalid before it
+    /// is ever compared to anything, so the user sees the reason closest to what they typed.</para>
+    /// </summary>
+    /// <param name="input">The raw text from the dialog's input box.</param>
+    /// <param name="currentDescription">The adapter's current description (the no-op comparand).</param>
+    /// <param name="otherDescriptions">Every OTHER adapter's description (the uniqueness comparands).</param>
+    public static NameValidation ValidateNewName(
+        string? input, string currentDescription, IEnumerable<string> otherDescriptions)
+    {
+        var validation = ValidateName(input);
+        if (!validation.IsValid) return validation;
+
+        if (string.Equals(validation.Sanitized, currentDescription, StringComparison.Ordinal))
+            return new NameValidation(false, validation.Sanitized,
+                "That is already this adapter's description — nothing to change.");
+
+        if (!IsNameUnique(validation.Sanitized, otherDescriptions))
+            return new NameValidation(false, validation.Sanitized,
+                "Another adapter already has that description. Choose a unique one.");
+
+        return validation;
+    }
+
+    /// <summary>What the user is told once the rename/reset has run to completion (issue #40).</summary>
+    public enum RenameOutcomeKind
+    {
+        /// <summary>The device was restarted AND the description was re-read from disk and matches.</summary>
+        AppliedVerified,
+
+        /// <summary>Written and verified on disk, but no restart was requested — not live everywhere yet.</summary>
+        SavedRestartPending,
+
+        /// <summary>The device restarted, but the description on disk is NOT what was written.</summary>
+        VerificationFailed,
+
+        /// <summary>The description was written, but the device restart itself threw.</summary>
+        RestartFailed,
+    }
+
+    /// <summary>An outcome verdict plus the exact text to show for it.</summary>
+    /// <param name="Kind">Which outcome occurred.</param>
+    /// <param name="Message">The user-facing text.</param>
+    public sealed record RenameOutcome(RenameOutcomeKind Kind, string Message)
+    {
+        /// <summary>
+        /// True <b>only</b> for <see cref="RenameOutcomeKind.AppliedVerified"/> — the single outcome in
+        /// which the description was re-read from disk after the restart and matched. This is the one
+        /// state that may be presented to the user as "it worked"; nothing else may claim it.
+        /// </summary>
+        public bool IsSuccess => Kind == RenameOutcomeKind.AppliedVerified;
+
+        /// <summary>
+        /// True when something went wrong and the user has to act. Deliberately NOT the negation of
+        /// <see cref="IsSuccess"/>: <see cref="RenameOutcomeKind.SavedRestartPending"/> is neither a
+        /// success nor a problem — the user chose it — so it is reported plainly rather than with a
+        /// warning icon it does not deserve.
+        /// </summary>
+        public bool NeedsAttention =>
+            Kind is RenameOutcomeKind.VerificationFailed or RenameOutcomeKind.RestartFailed;
+    }
+
+    /// <summary>
+    /// The outcome after a device restart (issue #40, preserving issue #15's rule): reports success
+    /// <b>only</b> when the description was re-read from disk after the restart and exactly matches what
+    /// was written. Every other state — absent, or present but different — is a
+    /// <see cref="RenameOutcomeKind.VerificationFailed"/> warning naming what is actually on disk.
+    ///
+    /// <para>This is the single gate between "we attempted a rename" and "we told the user it worked",
+    /// pulled out as a pure function precisely so a test can prove an unverified rename can never be
+    /// reported as success. It delegates the comparison to <see cref="FriendlyNameApplied"/> rather than
+    /// re-implementing it, so the write-time guard and the restart-time guard cannot drift apart.</para>
+    /// </summary>
+    /// <param name="present">Whether a FriendlyName exists on disk after the restart.</param>
+    /// <param name="onDisk">The value re-read after the restart (null when absent).</param>
+    /// <param name="intended">The description that was written.</param>
+    public static RenameOutcome DescribeRestartOutcome(bool present, string? onDisk, string intended)
+        => FriendlyNameApplied(present, onDisk, intended)
+            ? new RenameOutcome(RenameOutcomeKind.AppliedVerified,
+                $"The adapter was restarted and its description is now \"{intended}\" everywhere.")
+            : new RenameOutcome(RenameOutcomeKind.VerificationFailed,
+                "The adapter was restarted, but its description on disk is now " +
+                (present ? $"\"{onDisk}\"" : "absent") +
+                $" instead of \"{intended}\" — Windows may have reset it. Try again, or reboot to re-apply.");
+
+    /// <summary>
+    /// The outcome when the user left the restart checkbox unticked (issue #40). The description IS
+    /// verified on disk at this point — <see cref="AdapterRenamer.WriteFriendlyName"/> throws otherwise
+    /// — so this is an honest "saved", never a claim that it is live everywhere.
+    /// </summary>
+    public static RenameOutcome DescribeDeferredOutcome(string intended)
+        => new(RenameOutcomeKind.SavedRestartPending,
+            $"The adapter's description is saved as \"{intended}\".\n\n" +
+            "Some places will keep showing the old description until the adapter is restarted or the PC reboots.");
+
+    /// <summary>
+    /// The outcome when the restart itself threw (issue #40). The write was already verified on disk, so
+    /// this reports exactly that and nothing more — the description is saved, but it is NOT live.
+    /// </summary>
+    public static RenameOutcome DescribeRestartFailure(string intended, string error)
+        => new(RenameOutcomeKind.RestartFailed,
+            $"The adapter's description is saved as \"{intended}\", but the adapter could not be restarted " +
+            $"automatically:\n{error}\n\nRestart the adapter manually or reboot to apply it.");
+
+    /// <summary>
     /// Read-back verdict for the device write (issue #15): a <c>FriendlyName</c> write only counts as
     /// applied when the value is now <b>present</b> on disk and <b>exactly</b> equal (ordinal) to what
     /// was written. Pure so the guard in <see cref="AdapterRenamer.WriteFriendlyName"/> — which turns

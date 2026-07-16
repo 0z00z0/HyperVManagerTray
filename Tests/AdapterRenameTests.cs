@@ -637,4 +637,183 @@ public class AdapterRenameTests
         Assert.Null(AdapterNameRules.RepairOriginal(first!, factory));
         Assert.Equal(AdapterNameRules.CaptureOriginal(factory, true, "Dell docking (Petterhaugen)"), first);
     }
+
+    // ── ValidateNewName: the dialog's combined in-place check (issue #40) ─────────
+
+    [Fact]
+    public void ValidateNewName_AcceptsAUniqueChangedName()
+    {
+        var v = AdapterNameRules.ValidateNewName("  Dock (office)  ", "Realtek USB GbE", new[] { "Wi-Fi" });
+
+        Assert.True(v.IsValid, v.Error);
+        Assert.Equal("Dock (office)", v.Sanitized);
+        Assert.Null(v.Error);
+    }
+
+    [Fact]
+    public void ValidateNewName_RejectsTheCurrentDescriptionAsANoOp()
+    {
+        var v = AdapterNameRules.ValidateNewName("Realtek USB GbE", "Realtek USB GbE", Array.Empty<string>());
+
+        Assert.False(v.IsValid);
+        Assert.NotNull(v.Error);
+    }
+
+    /// <summary>Trimming happens before the no-op comparison — padding is not a change.</summary>
+    [Fact]
+    public void ValidateNewName_RejectsTheCurrentDescriptionWithPadding()
+        => Assert.False(AdapterNameRules.ValidateNewName(
+            "  Realtek USB GbE  ", "Realtek USB GbE", Array.Empty<string>()).IsValid);
+
+    [Fact]
+    public void ValidateNewName_RejectsAnotherAdaptersDescription()
+    {
+        var v = AdapterNameRules.ValidateNewName("Wi-Fi", "Realtek USB GbE", new[] { "Wi-Fi" });
+
+        Assert.False(v.IsValid);
+        Assert.NotNull(v.Error);
+    }
+
+    /// <summary>Uniqueness is case-insensitive (Windows does not enforce it, so the app must — §5.5).</summary>
+    [Fact]
+    public void ValidateNewName_RejectsACaseVariantOfAnotherAdapter()
+        => Assert.False(AdapterNameRules.ValidateNewName(
+            "wi-fi", "Realtek USB GbE", new[] { "Wi-Fi" }).IsValid);
+
+    /// <summary>
+    /// An invalid name is reported as invalid rather than as a collision, even when it would also
+    /// collide — the user sees the reason closest to what they typed.
+    /// </summary>
+    [Fact]
+    public void ValidateNewName_ReportsInvalidCharactersBeforeUniqueness()
+    {
+        var v = AdapterNameRules.ValidateNewName("Wi-Fi|rm", "Realtek USB GbE", new[] { "Wi-Fi|rm" });
+
+        Assert.False(v.IsValid);
+        Assert.Contains("not allowed", v.Error);
+    }
+
+    [Fact]
+    public void ValidateNewName_RejectsEmpty()
+        => Assert.False(AdapterNameRules.ValidateNewName("   ", "Realtek USB GbE", Array.Empty<string>()).IsValid);
+
+    // ── Outcome reporting: never claim a success we have not verified (#15/#40) ──
+
+    private const string Intended = "Dell docking (Petterhaugen)";
+
+    /// <summary>The ONLY path to a success claim: present on disk and an exact ordinal match.</summary>
+    [Fact]
+    public void DescribeRestartOutcome_VerifiedMatch_IsTheSuccess()
+    {
+        var o = AdapterNameRules.DescribeRestartOutcome(true, Intended, Intended);
+
+        Assert.Equal(AdapterNameRules.RenameOutcomeKind.AppliedVerified, o.Kind);
+        Assert.True(o.IsSuccess);
+        Assert.False(o.NeedsAttention);
+        Assert.Contains(Intended, o.Message);
+    }
+
+    /// <summary>
+    /// THE load-bearing test for issue #40's constraint: every post-restart state other than a verified
+    /// exact match must fail to be a success. If a refactor ever lets an unverified rename report
+    /// success, this fails. Covers absent, a different name, a case variant, whitespace drift, an empty
+    /// value, and the "present but null" contradiction.
+    /// </summary>
+    [Theory]
+    [InlineData(false, null)]                            // gone from disk entirely
+    [InlineData(false, Intended)]                        // value echoed but NOT present — absent wins
+    [InlineData(true,  null)]                            // present, but nothing readable
+    [InlineData(true,  "")]                              // blanked
+    [InlineData(true,  "Realtek USB GbE Family Controller")] // Windows reset it to the factory name
+    [InlineData(true,  "dell docking (petterhaugen)")]   // case drift is NOT a match
+    [InlineData(true,  " Dell docking (Petterhaugen)")]  // whitespace drift is NOT a match
+    [InlineData(true,  "Dell docking (Petterhaugen) #2")] // PnP dedupe suffix
+    public void DescribeRestartOutcome_AnythingButAVerifiedMatch_IsNeverSuccess(bool present, string? onDisk)
+    {
+        var o = AdapterNameRules.DescribeRestartOutcome(present, onDisk, Intended);
+
+        Assert.False(o.IsSuccess);
+        Assert.Equal(AdapterNameRules.RenameOutcomeKind.VerificationFailed, o.Kind);
+        Assert.True(o.NeedsAttention);          // the mismatch stays a real warning
+    }
+
+    /// <summary>The mismatch warning names what is ACTUALLY on disk, not just what was wanted.</summary>
+    [Fact]
+    public void DescribeRestartOutcome_MismatchWarning_NamesTheValueFoundOnDisk()
+    {
+        var o = AdapterNameRules.DescribeRestartOutcome(true, "Realtek USB GbE Family Controller", Intended);
+
+        Assert.Contains("Realtek USB GbE Family Controller", o.Message);
+        Assert.Contains(Intended, o.Message);
+    }
+
+    [Fact]
+    public void DescribeRestartOutcome_AbsentWarning_SaysAbsentRatherThanQuotingNull()
+    {
+        var o = AdapterNameRules.DescribeRestartOutcome(false, null, Intended);
+
+        Assert.Contains("absent", o.Message);
+        Assert.DoesNotContain("\"\"", o.Message);
+    }
+
+    /// <summary>
+    /// The outcome verdict must not drift from the write-time guard — both answer "did this land?", so
+    /// DescribeRestartOutcome is a success exactly when FriendlyNameApplied is true.
+    /// </summary>
+    [Theory]
+    [InlineData(true,  Intended)]
+    [InlineData(true,  "something else")]
+    [InlineData(true,  null)]
+    [InlineData(false, Intended)]
+    [InlineData(false, null)]
+    public void DescribeRestartOutcome_AgreesWithFriendlyNameApplied(bool present, string? onDisk)
+        => Assert.Equal(
+            AdapterNameRules.FriendlyNameApplied(present, onDisk, Intended),
+            AdapterNameRules.DescribeRestartOutcome(present, onDisk, Intended).IsSuccess);
+
+    /// <summary>A deferred restart is honest: saved, not applied — and not a warning either.</summary>
+    [Fact]
+    public void DescribeDeferredOutcome_SaysSavedNotApplied()
+    {
+        var o = AdapterNameRules.DescribeDeferredOutcome(Intended);
+
+        Assert.Equal(AdapterNameRules.RenameOutcomeKind.SavedRestartPending, o.Kind);
+        Assert.False(o.IsSuccess);           // never claims it is live everywhere
+        Assert.False(o.NeedsAttention);      // the user chose this — not a problem
+        Assert.Contains(Intended, o.Message);
+        Assert.Contains("restarted", o.Message);
+    }
+
+    /// <summary>A failed restart reports the saved description AND the reason, and never claims success.</summary>
+    [Fact]
+    public void DescribeRestartFailure_ReportsTheErrorAndIsNeverSuccess()
+    {
+        var o = AdapterNameRules.DescribeRestartFailure(Intended, "SetupDiCallClassInstaller failed (0xE0000203).");
+
+        Assert.Equal(AdapterNameRules.RenameOutcomeKind.RestartFailed, o.Kind);
+        Assert.False(o.IsSuccess);
+        Assert.True(o.NeedsAttention);
+        Assert.Contains("0xE0000203", o.Message);
+        Assert.Contains(Intended, o.Message);
+    }
+
+    /// <summary>
+    /// Exactly one outcome kind may report success. Guards against a new kind being added later and
+    /// quietly inheriting a success claim.
+    /// </summary>
+    [Fact]
+    public void OnlyAppliedVerified_ReportsSuccess()
+    {
+        var outcomes = new[]
+        {
+            AdapterNameRules.DescribeRestartOutcome(true, Intended, Intended),
+            AdapterNameRules.DescribeRestartOutcome(true, "other", Intended),
+            AdapterNameRules.DescribeDeferredOutcome(Intended),
+            AdapterNameRules.DescribeRestartFailure(Intended, "boom"),
+        };
+
+        Assert.Single(outcomes, o => o.IsSuccess);
+        Assert.All(outcomes, o => Assert.Equal(
+            o.Kind == AdapterNameRules.RenameOutcomeKind.AppliedVerified, o.IsSuccess));
+    }
 }
