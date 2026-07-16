@@ -71,6 +71,11 @@
          AdapterRenamer.cs precisely so linking it here cannot drag the device-MUTATING write/SetupAPI
          restart into the test assembly. Nothing in this file writes to the registry or a device. -->
     <Compile Include="..\Helpers\AdapterDeviceRegistry.cs" Link="Linked\AdapterDeviceRegistry.cs" />
+    <!-- Issue #50: the rule for when the network Class key must actually be walked, lifted out so the
+         BOUND (not merely the answer) is testable — the registry read arrives as a delegate, exactly as
+         VmConnectFlow takes its side effects, so this links with no registry and no live host. Required
+         by the linked AdapterMatcher.cs, whose display-name resolver holds the shared instance. -->
+    <Compile Include="..\Helpers\ClassEntryCache.cs"  Link="Linked\ClassEntryCache.cs" />
     <Compile Include="..\Services\FileLogger.cs"      Link="Linked\FileLogger.cs" />
     <Compile Include="..\Models\AppConfig.cs"         Link="Linked\AppConfig.cs" />
     <Compile Include="..\Models\NetworkRule.cs"       Link="Linked\NetworkRule.cs" />

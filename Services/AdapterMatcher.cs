@@ -168,7 +168,7 @@ public static class AdapterMatcher
 
             // Display name only — the rule this feeds matches on MAC + CIDR, never on this string.
             return new CurrentNetworkInfo(
-                AdapterDescription: new DisplayNameResolver().Resolve(nic),
+                AdapterDescription: DisplayNameResolver.Resolve(nic),
                 Mac:        mac,
                 Ip:         unicast.Address.ToString(),
                 IpCidr:     CalculateCidr(unicast),
@@ -206,10 +206,6 @@ public static class AdapterMatcher
     {
         var (physical, _) = SplitAdapters();
 
-        // Built once for the whole enumeration: it walks the network Class key in its constructor, so
-        // constructing it per adapter would repeat that walk N times (issue #32).
-        var displayNames = new DisplayNameResolver();
-
         var list = new List<PhysicalAdapterInfo>(physical.Count);
         foreach (var nic in physical)
         {
@@ -231,10 +227,44 @@ public static class AdapterMatcher
             // Two DIFFERENT strings, deliberately (issue #32): the raw Description is kept because the
             // picker gate above tests it and it is not user-controllable; DisplayName carries the
             // FriendlyName the rename actually writes, and is what every UI surface shows.
-            list.Add(new PhysicalAdapterInfo(nic.Name, nic.Description, nic.Id, mac, displayNames.Resolve(nic)));
+            // The Class-key walk this loop once hoisted into a per-enumeration resolver is now held
+            // across enumerations by the shared cache behind DisplayNameResolver (issue #50), so N
+            // adapters still cost at most one walk — and usually none.
+            list.Add(new PhysicalAdapterInfo(nic.Name, nic.Description, nic.Id, mac, DisplayNameResolver.Resolve(nic)));
         }
         return list;
     }
+
+    /// <summary>
+    /// True when <paramref name="known"/> — a list some caller enumerated earlier — may stand in for a
+    /// fresh <see cref="GetPhysicalAdapters"/> sweep when renaming the adapter with
+    /// <paramref name="interfaceGuid"/> (issue #50).
+    ///
+    /// <para>It must both HAVE entries and contain the adapter in question. The second clause is the
+    /// load-bearing one: a list that does not describe the device being renamed is not a stale view of
+    /// the current device set, it is a view of a DIFFERENT one (a dock unplugged and another plugged in
+    /// since the read), and answering a uniqueness check from it would compare the new name against
+    /// names that are no longer on the host. Falling back to a live sweep costs a few hundred ms on a
+    /// path the user reaches a handful of times; getting this wrong costs two adapters with one name.</para>
+    ///
+    /// <para>Pure — takes the list, not the host — so the rule is unit-testable without a NIC.</para>
+    /// </summary>
+    internal static bool CanRenameFromKnownAdapters(IReadOnlyList<PhysicalAdapterInfo>? known, string interfaceGuid) =>
+        known is { Count: > 0 } &&
+        known.Any(p => p.InterfaceGuid.Equals(interfaceGuid, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// The DISPLAY names of every adapter except the one with <paramref name="interfaceGuid"/> — the
+    /// comparands for the rename dialog's uniqueness check.
+    ///
+    /// <para>DisplayName, not Description (issue #32): the name being written is a FriendlyName, so the
+    /// names it must be unique against are the other adapters' FriendlyNames, which is what DisplayName
+    /// carries. Comparing against Description would let a rename collide with a name actually in use.</para>
+    /// </summary>
+    internal static List<string> OtherAdapterDisplayNames(
+        IReadOnlyList<PhysicalAdapterInfo> all, string interfaceGuid) =>
+        [.. all.Where(p => !p.InterfaceGuid.Equals(interfaceGuid, StringComparison.OrdinalIgnoreCase))
+               .Select(p => p.DisplayName)];
 
     /// <summary>
     /// PICKER-only test (issue #25) for whether an adapter is a real, renameable physical NIC.  Pure so
@@ -393,7 +423,7 @@ public static class AdapterMatcher
         {
             // Display only (dashboard "HOST NETWORK → Adapter"). The rule was already matched on
             // MAC/CIDR above, and Set-VMSwitch targets HostAdapterInterfaceName — not this string.
-            HostAdapterName          = nic is not null ? new DisplayNameResolver().Resolve(nic) : "—",
+            HostAdapterName          = nic is not null ? DisplayNameResolver.Resolve(nic) : "—",
             HostAdapterInterfaceName = nic?.Name ?? "—",
             HostIp                   = ip,
             Gateway                  = gw,
@@ -556,12 +586,15 @@ public static class AdapterMatcher
     /// <see cref="NetworkInterface.Description"/> when the device has no explicit FriendlyName, or when
     /// it cannot be resolved safely (0 or &gt;1 matching devices) or read.
     ///
-    /// <para><b>Cost.</b> Resolution walks the whole network Class key, so the entries are read ONCE
-    /// per enumeration in the constructor and reused for every adapter — never a walk per adapter.
-    /// Only the per-adapter <c>FriendlyName</c> read remains, which is a direct open of one known Enum
-    /// key. All of it is registry I/O and must stay off the UI thread: every construction site is
-    /// already inside a <c>Task.Run</c> (Settings, rename flow, tray) or on <c>NetworkMonitor</c>'s
-    /// background evaluation.</para>
+    /// <para><b>Cost.</b> Resolution needs the network Class key's GUID → device mapping, which used to
+    /// be walked once per enumeration — never per adapter, but still once per rule evaluation, i.e. on
+    /// every <c>NetworkChange</c>, for a display-only string. That mapping is now held across
+    /// enumerations by the shared <see cref="ClassEntryCache"/> (issue #50), which walks only when it
+    /// cannot answer, so a warm resolver costs no walk at all. What remains per adapter is the
+    /// <c>FriendlyName</c> read — a direct open of one known Enum key, and deliberately NOT cached, so a
+    /// rename shows up on the very next read (see the cache's remarks). All of it is registry I/O and
+    /// must stay off the UI thread: every construction site is already inside a <c>Task.Run</c>
+    /// (Settings, rename flow, tray) or on <c>NetworkMonitor</c>'s background evaluation.</para>
     ///
     /// <para><b>Degrade safely.</b> Read-only throughout (never a write, no elevation needed), and
     /// every failure — an unreadable Class key, an ambiguous device, a throwing Enum-key read — falls
@@ -570,17 +603,16 @@ public static class AdapterMatcher
     /// </summary>
     private sealed class DisplayNameResolver
     {
-        private readonly List<AdapterNameRules.ClassAdapterEntry> _entries;
+        /// <summary>
+        /// The GUID → device mapping, held across every enumeration in the process (issue #50). Shared
+        /// deliberately: a per-instance cache would still walk once per rule evaluation, which is the
+        /// cost this removes. It caches no NAME — see <see cref="ClassEntryCache"/> for why that
+        /// distinction is what keeps a rename from ever displaying stale (issue #32).
+        /// </summary>
+        private static readonly ClassEntryCache DeviceIds =
+            new(AdapterDeviceRegistry.ReadClassAdapterEntries);
 
-        public DisplayNameResolver()
-        {
-            // One Class-key walk for the whole enumeration. An unreadable key degrades to "no entries",
-            // which makes every Resolve() fall back to the description.
-            try   { _entries = AdapterDeviceRegistry.ReadClassAdapterEntries(); }
-            catch { _entries = []; }
-        }
-
-        public string Resolve(NetworkInterface nic)
+        public static string Resolve(NetworkInterface nic)
         {
             string description;
             try   { description = StripFilterSuffix(nic.Description); }
@@ -588,7 +620,7 @@ public static class AdapterMatcher
 
             try
             {
-                var resolution = AdapterNameRules.ResolveDeviceInstanceId(nic.Id, _entries);
+                var resolution = DeviceIds.Resolve(nic.Id);
                 if (resolution.Success && resolution.DeviceInstanceId is not null)
                 {
                     var (present, value) = AdapterDeviceRegistry.ReadFriendlyName(resolution.DeviceInstanceId);

@@ -101,6 +101,13 @@ internal sealed partial class SettingsWindow : Window
     // fully-functional degraded state — see HostInventory's remarks).
     private HostInventory.Snapshot? _inventory;
 
+    // True from the moment a rename changes an adapter's description until the re-read it triggers lands
+    // (issue #50). ONLY the adapter list is affected — a rename touches no switch, VM or NIC name — but
+    // this flag is deliberately not consulted by the pickers anyway: it exists solely to stop
+    // _inventory.Adapters being handed to the rename flow while it holds a name the host no longer has.
+    // Nothing downgrades while it is set; the flow simply enumerates live, as it did before the cache.
+    private bool _adaptersStale;
+
     // One callback per control that wants live values, registered as the control is built. The callbacks
     // capture their controls, so a list that is not cleared when its controls are replaced grows forever
     // and re-populates detached ones.
@@ -140,7 +147,18 @@ internal sealed partial class SettingsWindow : Window
 
         _ui = DispatcherQueue.GetForCurrentThread()
             ?? throw new InvalidOperationException("SettingsWindow must be created on the UI thread.");
-        _renameFlow = new AdapterRenameFlow(_config, _ui);
+        // Hand the rename flow the adapters this window already enumerated instead of letting it sweep
+        // the host again per click (issue #50) — but only while they are known-good: the accessor is
+        // read at click time (the inventory arrives async, after this ctor), and yields null while a
+        // rename's re-read is in flight, which the flow answers by enumerating live.
+        _renameFlow = new AdapterRenameFlow(
+            _config, _ui,
+            knownAdapters: () => _adaptersStale ? null : _inventory?.Adapters,
+            onRenamed: () =>
+            {
+                _adaptersStale = true;
+                LoadHostInventoryAsync();   // clears the flag and refreshes the rows when it lands
+            });
         _network    = new NetworkActions(config, monitor, hyperV, notify);
         _managedVms = new ManagedVmActions(config, notify);
 
@@ -351,6 +369,10 @@ internal sealed partial class SettingsWindow : Window
         {
             if (_closed) return;
             _inventory = snapshot;
+            // This read post-dates any rename that asked for it (HostInventory.Read re-reads each
+            // adapter's FriendlyName), so the adapter list is trustworthy again — and re-applying the
+            // snapshot rebuilds the rename rows, which is what puts the new description on screen.
+            _adaptersStale = false;
             ApplyInventory(snapshot);
         });
     });

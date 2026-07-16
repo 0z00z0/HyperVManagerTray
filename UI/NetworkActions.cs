@@ -17,6 +17,16 @@ namespace HyperVManagerTray.UI;
 /// know" arm of the re-check, the never-silently-no-op override. Lifting the bodies here verbatim moves
 /// them without rewriting them.</para>
 ///
+/// <para><b>One vocabulary, four commands (issue #51).</b> Lifting those bodies verbatim also carried
+/// their report channels in unexamined, and they disagreed: Re-check and Override answered with a tray
+/// balloon while Repair and Add-current-network answered with blocking modals — two of which then landed
+/// side by side in one Settings row, so two adjacent buttons spoke two languages. All four now REPORT
+/// through <see cref="_notify"/> and ASK through <see cref="NativeMethods"/>, per the rule in
+/// <c>docs/DISPLAY-VOCABULARY.md</c>: <b>ask with a modal, tell with a balloon</b>. The `XamlRoot`
+/// constraint that appeared to force the split does not exist here — <see cref="NativeMethods"/> is
+/// parentless Win32 <c>MessageBoxW</c>, so both channels always worked from both surfaces, and the split
+/// was never anything but an accident of the move. Read that file before adding a fifth command.</para>
+///
 /// <para><b>UI thread.</b> Every method is called from a menu command or a button click and awaits back
 /// onto the UI thread (it shows dialogs and prompts). The genuinely blocking parts — NIC enumeration,
 /// the config write — are explicitly offloaded, as they were before.</para>
@@ -28,10 +38,15 @@ internal sealed class NetworkActions
     private readonly HyperVManager  _hyperV;
     // Tray balloon (title, message, isError) — owned by App, which holds the TaskbarIcon. Lets the
     // manual network actions answer with the same non-blocking channel a failed apply uses (issue #37)
-    // rather than a modal dialog.
+    // rather than a modal dialog. This is the ONLY way any of the four commands below reports an
+    // outcome (issue #51) — see docs/DISPLAY-VOCABULARY.md.
     private readonly Action<string, string, bool> _notify;
 
     private const string AppName = AppInfo.Name;
+
+    // Every one of these commands is about the host network, so they share one balloon title. The
+    // per-VM override overrides it with the VM's name, which is the more specific subject.
+    private static string NetworkTitle => $"{AppName} — network";
 
     public NetworkActions(ConfigManager config, NetworkMonitor monitor, HyperVManager hyperV,
                           Action<string, string, bool> notify)
@@ -124,7 +139,7 @@ internal sealed class NetworkActions
 
             if (switches.Count == 0)
             {
-                NativeMethods.Info("No bridged switches are configured — nothing to repair.", AppName);
+                _notify(NetworkTitle, NetworkStatusUi.RepairNoSwitchesMessage(), false);
                 return;
             }
 
@@ -139,19 +154,19 @@ internal sealed class NetworkActions
                     anyError = true;
             }
 
+            // A repair that fixed something reports the fix even if another switch errored: the collapse
+            // is a confirmed fact and the user's link is coming back. The error still reaches switcher.log.
             if (repaired.Count > 0)
-                NativeMethods.Info(
-                    $"Repaired host networking on: {string.Join(", ", repaired)}.\n\n" +
-                    "A duplicate host network adapter was collapsed back to one — your wired connection should return within a few seconds.",
-                    AppName);
+                _notify(NetworkTitle, NetworkStatusUi.RepairedMessage(repaired), false);
             else if (anyError)
-                NativeMethods.Warn("Could not repair host networking. See the log file for details.", AppName);
+                _notify(NetworkTitle, NetworkStatusUi.RepairFailedMessage(), true);
             else
-                NativeMethods.Info("Host networking looks healthy — nothing to repair.", AppName);
+                _notify(NetworkTitle, NetworkStatusUi.RepairNothingToDoMessage(), false);
         }
         catch (Exception ex)
         {
-            NativeMethods.Warn($"Repair failed:\n{ex.Message}", AppName);
+            UiActivityLog.Logger.LogWarning(ex, "Repair host networking failed");
+            _notify(NetworkTitle, $"Repair failed: {ex.Message}", true);
         }
     }
 
@@ -182,7 +197,7 @@ internal sealed class NetworkActions
         catch (Exception ex)
         {
             UiActivityLog.Logger.LogWarning(ex, "Add current network failed");
-            NativeMethods.Warn($"Could not add the current network:\n{ex.Message}", AppName);
+            _notify(NetworkTitle, $"Could not add the current network: {ex.Message}", true);
         }
     }
 
@@ -194,7 +209,7 @@ internal sealed class NetworkActions
         var info = await Task.Run(AdapterMatcher.GetCurrentNetworkInfo);
         if (info is null)
         {
-            NativeMethods.Warn("No active network adapter with an IPv4 address was found.", AppName);
+            _notify(NetworkTitle, NetworkStatusUi.AddRuleNoAdapterMessage(), true);
             return;
         }
 
@@ -203,11 +218,7 @@ internal sealed class NetworkActions
         // explanation rather than silently saving a rule that will never bridge.
         if (info.IsWireless)
         {
-            NativeMethods.Warn(
-                $"\"{info.AdapterDescription}\" is a Wi-Fi adapter.\n\n" +
-                "Bridging a Hyper-V switch onto a wireless adapter isn't supported — the switch can only " +
-                "bind to a wired (Ethernet) adapter, such as a USB-Ethernet dock. No rule was added.",
-                AppName);
+            _notify(NetworkTitle, NetworkStatusUi.AddRuleWirelessMessage(info.AdapterDescription), true);
             return;
         }
 
@@ -219,9 +230,7 @@ internal sealed class NetworkActions
         {
             // Now that this flow lives in the rules editor, the existing rule is right there to edit —
             // so point at it rather than at config.json (which is no longer the only way to change it).
-            NativeMethods.Info(
-                $"This adapter is already covered by rule \"{duplicate.Name}\".\n\nEdit that rule above to update it.",
-                AppName);
+            _notify(NetworkTitle, NetworkStatusUi.AddRuleDuplicateMessage(duplicate.Name), false);
             return;
         }
 
@@ -243,6 +252,10 @@ internal sealed class NetworkActions
             defaultName);
         if (name is null) return;
 
+        // The one modal left in this class, and it stays (issue #51): this ASKS — the user's answer
+        // decides whether a rule is written at all — and blocking is the point of asking. Only REPORTS
+        // moved to the balloon. See docs/DISPLAY-VOCABULARY.md.
+        //
         // The rule summary names each field with the pinned vocabulary (issue #42): the value beside
         // "Adapter" is the adapter's DESCRIPTION, not its Windows name/alias — the very distinction
         // whose absence made a working rename look broken.
@@ -271,7 +284,7 @@ internal sealed class NetworkActions
         }
         catch (Exception ex)
         {
-            NativeMethods.Error($"Failed to save rule:\n{ex.Message}", AppName);
+            _notify(NetworkTitle, NetworkStatusUi.AddRuleSaveFailedMessage(ex.Message), true);
             return;
         }
 
