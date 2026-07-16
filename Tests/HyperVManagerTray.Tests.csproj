@@ -25,9 +25,15 @@
     <Compile Include="..\Helpers\AppInfo.cs"          Link="Linked\AppInfo.cs" />
     <!-- Pure config↔UI mapping for the Settings window (issue #18). Only depends on LogLevel; no WinUI. -->
     <Compile Include="..\Helpers\SettingsOptions.cs"  Link="Linked\SettingsOptions.cs" />
-    <!-- Pure adapter-rename rules (validation, uniqueness, GUID→device resolution). No Win32 deps,
-         so it links cleanly; the device-mutating AdapterRenamer.cs is deliberately NOT linked. -->
+    <!-- Pure adapter-rename rules (validation, uniqueness, GUID→device resolution, display-name
+         choice). No Win32 deps, so it links cleanly; the device-mutating AdapterRenamer.cs is
+         deliberately NOT linked. -->
     <Compile Include="..\Helpers\AdapterNameRules.cs" Link="Linked\AdapterNameRules.cs" />
+    <!-- READ-ONLY registry lookups (Class-key device resolution + FriendlyName read), required by the
+         linked AdapterMatcher.cs since it resolves adapter display names (issue #32). Split out of
+         AdapterRenamer.cs precisely so linking it here cannot drag the device-MUTATING write/SetupAPI
+         restart into the test assembly. Nothing in this file writes to the registry or a device. -->
+    <Compile Include="..\Helpers\AdapterDeviceRegistry.cs" Link="Linked\AdapterDeviceRegistry.cs" />
     <Compile Include="..\Services\FileLogger.cs"      Link="Linked\FileLogger.cs" />
     <Compile Include="..\Models\AppConfig.cs"         Link="Linked\AppConfig.cs" />
     <Compile Include="..\Models\NetworkRule.cs"       Link="Linked\NetworkRule.cs" />

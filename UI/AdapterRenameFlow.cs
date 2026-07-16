@@ -39,13 +39,13 @@ internal sealed class AdapterRenameFlow
     /// </summary>
     public async Task RunAsync(PhysicalAdapterInfo adapter)
     {
-        UiActivityLog.Logger.LogInformation("Rename flow: started for adapter '{Adapter}'", adapter.Description);
+        UiActivityLog.Logger.LogInformation("Rename flow: started for adapter '{Adapter}'", adapter.DisplayName);
 
         AdapterNameRules.DeviceResolution resolution;
-        try   { resolution = await Task.Run(() => AdapterRenamer.ResolveDevice(adapter.InterfaceGuid)); }
+        try   { resolution = await Task.Run(() => AdapterDeviceRegistry.ResolveDevice(adapter.InterfaceGuid)); }
         catch (Exception ex)
         {
-            UiActivityLog.Logger.LogWarning("Rename flow: device resolution threw for '{Adapter}'", adapter.Description);
+            UiActivityLog.Logger.LogWarning("Rename flow: device resolution threw for '{Adapter}'", adapter.DisplayName);
             NativeMethods.Error($"Could not identify the device for this adapter:\n{ex.Message}", AppName);
             return;
         }
@@ -53,9 +53,9 @@ internal sealed class AdapterRenameFlow
         if (!resolution.Success || resolution.DeviceInstanceId is null)
         {
             // 0 or >1 devices resolved — never guess which dock; abort with no changes.
-            UiActivityLog.Logger.LogWarning("Rename flow: device could not be safely resolved for '{Adapter}' — aborted", adapter.Description);
+            UiActivityLog.Logger.LogWarning("Rename flow: device could not be safely resolved for '{Adapter}' — aborted", adapter.DisplayName);
             NativeMethods.Error(
-                $"Could not safely identify the device behind \"{adapter.Description}\".\n\n" +
+                $"Could not safely identify the device behind \"{adapter.DisplayName}\".\n\n" +
                 $"{resolution.Error}\n\nNo changes were made.",
                 AppName);
             return;
@@ -75,26 +75,29 @@ internal sealed class AdapterRenameFlow
         // GetPhysicalAdapters enumerates all NICs and can block for hundreds of ms; the awaits above
         // resume on the UI thread, so run it on the thread pool to keep the UI responsive
         // (issue #29, finding 3 — mirrors SettingsWindow.LoadAdaptersAsync).
+        // DisplayName, not Description (issue #32): the uniqueness check compares the candidate against
+        // the OTHER adapters' names, and the name being written is a FriendlyName — so the comparands
+        // must be the other adapters' FriendlyNames too, which is what DisplayName carries.
         var others = (await Task.Run(AdapterMatcher.GetPhysicalAdapters))
             .Where(p => !p.InterfaceGuid.Equals(adapter.InterfaceGuid, StringComparison.OrdinalIgnoreCase))
-            .Select(p => p.Description)
+            .Select(p => p.DisplayName)
             .ToList();
 
-        var result = await RenameAdapterWindow.ShowAsync(adapter.Description, others, savedOriginal, canReset);
+        var result = await RenameAdapterWindow.ShowAsync(adapter.DisplayName, others, savedOriginal, canReset);
         if (result is null)
         {
-            UiActivityLog.Logger.LogInformation("Rename flow: dialog cancelled for '{Adapter}'", adapter.Description);
+            UiActivityLog.Logger.LogInformation("Rename flow: dialog cancelled for '{Adapter}'", adapter.DisplayName);
             return;
         }
 
         if (result.Choice == RenameDialogChoice.Reset)
         {
-            UiActivityLog.Logger.LogInformation("Rename flow: reset requested for '{Adapter}'", adapter.Description);
+            UiActivityLog.Logger.LogInformation("Rename flow: reset requested for '{Adapter}'", adapter.DisplayName);
             await ResetAdapterNameAsync(adapter, deviceInstanceId, existing!);
         }
         else
         {
-            UiActivityLog.Logger.LogInformation("Rename flow: rename requested for '{Adapter}' → '{NewName}'", adapter.Description, result.NewName);
+            UiActivityLog.Logger.LogInformation("Rename flow: rename requested for '{Adapter}' → '{NewName}'", adapter.DisplayName, result.NewName);
             await ApplyRenameAsync(adapter, deviceInstanceId, result.NewName!, existing);
         }
     }
@@ -104,14 +107,14 @@ internal sealed class AdapterRenameFlow
     {
         if (!NativeMethods.Confirm(
                 "Rename this network adapter's description?\n\n" +
-                $"  From :  {adapter.Description}\n" +
+                $"  From :  {adapter.DisplayName}\n" +
                 $"  To   :  {newName}\n\n" +
                 "This changes the description everywhere Windows shows it. To appear everywhere the " +
                 "adapter may need to be disabled/enabled or the PC restarted, which will briefly drop " +
                 "this adapter's network connection.",
                 AppName))
         {
-            UiActivityLog.Logger.LogInformation("Rename flow: rename confirmation declined for '{Adapter}'", adapter.Description);
+            UiActivityLog.Logger.LogInformation("Rename flow: rename confirmation declined for '{Adapter}'", adapter.DisplayName);
             return;
         }
 
@@ -120,7 +123,7 @@ internal sealed class AdapterRenameFlow
             // Persist the true original BEFORE the first write so Reset can always restore it (§5.4).
             if (existing is null)
             {
-                var (present, original) = await Task.Run(() => AdapterRenamer.ReadFriendlyName(deviceInstanceId));
+                var (present, original) = await Task.Run(() => AdapterDeviceRegistry.ReadFriendlyName(deviceInstanceId));
                 var entry = new AdapterNameOverride
                 {
                     DeviceInstanceId     = deviceInstanceId,
@@ -143,12 +146,12 @@ internal sealed class AdapterRenameFlow
         }
         catch (Exception ex)
         {
-            UiActivityLog.Logger.LogWarning("Rename flow: FriendlyName write failed for '{Adapter}'", adapter.Description);
+            UiActivityLog.Logger.LogWarning("Rename flow: FriendlyName write failed for '{Adapter}'", adapter.DisplayName);
             NativeMethods.Error($"The rename could not be completed:\n{ex.Message}", AppName);
             return;
         }
 
-        UiActivityLog.Logger.LogInformation("Rename flow: FriendlyName written for '{Adapter}' → '{NewName}'", adapter.Description, newName);
+        UiActivityLog.Logger.LogInformation("Rename flow: FriendlyName written for '{Adapter}' → '{NewName}'", adapter.DisplayName, newName);
         OfferDeviceRestart(deviceInstanceId, newName);
     }
 
@@ -168,7 +171,7 @@ internal sealed class AdapterRenameFlow
 
         if (!NativeMethods.Confirm(
                 "Restore this adapter's original description?\n\n" +
-                $"  Current  :  {adapter.Description}\n" +
+                $"  Current  :  {adapter.DisplayName}\n" +
                 $"  Restore  :  {existing.OriginalFriendlyName}\n\n" +
                 "The adapter may need a restart or reboot to update everywhere, briefly dropping its connection.",
                 AppName))
@@ -184,12 +187,12 @@ internal sealed class AdapterRenameFlow
         }
         catch (Exception ex)
         {
-            UiActivityLog.Logger.LogWarning("Rename flow: reset write failed for '{Adapter}'", adapter.Description);
+            UiActivityLog.Logger.LogWarning("Rename flow: reset write failed for '{Adapter}'", adapter.DisplayName);
             NativeMethods.Error($"Could not restore the original name:\n{ex.Message}", AppName);
             return;
         }
 
-        UiActivityLog.Logger.LogInformation("Rename flow: original name restored for '{Adapter}' → '{NewName}'", adapter.Description, existing.OriginalFriendlyName);
+        UiActivityLog.Logger.LogInformation("Rename flow: original name restored for '{Adapter}' → '{NewName}'", adapter.DisplayName, existing.OriginalFriendlyName);
         OfferDeviceRestart(deviceInstanceId, existing.OriginalFriendlyName);
     }
 
@@ -226,7 +229,7 @@ internal sealed class AdapterRenameFlow
                 // Confirm the name is still on disk after the cycle before claiming success — a PnP
                 // re-enumeration could, in principle, have regenerated it (issue #15: never report a
                 // success we haven't verified).
-                var (present, current) = AdapterRenamer.ReadFriendlyName(deviceInstanceId);
+                var (present, current) = AdapterDeviceRegistry.ReadFriendlyName(deviceInstanceId);
                 if (AdapterNameRules.FriendlyNameApplied(present, current, appliedName))
                     _ui.TryEnqueue(() => NativeMethods.Info(
                         "Adapter restarted. The new name should now appear everywhere.", AppName));

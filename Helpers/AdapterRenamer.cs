@@ -4,11 +4,22 @@ using Microsoft.Win32;
 namespace HyperVManagerTray.Helpers;
 
 /// <summary>
-/// Device I/O for the "rename network adapter" feature (issue #15). Resolves a NIC's InterfaceGuid
-/// to its underlying PnP device by the Class-key GUID chain (read-only), reads/writes the device
-/// <c>FriendlyName</c> — the string Windows surfaces as the adapter *description* everywhere
-/// (Device Manager, Hyper-V Manager, Windows Settings, .NET <c>NetworkInterface.Description</c>) —
-/// and restarts the device so the change propagates.
+/// Device-MUTATING I/O for the "rename network adapter" feature (issue #15): writes the device
+/// <c>FriendlyName</c> — the string Windows surfaces as the adapter *description* in Device Manager,
+/// Hyper-V Manager, Windows Settings and the NDIS <c>InterfaceDescription</c> — and restarts the
+/// device so the change propagates.
+///
+/// <para><b>NOT NetworkInterface.Description (issue #32).</b> An earlier version of this summary also
+/// claimed <c>FriendlyName</c> drives .NET's <c>NetworkInterface.Description</c>. It does not: that
+/// property comes from the IP Helper API and is derived from the driver's <c>DeviceDesc</c> plus a
+/// <c>#N</c> dedupe suffix, so a FriendlyName write never changes it. Because the app displayed that
+/// property, renames worked yet stayed invisible in the app's own UI. Display sites now resolve the
+/// FriendlyName through <c>AdapterMatcher</c>'s resolver, built on
+/// <see cref="AdapterDeviceRegistry.ReadFriendlyName"/>.</para>
+///
+/// <para><b>Read-only lookups live elsewhere.</b> Device resolution and the FriendlyName read moved to
+/// <see cref="AdapterDeviceRegistry"/> (issue #32) so the display path — and the test assembly that
+/// links it — can use them without this device-mutating file coming along.</para>
 ///
 /// <para><b>SAFETY.</b> <see cref="WriteFriendlyName"/> and <see cref="RestartDevice"/> mutate a real
 /// network device. The write is a parameterized <see cref="Microsoft.Win32.Registry"/> <c>REG_SZ</c>
@@ -16,7 +27,7 @@ namespace HyperVManagerTray.Helpers;
 /// command string — so a crafted name cannot inject code into this elevated process (investigation
 /// §3, §5.3). The write targets exactly one value (<c>FriendlyName</c>) on one resolved device's Enum
 /// key; it never touches <c>DeviceDesc</c> or anything under the Class key. Callers MUST gate both
-/// mutating methods behind explicit user consent. The resolution/read members are read-only.</para>
+/// mutating methods behind explicit user consent. Every member of this type mutates the device.</para>
 ///
 /// <para><b>#15 revert fix.</b> The original write used
 /// <c>SetupDiSetDeviceRegistryProperty(SPDRP_FRIENDLYNAME)</c> declared without
@@ -30,59 +41,6 @@ internal static class AdapterRenamer
 {
     // Network adapter setup class (investigation §1/§2).
     private static readonly Guid NetClassGuid = new("4d36e972-e325-11ce-bfc1-08002be10318");
-    private const string NetClassKeyPath =
-        @"SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}";
-    private const string EnumKeyPrefix = @"SYSTEM\CurrentControlSet\Enum\";
-
-    // ── Read-only device resolution & FriendlyName read ──────────────────────────
-
-    /// <summary>
-    /// Reads every network Class-key subkey and returns the <c>NetCfgInstanceId</c> →
-    /// <c>DeviceInstanceID</c> pairs. Read-only; skips non-adapter subkeys (e.g. "Properties") that
-    /// carry no <c>NetCfgInstanceId</c>.
-    /// </summary>
-    internal static List<AdapterNameRules.ClassAdapterEntry> ReadClassAdapterEntries()
-    {
-        var entries = new List<AdapterNameRules.ClassAdapterEntry>();
-
-        using var classKey = Registry.LocalMachine.OpenSubKey(NetClassKeyPath);
-        if (classKey is null) return entries;
-
-        foreach (var subName in classKey.GetSubKeyNames())
-        {
-            try
-            {
-                using var sub = classKey.OpenSubKey(subName);
-                if (sub?.GetValue("NetCfgInstanceId") is not string netCfg) continue;
-                if (sub.GetValue("DeviceInstanceID")  is not string devInst) continue;
-                if (!string.IsNullOrWhiteSpace(netCfg) && !string.IsNullOrWhiteSpace(devInst))
-                    entries.Add(new AdapterNameRules.ClassAdapterEntry(netCfg, devInst));
-            }
-            catch { /* unreadable subkey — skip, never let one bad key abort resolution */ }
-        }
-        return entries;
-    }
-
-    /// <summary>
-    /// Resolves a NIC's InterfaceGuid (from <c>NetworkInterface.Id</c>) to exactly one PnP
-    /// <c>DeviceInstanceID</c>, or an abort reason. Read-only. See
-    /// <see cref="AdapterNameRules.ResolveDeviceInstanceId"/> for the (pure, unit-tested) matching.
-    /// </summary>
-    internal static AdapterNameRules.DeviceResolution ResolveDevice(string interfaceGuid)
-        => AdapterNameRules.ResolveDeviceInstanceId(interfaceGuid, ReadClassAdapterEntries());
-
-    /// <summary>
-    /// Reads the current <c>FriendlyName</c> for a device instance (read-only). Returns
-    /// <c>Present=false</c> when the device has no explicit FriendlyName (its description then falls
-    /// back to the base <c>DeviceDesc</c>) — the "absent" case the caller must save so Reset never
-    /// deletes the value (investigation §5.4).
-    /// </summary>
-    internal static (bool Present, string? Value) ReadFriendlyName(string deviceInstanceId)
-    {
-        using var key = Registry.LocalMachine.OpenSubKey(EnumKeyPrefix + deviceInstanceId);
-        if (key?.GetValue("FriendlyName") is string s) return (true, s);
-        return (false, null);
-    }
 
     // ── Device-mutating operations (gate behind explicit consent) ────────────────
 
@@ -97,7 +55,7 @@ internal static class AdapterRenamer
     /// </summary>
     internal static void WriteFriendlyName(string deviceInstanceId, string friendlyName)
     {
-        var keyPath = EnumKeyPrefix + deviceInstanceId;
+        var keyPath = AdapterDeviceRegistry.EnumKeyPrefix + deviceInstanceId;
 
         // OpenSubKey(writable:true) throws SecurityException/UnauthorizedAccessException if the ACL
         // denies write, and returns null if the device key is missing — both surface as a visible
@@ -113,7 +71,7 @@ internal static class AdapterRenamer
         }
 
         // Read-back verification: the write only counts as a success if the value is actually on disk.
-        var (present, written) = ReadFriendlyName(deviceInstanceId);
+        var (present, written) = AdapterDeviceRegistry.ReadFriendlyName(deviceInstanceId);
         if (!AdapterNameRules.FriendlyNameApplied(present, written, friendlyName))
             throw new InvalidOperationException(
                 "The new adapter name did not persist to the registry. On disk the FriendlyName is " +

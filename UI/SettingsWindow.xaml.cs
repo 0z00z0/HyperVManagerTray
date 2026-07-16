@@ -670,9 +670,11 @@ internal sealed partial class SettingsWindow : Window
         foreach (var a in adapters)
         {
             var adapter = a;   // capture per iteration
-            var label = string.IsNullOrWhiteSpace(a.InterfaceAlias) || a.InterfaceAlias == a.Description
-                ? a.Description
-                : $"{a.InterfaceAlias} — {a.Description}";
+            // DisplayName, not Description: the rename writes the device FriendlyName, which is what
+            // DisplayName carries — Description would show the unchanged factory string (issue #32).
+            var label = string.IsNullOrWhiteSpace(a.InterfaceAlias) || a.InterfaceAlias == a.DisplayName
+                ? a.DisplayName
+                : $"{a.InterfaceAlias} — {a.DisplayName}";
 
             var renameBtn = new Button { Content = "Rename…" };
             renameBtn.Click += (_, _) => _ = _renameFlow.RunAsync(adapter);

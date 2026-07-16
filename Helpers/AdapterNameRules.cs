@@ -73,6 +73,47 @@ public static class AdapterNameRules
         => present && string.Equals(onDisk, intended, StringComparison.Ordinal);
 
     /// <summary>
+    /// Fallback shown when an adapter has neither a FriendlyName nor a description — matches the
+    /// "—" unknown-value sentinel the rest of the UI already uses. Unreachable in practice
+    /// (<c>NetworkInterface.Description</c> is never empty), but guarantees a blank is never displayed.
+    /// </summary>
+    public const string UnknownDisplayName = "—";
+
+    /// <summary>
+    /// Decides which string to DISPLAY for an adapter (issue #32): the device's <c>FriendlyName</c>
+    /// when it has one, otherwise the adapter's <c>NetworkInterface.Description</c>.
+    ///
+    /// <para><b>Why this exists.</b> The rename writes the PnP device's <c>FriendlyName</c>, which
+    /// Windows surfaces as the NDIS <c>InterfaceDescription</c>. The app used to display
+    /// <see cref="System.Net.NetworkInformation.NetworkInterface"/>'s <c>Description</c> — a
+    /// *different* property, sourced from the IP Helper API and derived from the driver's
+    /// <c>DeviceDesc</c> plus a <c>#N</c> dedupe suffix, which <c>FriendlyName</c> does not affect. The
+    /// app therefore renamed one string and displayed another, so a rename never appeared anywhere in
+    /// the UI (#32, the un-fixed half of #15).</para>
+    ///
+    /// <para>Pure so the whole decision — including every degrade-safely path — is unit-testable
+    /// without a live NIC or registry. The caller passes <paramref name="friendlyName"/> as null
+    /// whenever the FriendlyName is unavailable for ANY reason: the device resolved to zero or more
+    /// than one entry, the Enum key was unreadable, or the device simply has no explicit FriendlyName
+    /// (the real, already-modelled <c>Present=false</c> case). Every one of those degrades to
+    /// <paramref name="fallbackDescription"/> rather than throwing or blanking.</para>
+    ///
+    /// <para><b>Display only.</b> The result must never be fed to rule matching or to the picker's
+    /// software-adapter gate — both must keep reading the raw, un-renamable
+    /// <c>NetworkInterface.Description</c>. See <c>AdapterMatcher</c>.</para>
+    /// </summary>
+    /// <param name="friendlyName">The device's FriendlyName, or null when absent/ambiguous/unreadable.</param>
+    /// <param name="fallbackDescription">The adapter's <c>NetworkInterface.Description</c>.</param>
+    public static string ChooseDisplayName(string? friendlyName, string? fallbackDescription)
+    {
+        var friendly = (friendlyName ?? string.Empty).Trim();
+        if (friendly.Length > 0) return friendly;
+
+        var fallback = (fallbackDescription ?? string.Empty).Trim();
+        return fallback.Length > 0 ? fallback : UnknownDisplayName;
+    }
+
+    /// <summary>
     /// True when <paramref name="candidate"/> does not collide (case-insensitively, ignoring
     /// surrounding whitespace) with any name in <paramref name="existingNames"/>. Windows does not
     /// enforce unique adapter descriptions, so the app must (investigation §5.5). The caller is
