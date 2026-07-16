@@ -22,6 +22,7 @@ public class IconGeneratorTests : IDisposable
     [InlineData(TrayIconState.Unknown,  "icon-unknown-v5.ico")]
     [InlineData(TrayIconState.Bridged,  "icon-bridged-v5.ico")]
     [InlineData(TrayIconState.Fallback, "icon-fallback-v5.ico")]
+    [InlineData(TrayIconState.Failed,   "icon-failed-v5.ico")]     // issue #37
     public void GenerateAndSave_CreatesExpectedFile(TrayIconState state, string expectedFileName)
     {
         var path = IconGenerator.GenerateAndSave(_dir, state);
@@ -31,18 +32,18 @@ public class IconGeneratorTests : IDisposable
         Assert.True(new FileInfo(path).Length > 0, "Icon file is empty");
     }
 
-    // ── The three states write to three distinct files ───────────────────────────
+    // ── Every state writes to its own distinct file ──────────────────────────────
 
     [Fact]
-    public void GenerateAndSave_ThreeStates_ProduceDifferentFiles()
+    public void GenerateAndSave_EveryState_ProducesADifferentFile()
     {
-        var p1 = IconGenerator.GenerateAndSave(_dir, TrayIconState.Unknown);
-        var p2 = IconGenerator.GenerateAndSave(_dir, TrayIconState.Bridged);
-        var p3 = IconGenerator.GenerateAndSave(_dir, TrayIconState.Fallback);
+        // Enumerated rather than listed, so a state added later must also get its own icon file
+        // instead of silently sharing (and therefore mis-signalling as) another state's.
+        var paths = Enum.GetValues<TrayIconState>()
+            .Select(state => IconGenerator.GenerateAndSave(_dir, state))
+            .ToList();
 
-        Assert.NotEqual(p1, p2);
-        Assert.NotEqual(p2, p3);
-        Assert.NotEqual(p1, p3);
+        Assert.Equal(paths.Count, paths.Distinct().Count());
     }
 
     // ── Second call with the same state returns the same path without recreating ─
@@ -51,6 +52,7 @@ public class IconGeneratorTests : IDisposable
     [InlineData(TrayIconState.Unknown)]
     [InlineData(TrayIconState.Bridged)]
     [InlineData(TrayIconState.Fallback)]
+    [InlineData(TrayIconState.Failed)]
     public void GenerateAndSave_CalledTwice_ReturnsSamePathAndDoesNotRewrite(TrayIconState state)
     {
         var first    = IconGenerator.GenerateAndSave(_dir, state);
@@ -83,6 +85,7 @@ public class IconGeneratorTests : IDisposable
     [InlineData(TrayIconState.Unknown)]
     [InlineData(TrayIconState.Bridged)]
     [InlineData(TrayIconState.Fallback)]
+    [InlineData(TrayIconState.Failed)]
     public void RenderIcon_HasTransparentBackground(TrayIconState state)
     {
         using var bmp = IconGenerator.RenderIcon(32, state);
@@ -97,6 +100,7 @@ public class IconGeneratorTests : IDisposable
     [InlineData(TrayIconState.Unknown)]
     [InlineData(TrayIconState.Bridged)]
     [InlineData(TrayIconState.Fallback)]
+    [InlineData(TrayIconState.Failed)]
     public void RenderIcon_DrawsOpaqueGlyph(TrayIconState state)
     {
         using var bmp = IconGenerator.RenderIcon(32, state);
@@ -109,16 +113,35 @@ public class IconGeneratorTests : IDisposable
         Assert.True(anyOpaque, "Expected the glyph to draw at least one fully-opaque pixel.");
     }
 
-    // Bridged is green-dominant, Fallback blue-dominant — the colour encodes the state.
+    // Bridged is green-dominant, Fallback blue-dominant, Failed red-dominant — the colour encodes the
+    // state. Failed (issue #37) must read as a problem, not as either working state.
     [Fact]
     public void RenderIcon_StateColoursAreDistinctAndCorrectHue()
     {
         var bridged  = DominantGlyphColor(TrayIconState.Bridged);
         var fallback = DominantGlyphColor(TrayIconState.Fallback);
+        var failed   = DominantGlyphColor(TrayIconState.Failed);
 
         Assert.True(bridged.G  > bridged.R  && bridged.G  > bridged.B,  $"Bridged should be green-dominant, was {bridged}");
         Assert.True(fallback.B > fallback.R && fallback.B > fallback.G, $"Fallback should be blue-dominant, was {fallback}");
+        Assert.True(failed.R   > failed.G   && failed.R   > failed.B,   $"Failed should be red-dominant, was {failed}");
     }
+
+    // Every state must be visually distinguishable from every other — a failed apply that renders in the
+    // same colour as a working one would defeat the whole point of issue #37.
+    [Fact]
+    public void RenderIcon_EveryStateHasItsOwnColour()
+    {
+        var colours = Enum.GetValues<TrayIconState>().Select(DominantGlyphColor).ToList();
+
+        Assert.Equal(colours.Count, colours.Distinct().Count());
+    }
+
+    // Grey "we don't know yet" and red "we tried and failed" are deliberately NOT merged: they call for
+    // different reactions from the user (wait vs. investigate).
+    [Fact]
+    public void RenderIcon_UnknownAndFailedAreDifferentColours() =>
+        Assert.NotEqual(DominantGlyphColor(TrayIconState.Unknown), DominantGlyphColor(TrayIconState.Failed));
 
     // Averages every fully-opaque glyph pixel to get the icon's dominant colour.
     private static Color DominantGlyphColor(TrayIconState state)

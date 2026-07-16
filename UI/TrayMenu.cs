@@ -24,8 +24,15 @@ internal sealed class TrayMenu
     private readonly VmService      _vm;       // VM status/power/IPs (WMI)
     private readonly StartupManager _startup;
     private readonly UpdateChecker  _updateChecker;
+    // Tray balloon (title, message, isError) — owned by App, which holds the TaskbarIcon. Lets the
+    // manual network actions answer with the same non-blocking channel a failed apply uses (issue #37)
+    // rather than a modal dialog.
+    private readonly Action<string, string, bool> _notify;
 
-    private readonly MenuFlyoutSubItem    _overrideMenu = new() { Text = "Override VM switch" };
+    // The override's transience is stated up front in the label (issue #37): it is undone by the next
+    // network change, which the UI documented nowhere — the confirmation balloon repeats it after the
+    // fact, but a user browsing the menu deserves to know before they click.
+    private readonly MenuFlyoutSubItem    _overrideMenu = new() { Text = "Override VM switch (until next network change)" };
     private readonly MenuFlyoutSubItem    _vmPowerMenu  = new() { Text = "VM Power" };
 
     private MenuFlyoutItem? _updateBadge;
@@ -38,7 +45,8 @@ internal sealed class TrayMenu
     public MenuFlyout Flyout { get; }
 
     public TrayMenu(ConfigManager config, NetworkMonitor monitor, HyperVManager hyperV, VmService vm,
-                    StartupManager startup, UpdateChecker updateChecker, Action onExit)
+                    StartupManager startup, UpdateChecker updateChecker, Action onExit,
+                    Action<string, string, bool> notify)
     {
         _config        = config;
         _monitor       = monitor;
@@ -46,6 +54,7 @@ internal sealed class TrayMenu
         _vm            = vm;
         _startup       = startup;
         _updateChecker = updateChecker;
+        _notify        = notify;
 
         _ui = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread()
             ?? throw new InvalidOperationException("TrayMenu must be created on the UI thread.");
@@ -61,7 +70,7 @@ internal sealed class TrayMenu
         Flyout.Items.Add(new MenuFlyoutSeparator());
 
         var vmNetworkMenu = new MenuFlyoutSubItem { Text = "VM Network" };
-        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Re-check network now", Command = new RelayCommand(() => { LogClick("Re-check network now"); _ = _monitor.ForceEvaluateAsync(); }) });
+        vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Re-check network now", Command = new RelayCommand(() => { LogClick("Re-check network now"); _ = ReCheckNetworkAsync(); }) });
         vmNetworkMenu.Items.Add(new MenuFlyoutItem { Text = "Repair host networking (host offline, VM online)", Command = new RelayCommand(() => { LogClick("Repair host networking"); _ = RepairHostNetworkingAsync(); }) });
         vmNetworkMenu.Items.Add(new MenuFlyoutSeparator());
         vmNetworkMenu.Items.Add(_overrideMenu);
@@ -311,7 +320,7 @@ internal sealed class TrayMenu
                     Command = new RelayCommand(() =>
                     {
                         UiActivityLog.Logger.LogInformation("Tray: Override switch '{Vm}' → '{Switch}'", vmName, swName);
-                        _ = _monitor.ManualOverrideAsync(vmName, swName);
+                        _ = OverrideSwitchAsync(vmName, swName);
                     }),
                 });
             }
@@ -319,6 +328,64 @@ internal sealed class TrayMenu
     }
 
     // ── Actions ─────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// "Re-check network now" — re-evaluates the rules and ALWAYS answers with the result (issue #37,
+    /// recommendation 5). This command previously fired <c>ForceEvaluateAsync</c> and returned, giving
+    /// the user no way to tell whether it had run, matched, or failed.
+    /// </summary>
+    private async Task ReCheckNetworkAsync()
+    {
+        try
+        {
+            var result = await _monitor.ForceEvaluateAsync();
+            if (result is null)
+            {
+                // Busy/disposed/threw — we genuinely don't know the outcome, so say that rather than
+                // report a re-check that may never have run.
+                _notify($"{AppName} — network", "Could not re-check the network right now — see switcher.log.", true);
+                return;
+            }
+
+            var message = NetworkStatusUi.ReCheckMessage(
+                result.RuleName, result.VirtualSwitch, result.ApplyStatus,
+                result.HostAdapterName, result.FailedVms);
+            _notify($"{AppName} — network", message, NetworkStatusUi.IsFailure(result.ApplyStatus));
+        }
+        catch (Exception ex)
+        {
+            UiActivityLog.Logger.LogWarning(ex, "Re-check network failed");
+            _notify($"{AppName} — network", $"Re-check failed: {ex.Message}", true);
+        }
+    }
+
+    /// <summary>
+    /// "Override VM switch" — forces one VM onto one switch and confirms what it did, including the
+    /// override's transience (issue #37, recommendation 5). Previously this silently no-opped when the
+    /// VM wasn't in config and never confirmed anything in any case.
+    /// </summary>
+    private async Task OverrideSwitchAsync(string vmName, string switchName)
+    {
+        try
+        {
+            var outcome = await _monitor.ManualOverrideAsync(vmName, switchName);
+            var (message, isError) = outcome switch
+            {
+                NetworkMonitor.OverrideOutcome.Applied =>
+                    (NetworkStatusUi.OverrideAppliedMessage(vmName, switchName), false),
+                NetworkMonitor.OverrideOutcome.NotConfigured =>
+                    (NetworkStatusUi.OverrideNotConfiguredMessage(vmName), true),
+                _ =>
+                    (NetworkStatusUi.OverrideFailedMessage(vmName, switchName), true),
+            };
+            _notify($"{AppName} — {vmName}", message, isError);
+        }
+        catch (Exception ex)
+        {
+            UiActivityLog.Logger.LogWarning(ex, "Override switch failed for {Vm}", vmName);
+            _notify($"{AppName} — {vmName}", $"Override failed: {ex.Message}", true);
+        }
+    }
 
     private async Task AddCurrentAsBridged()
     {
@@ -397,7 +464,9 @@ internal sealed class TrayMenu
             try
             {
                 _config.AddBridgedRule(rule);
-                _ = _monitor.ForceEvaluateAsync();
+                // Apply the new rule AND report whether it actually took effect — a rule that saves
+                // fine but fails to bind would otherwise look like a success (issue #37).
+                _ = ReCheckNetworkAsync();
             }
             catch (Exception ex)
             {

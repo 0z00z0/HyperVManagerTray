@@ -33,7 +33,10 @@ public partial class App : Application
     private TrayMenu?        _menu;
 
     private string _exeDir = AppContext.BaseDirectory;
-    private bool?  _bridged;  // null = icon not yet initialized; ensures first switch always updates
+    // The icon state currently posted. Null = not yet initialised, so the first apply always updates.
+    // Holds the rendered STATE (not "is it bridged?") because a failed apply is now its own state that
+    // no boolean could express (issue #37).
+    private TrayIconState? _iconState;
     private System.Drawing.Icon? _iconImage;
 
     // Last tooltip text actually posted, so event-driven rebuilds only touch the UI on a real change
@@ -255,9 +258,14 @@ public partial class App : Application
     private void InitTrayIcon()
     {
         _trayIcon = (TaskbarIcon)Resources["TrayIcon"];
-        SetTrayIcon(null);  // grey = unknown until first SwitchApplied fires
+        SetTrayIcon(TrayIconState.Unknown);  // grey = unknown until the first apply reports an outcome
 
-        _menu = new TrayMenu(_config!, _monitor!, _hyperV!, _vm!, _startup, _updateChecker!, OnExit);
+        // The tray's manual network actions report through the same balloon channel a failed apply uses
+        // (issue #37). Not suppressed by a visible dashboard: unlike an automatic apply, these are direct
+        // answers to something the user just clicked, and must never be swallowed.
+        _menu = new TrayMenu(_config!, _monitor!, _hyperV!, _vm!, _startup, _updateChecker!, OnExit,
+                             (title, message, isError) =>
+                                 ShowBalloon(title, message, isError, suppressWhenDashboardVisible: false));
         _trayIcon.ContextFlyout     = _menu.Flyout;
         _trayIcon.LeftClickCommand  = new RelayCommand(ToggleDashboard);
         _trayIcon.RightClickCommand = new RelayCommand(() => _menu!.RefreshState());
@@ -273,16 +281,26 @@ public partial class App : Application
         {
             try
             {
-                bool bridged = result.VirtualSwitch != _config!.Current.Fallback.VirtualSwitch;
-                if (bridged != _bridged)
+                // The rules' INTENT (a non-fallback switch was picked) only decides WHICH success colour
+                // to use once the apply is confirmed — NetworkStatusUi.IconFor gates it on the outcome.
+                // Deriving the icon straight from result.VirtualSwitch, as this did before issue #37, is
+                // what let a failed bind show a confident green "bridged".
+                bool bridgedTarget = result.VirtualSwitch != _config!.Current.Fallback.VirtualSwitch;
+                var  state         = NetworkStatusUi.IconFor(result.ApplyStatus, bridgedTarget);
+                if (state != _iconState)
                 {
-                    _bridged = bridged;
-                    SetTrayIcon(bridged);
+                    _iconState = state;
+                    SetTrayIcon(state);
                 }
                 _dashboard?.OnSwitchApplied(result);
             }
             catch (Exception ex) { LogCrash("OnSwitchApplied UI update", ex); }
         });
+
+        // A failed apply is otherwise only a log line (issue #37) — balloon it, exactly as a failed VM
+        // power action does. Auto-switching is the app's core job; when it silently fails the user
+        // debugs "the VM has no network" from scratch while every surface says everything is fine.
+        NotifyIfApplyFailed(result);
 
         // The app just (re)bound a virtual switch — the one switch-change the state watcher can't see —
         // so invalidate VmService's switch cache, show the new switch name at once, and kick a refresh
@@ -312,17 +330,64 @@ public partial class App : Application
     private void OnVmOperationFailed(Models.VmOperationProgress p)
     {
         if (p.Phase != Models.VmOpPhase.Failed) return;
+        ShowBalloon($"{AppInfo.Name} — {p.VmName}",
+                    string.IsNullOrWhiteSpace(p.Message) ? "Power action failed." : p.Message!,
+                    isError: true,
+                    suppressWhenDashboardVisible: true);
+    }
+
+    // The failure last balloon'd, so a persisting failure isn't re-announced on every NetworkChange.
+    // SwitchApplied fires on every network blip — including the "no switch change needed" fast path,
+    // which carries the previous outcome forward — so without this a single failed bind would toast
+    // repeatedly while the user is doing nothing about it. Cleared on a successful apply, so a genuinely
+    // NEW failure always announces itself.
+    private string? _lastNotifiedFailure;
+
+    /// <summary>
+    /// Balloons a failed switch-apply (issue #37), mirroring <see cref="OnVmOperationFailed"/>: the
+    /// dashboard shows the failure inline on the HOST NETWORK card, so the toast is suppressed while
+    /// it's visible. Called on <see cref="NetworkMonitor"/>'s background thread; never throws.
+    /// </summary>
+    private void NotifyIfApplyFailed(MatchResult result)
+    {
+        try
+        {
+            var message = NetworkStatusUi.FailureMessage(
+                result.ApplyStatus, result.VirtualSwitch, result.HostAdapterName, result.FailedVms);
+            if (message is null)
+            {
+                _lastNotifiedFailure = null;   // recovered — re-arm for the next failure
+                return;
+            }
+
+            if (message == _lastNotifiedFailure) return;   // same failure, still unresolved — say it once
+            _lastNotifiedFailure = message;
+
+            ShowBalloon($"{AppInfo.Name} — network", message,
+                        isError: true, suppressWhenDashboardVisible: true);
+        }
+        catch (Exception ex) { LogCrash("Failed-apply tray toast", ex); }
+    }
+
+    /// <summary>
+    /// Posts a tray balloon from any thread. <paramref name="suppressWhenDashboardVisible"/> skips it
+    /// when the dashboard is up and already showing the same information inline. Never throws — a
+    /// notification failure must not take the app down.
+    /// </summary>
+    private void ShowBalloon(string title, string message, bool isError, bool suppressWhenDashboardVisible)
+    {
         _ui.TryEnqueue(() =>
         {
             try
             {
-                if (_dashboard is { } d && d.AppWindow.IsVisible) return;   // dashboard shows it inline
+                if (suppressWhenDashboardVisible && _dashboard is { } d && d.AppWindow.IsVisible) return;
                 _trayIcon?.ShowNotification(
-                    title: $"{AppInfo.Name} — {p.VmName}",
-                    message: string.IsNullOrWhiteSpace(p.Message) ? "Power action failed." : p.Message!,
-                    icon: H.NotifyIcon.Core.NotificationIcon.Error);
+                    title: title,
+                    message: message,
+                    icon: isError ? H.NotifyIcon.Core.NotificationIcon.Error
+                                  : H.NotifyIcon.Core.NotificationIcon.Info);
             }
-            catch (Exception ex) { LogCrash("Failed-op tray toast", ex); }
+            catch (Exception ex) { LogCrash("Tray balloon", ex); }
         });
     }
 
@@ -367,8 +432,13 @@ public partial class App : Application
     /// </summary>
     private string BuildTooltipText()
     {
-        var switchName = _monitor?.LastApplied?.VirtualSwitch ?? "No switch";
+        var applied    = _monitor?.LastApplied;
+        var switchName = applied?.VirtualSwitch ?? "No switch";
         var vmNames    = _config!.Current.VirtualMachines.Select(v => v.Name).ToList();
+
+        // The switch row states the OUTCOME, not just the intended switch (issue #37): a hover after a
+        // failed bind must not read as a plain, healthy "Switch: Bridged". Empty for a confirmed apply.
+        var switchSuffix = applied is null ? "" : NetworkStatusUi.TooltipSwitchSuffix(applied.ApplyStatus);
 
         var lines = new System.Collections.Generic.List<string>
         {
@@ -379,7 +449,11 @@ public partial class App : Application
             // Chosen over the globe so it doesn't read as a generic computer icon and conveys
             // switching/spread. Avoid dark/low-contrast emoji (e.g. a plug) on the dark Win11
             // tooltip background — see ChargeKeeper's App.xaml.cs UpdateTooltip note.
-            TruncateLine($"\U0001F500 Switch: {switchName}", 63),
+            // ⚠️ replaces it when the apply didn't land, so the row reads as a problem at a glance
+            // (issue #37). The switch NAME absorbs the truncation, never the failure suffix — a
+            // long switch name must not be able to hide "— bind failed".
+            TruncateLine($"{(switchSuffix.Length == 0 ? "\U0001F500" : "⚠️")} Switch: {switchName}",
+                         63 - switchSuffix.Length) + switchSuffix,
         };
 
         int vmsWithIp = 0;
@@ -490,15 +564,10 @@ public partial class App : Application
     private static string TruncateLine(string line, int maxLen) =>
         line.Length <= maxLen ? line : line[..(maxLen - 1)] + "…";
 
-    /// <summary>Swaps the tray icon based on network state, disposing the previous one.</summary>
-    private void SetTrayIcon(bool? bridged)
+    /// <summary>Swaps the tray icon to the given state, disposing the previous one. The state is decided
+    /// by <see cref="NetworkStatusUi.IconFor"/> from the apply OUTCOME — never inferred here.</summary>
+    private void SetTrayIcon(TrayIconState state)
     {
-        var state = bridged switch
-        {
-            true  => TrayIconState.Bridged,
-            false => TrayIconState.Fallback,
-            null  => TrayIconState.Unknown,
-        };
         var previous = _iconImage;
         _iconImage = new System.Drawing.Icon(IconGenerator.GenerateAndSave(_exeDir, state));
         _trayIcon!.Icon = _iconImage;

@@ -237,9 +237,25 @@ public sealed partial class DashboardWindow : Window
         if (VmPanel.Children.Count == 0) BuildCards([]);
     }
 
+    /// <summary>
+    /// Fills the HOST NETWORK card. The Rule row reports the apply OUTCOME, not just the matched rule
+    /// (issue #37): a failed bind/reconnect renders as e.g. "Office LAN — bind failed" in red, the same
+    /// way a VM card overlays "Failed: …". Before #37 this card showed the rule's intent unconditionally,
+    /// so it claimed the bridged rule was in force while the VM was still on the old switch.
+    /// </summary>
     private void ApplyHostStatus(MatchResult result)
     {
-        RuleText.Text    = result.RuleName;
+        RuleText.Text = NetworkStatusUi.RuleRowText(result.RuleName, result.ApplyStatus);
+
+        // Red on failure; on recovery CLEAR the local value rather than re-assigning a captured brush,
+        // so the row falls back to RowValueStyle's {ThemeResource TextFillColorPrimaryBrush} and keeps
+        // tracking light/dark. Assigning a captured brush would pin a hard local value and freeze this
+        // one row's colour across a theme switch.
+        if (NetworkStatusUi.IsFailure(result.ApplyStatus))
+            RuleText.Foreground = AppColors.IndicatorRedBrush;
+        else
+            RuleText.ClearValue(TextBlock.ForegroundProperty);
+
         AdapterText.Text = result.HostAdapterName;
         IpText.Text      = result.HostIp;
         GatewayText.Text = result.Gateway;

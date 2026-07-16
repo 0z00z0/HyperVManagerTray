@@ -7,7 +7,20 @@ using HyperVManagerTray.Models;
 
 namespace HyperVManagerTray.Services;
 
-/// <summary>Result of evaluating config rules against the current host network state.</summary>
+/// <summary>
+/// Result of evaluating config rules against the current host network state — the rules' INTENT — plus,
+/// once <c>NetworkMonitor.ApplyAsync</c> has acted on it, what actually happened
+/// (<see cref="ApplyStatus"/> / <see cref="FailedVms"/>).
+///
+/// <para><b>Intent vs outcome (issue #37).</b> <see cref="AdapterMatcher.Evaluate"/> is pure rule
+/// matching and can only ever produce the intent, so it leaves <see cref="ApplyStatus"/> at
+/// <see cref="NetworkStatusUi.SwitchApplyStatus.NotEvaluated"/>. Only the apply path knows whether the
+/// bind and the VM-NIC reconnects succeeded, so only it may set a different status. Before #37 this
+/// record carried no outcome at all and therefore structurally could not express "tried and failed" —
+/// which is exactly why the tray icon showed a confident green "bridged" after a failed bind. Any
+/// status surface must render <see cref="ApplyStatus"/>, never infer success from
+/// <see cref="VirtualSwitch"/>.</para>
+/// </summary>
 public sealed record MatchResult(string RuleName, string VirtualSwitch, IReadOnlyList<string> TargetVms)
 {
     public string HostAdapterName          { get; init; } = "—";  // display name (FriendlyName, else Description)
@@ -15,6 +28,16 @@ public sealed record MatchResult(string RuleName, string VirtualSwitch, IReadOnl
     public string HostIp                   { get; init; } = "—";
     public string Gateway                  { get; init; } = "—";
     public IReadOnlyList<string> DnsServers { get; init; } = [];
+
+    /// <summary>What the apply pass actually achieved (issue #37). Defaults to
+    /// <see cref="NetworkStatusUi.SwitchApplyStatus.NotEvaluated"/>: a freshly evaluated result has not
+    /// been applied yet, and the default must never be an optimistic one.</summary>
+    public NetworkStatusUi.SwitchApplyStatus ApplyStatus { get; init; } = NetworkStatusUi.SwitchApplyStatus.NotEvaluated;
+
+    /// <summary>The target VMs whose NIC could not be attached to <see cref="VirtualSwitch"/> on this
+    /// pass — populated when <see cref="ApplyStatus"/> is
+    /// <see cref="NetworkStatusUi.SwitchApplyStatus.VmConnectFailed"/>, so the balloon can name them.</summary>
+    public IReadOnlyList<string> FailedVms { get; init; } = [];
 }
 
 /// <summary>Network details of the current primary host adapter, used by "Add current network" feature.</summary>
