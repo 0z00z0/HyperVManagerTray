@@ -18,8 +18,8 @@ namespace HyperVManagerTray.UI;
 /// category per pane item: General (run-on-startup, log level), Managed VMs (per-VM on-bridge-lost
 /// action + delay), Network (the full rules editor + editable fallback switch/target-VMs — values that
 /// were previously reachable only by hand-editing config.json), Adapters (rename a physical NIC's
-/// description), Maintenance (open config/log, reload, check for updates), and About (opens the shared
-/// <see cref="BrandAboutWindow"/>).
+/// description), Maintenance (open config/log, reload, check for updates), and About (embeds the shared
+/// <see cref="BrandAboutControl"/> content inline rather than opening a second window).
 ///
 /// <para>Everything persists through the existing <see cref="ConfigManager"/> (no parallel store).
 /// Sections are built in code — the same code-first card idiom <see cref="DashboardWindow"/> uses — so
@@ -76,9 +76,6 @@ internal sealed partial class SettingsWindow : Window
     // early SelectionChanged (which fires during InitializeComponent, before the panels exist) is
     // ignored instead of NRE-ing out of the constructor (finding 6, cleanup 13).
     private IReadOnlyDictionary<string, StackPanel>? _panels;
-
-    // Reused shared About window, so repeated clicks re-activate one window instead of stacking copies.
-    private BrandAboutWindow? _aboutWindow;
 
     public SettingsWindow(ConfigManager config, StartupManager startup, UpdateChecker updateChecker)
     {
@@ -759,33 +756,21 @@ internal sealed partial class SettingsWindow : Window
     {
         var panel = Section("About");
 
-        var aboutBtn = new Button { Content = $"About {AppInfo.Name}" };
-        aboutBtn.Click += (_, _) => ShowAboutWindow();
-        panel.Children.Add(SettingRow(
-            AppInfo.Name,
-            "Automatically connects Hyper-V VMs to the right virtual switch when the host changes " +
-            "networks. Manage VM power and state directly from the system tray. Made by ZeroZero Software.",
-            aboutBtn));
+        // Embed the shared About *content* inline rather than a button that opens a second window.
+        // BrandAboutControl (issue #19) is a hostable UserControl built for exactly this — it renders
+        // the brand header, description, the three link buttons and the external-libraries credits, and
+        // owns no window chrome. Wrapping it in the standard Card sets it apart as its own panel without
+        // being a separate dialog. The About window's one extra affordance — "Check for updates" — isn't
+        // lost: it already has its own row in the Maintenance → Updates card above.
+        var about = new BrandAboutControl
+        {
+            HorizontalAlignment = HorizontalAlignment.Left,
+            MaxWidth            = 520,
+        };
+        about.SetInfo(AppAbout.CreateInfo());
+        panel.Children.Add(Card(about));
 
         return panel;
-    }
-
-    private void ShowAboutWindow()
-    {
-        if (_closed) return;
-        if (_aboutWindow is not null) { _aboutWindow.Activate(); return; }
-
-        var options = new BrandAboutOptions
-        {
-            Info = AppAbout.CreateInfo(),
-            // Reuses this window's own update flow (UpdatePrompt.RunAsync). Returns false: the Inno
-            // installer restarts the app itself, so the About window never needs to trigger a self-exit.
-            OnCheckForUpdates = async () => { await CheckForUpdatesAsync(); return false; },
-        };
-
-        _aboutWindow = new BrandAboutWindow(options);
-        _aboutWindow.Closed += (_, _) => _aboutWindow = null;
-        _aboutWindow.Activate();
     }
 
     /// <summary>
