@@ -76,6 +76,11 @@
          VmConnectFlow takes its side effects, so this links with no registry and no live host. Required
          by the linked AdapterMatcher.cs, whose display-name resolver holds the shared instance. -->
     <Compile Include="..\Helpers\ClassEntryCache.cs"  Link="Linked\ClassEntryCache.cs" />
+    <!-- The rule deciding whether a host read already taken still describes the host: the ordering
+         guarantee behind Settings' "may the rename flow reuse this adapter list?". A counter and two
+         comparisons — no WinUI, no host, no registry — which is what makes the race it exists to prevent
+         (a read that started before a change landing after it and being trusted) testable at all. -->
+    <Compile Include="..\Helpers\HostReadGeneration.cs" Link="Linked\HostReadGeneration.cs" />
     <Compile Include="..\Services\FileLogger.cs"      Link="Linked\FileLogger.cs" />
     <Compile Include="..\Models\AppConfig.cs"         Link="Linked\AppConfig.cs" />
     <Compile Include="..\Models\NetworkRule.cs"       Link="Linked\NetworkRule.cs" />

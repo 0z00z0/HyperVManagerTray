@@ -184,22 +184,6 @@ public class ClassEntryCacheTests
         Assert.True(cache.Resolve(GuidA).Success);   // warm-miss ⇒ refresh ⇒ found
     }
 
-    [Fact]
-    public void Invalidate_ForcesTheNextResolveToWalk()
-    {
-        var key   = new FakeKey(Entry(GuidA, @"PCI\DEV_A"));
-        var cache = new ClassEntryCache(key.Read);
-
-        cache.Resolve(GuidA);
-        cache.Resolve(GuidA);
-        Assert.Equal(1, cache.Walks);
-
-        cache.Invalidate();
-        cache.Resolve(GuidA);
-
-        Assert.Equal(2, cache.Walks);
-    }
-
     /// <summary>The cache changes when a walk happens, never what a walk means: resolution stays
     /// <c>AdapterNameRules.ResolveDeviceInstanceId</c>'s (case-insensitive, per its own tests).</summary>
     [Fact]

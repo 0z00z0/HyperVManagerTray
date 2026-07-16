@@ -30,11 +30,18 @@ namespace HyperVManagerTray.Helpers;
 /// worst case at exactly today's behaviour (one walk per resolve, for an adapter that has no Class entry
 /// at all) while the normal case costs none. Nothing has to remember to invalidate this; a removed
 /// device's entry is never asked about again, because only a currently-enumerated NIC's GUID is ever
-/// looked up.</para>
+/// looked up. There is deliberately no <c>Invalidate</c> method: this class had one, no production caller
+/// ever wanted it, and the only thing it could really do was invite the misuse the design above rules out
+/// — a caller dropping entries the self-healing rule already handles, or reaching for it as a way to make
+/// this cache safe for something it must not hold (a name).</para>
 ///
-/// <para><b>Threading.</b> Production shares one instance across the rule-evaluation thread, the Settings
-/// background read and the rename flow, so every access is under the lock. The walk itself happens inside
-/// it: walks are rare now, and a torn read of the entry list would be a wrong-device resolution.</para>
+/// <para><b>Threading.</b> One instance is shared across every thread that resolves a DISPLAY name — the
+/// rule-evaluation thread and the Settings background read — so every access is under the lock. The rename
+/// flow is not normally among them: it resolves the device it is about to WRITE to through
+/// <see cref="AdapterDeviceRegistry.ResolveDevice"/>, which walks fresh on purpose (see there), and touches
+/// this instance only via the display-name path behind its now-uncommon fallback sweep. The walk itself
+/// happens inside the lock: walks are rare now, and a torn read of the entry list would be a wrong-device
+/// resolution.</para>
 ///
 /// <para><b>Testability.</b> The reader arrives as a delegate — the same reason
 /// <see cref="VmConnectFlow"/> takes its side effects as delegates — so the re-walk rule below is
@@ -57,6 +64,11 @@ public sealed class ClassEntryCache
     /// <summary>
     /// Resolves <paramref name="interfaceGuid"/> to its PnP device instance, walking the Class key only
     /// when the cached entries cannot answer.
+    ///
+    /// <para><b>DISPLAY ONLY. For anything you will write to, use
+    /// <see cref="AdapterDeviceRegistry.ResolveDevice"/></b>, which always walks fresh — see there for why
+    /// the difference between these two otherwise-identical resolvers is safety-critical rather than a
+    /// caching detail.</para>
     ///
     /// <para>A cold cache walks once and answers from that walk — it is already as fresh as a walk can
     /// make it, so a miss against it is a real miss (an adapter with no Class entry) and must NOT trigger
@@ -86,14 +98,6 @@ public sealed class ClassEntryCache
             _entries = Walk();
             return AdapterNameRules.ResolveDeviceInstanceId(interfaceGuid, _entries);
         }
-    }
-
-    /// <summary>Drops the cached entries so the next <see cref="Resolve"/> walks again. Not needed for a
-    /// rename (which changes no mapping — see the class remarks); present for a caller that knows the
-    /// device set changed and would rather pay the walk up front than through a miss.</summary>
-    public void Invalidate()
-    {
-        lock (_lock) _entries = null;
     }
 
     private List<AdapterNameRules.ClassAdapterEntry> Walk()

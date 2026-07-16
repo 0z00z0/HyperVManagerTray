@@ -87,6 +87,48 @@ public sealed record MatchResult(string RuleName, string VirtualSwitch, IReadOnl
         string.Equals(VirtualSwitch, next.VirtualSwitch, StringComparison.OrdinalIgnoreCase) &&
         string.Equals(HostAdapterInterfaceName, next.HostAdapterInterfaceName, StringComparison.OrdinalIgnoreCase) &&
         TargetVms.SequenceEqual(next.TargetVms, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// THIS confirmed outcome with its DISPLAY-only fields re-read from <paramref name="next"/>, a freshly
+    /// evaluated result — or <b>null</b> when <paramref name="next"/> is not the same outcome and this
+    /// result therefore may not be refreshed in place.
+    ///
+    /// <para><b>What this exists for (issue #49 regression).</b> An adapter rename writes a FriendlyName
+    /// and nothing else: <c>adapterNames</c> is in <c>ConfigManager.NonNetworkProperties</c>, so the write
+    /// is correctly classified as not affecting the network and no re-evaluation runs. But the
+    /// re-evaluation that classification suppressed was ALSO the only thing that re-derived
+    /// <see cref="HostAdapterName"/> from the host and republished it, so after a rename the dashboard's
+    /// adapter row keeps rendering the name the adapter no longer has — issue #32's bug class (a display
+    /// name asserted from a stale read), reintroduced from the other end. This gives the rename a way to
+    /// refresh the DISPLAY without asking for the apply pass that #49 correctly took away.</para>
+    ///
+    /// <para><b>Why refreshing only the display fields is sound.</b> The guard is
+    /// <see cref="ConfirmsSameOutcomeFor"/> — the same predicate <c>NetworkMonitor</c> already trusts to
+    /// carry an outcome forward across a network change, and for the same reason: it establishes that the
+    /// rule, switch, host adapter and target VMs are unchanged AND that the last pass confirmed success,
+    /// so the outcome this result carries is still the true one and only the strings describing it can
+    /// have moved. Everything copied here is display-only by the type's own contract
+    /// (<see cref="HostAdapterName"/> is a FriendlyName, and the IP/gateway/DNS are read straight off the
+    /// adapter); everything load-bearing — <see cref="ApplyStatus"/>, <see cref="FailedVms"/>,
+    /// <see cref="VirtualSwitch"/>, <see cref="HostAdapterInterfaceName"/> — is kept from the confirmed
+    /// result, and is in any case equal by the guard.</para>
+    ///
+    /// <para><b>Why null rather than <paramref name="next"/> when the guard fails.</b> A disagreement means
+    /// something real moved (or the last apply failed and has not been retried), and that is the apply
+    /// path's business, not a rename's: publishing <paramref name="next"/> here would assert an intent
+    /// nobody applied, which is precisely what #37 removed. Null means "say nothing" — the next
+    /// <c>NetworkChange</c> owns it.</para>
+    /// </summary>
+    public MatchResult? WithRefreshedDisplayFrom(MatchResult next) =>
+        ConfirmsSameOutcomeFor(next)
+            ? this with
+              {
+                  HostAdapterName = next.HostAdapterName,
+                  HostIp          = next.HostIp,
+                  Gateway         = next.Gateway,
+                  DnsServers      = next.DnsServers,
+              }
+            : null;
 }
 
 /// <summary>Network details of the current primary host adapter, used by "Add current network" feature.</summary>
@@ -236,22 +278,49 @@ public static class AdapterMatcher
     }
 
     /// <summary>
+    /// A caller's already-enumerated adapter list bound to the one fact that decides whether it may be
+    /// reused: whether anything has touched the host's adapter set since it was read (see
+    /// <see cref="HostReadGeneration"/>).
+    ///
+    /// <para><b>Why they travel together.</b> The list and its currency were previously separate — the
+    /// list was passed, and its currency was expressed by the caller choosing to pass null instead. That
+    /// convention lived in one lambda and nothing checked it, so the gate below could not tell a current
+    /// list from a stale one and did not try. Pairing them makes the currency verdict an argument the
+    /// rule must consider rather than a promise the caller must remember to keep.</para>
+    /// </summary>
+    internal readonly record struct KnownAdapters(IReadOnlyList<PhysicalAdapterInfo> Adapters, bool IsCurrent);
+
+    /// <summary>
     /// True when <paramref name="known"/> — a list some caller enumerated earlier — may stand in for a
     /// fresh <see cref="GetPhysicalAdapters"/> sweep when renaming the adapter with
     /// <paramref name="interfaceGuid"/> (issue #50).
     ///
-    /// <para>It must both HAVE entries and contain the adapter in question. The second clause is the
-    /// load-bearing one: a list that does not describe the device being renamed is not a stale view of
-    /// the current device set, it is a view of a DIFFERENT one (a dock unplugged and another plugged in
-    /// since the read), and answering a uniqueness check from it would compare the new name against
-    /// names that are no longer on the host. Falling back to a live sweep costs a few hundred ms on a
-    /// path the user reaches a handful of times; getting this wrong costs two adapters with one name.</para>
+    /// <para><b><see cref="KnownAdapters.IsCurrent"/> is the load-bearing clause</b>, because this list is
+    /// not only the SUBJECT of the rename — it is also the set of COMPARANDS
+    /// (<see cref="OtherAdapterDisplayNames"/>) the dialog's uniqueness check runs against. Establishing
+    /// that the subject is present establishes nothing about them, and cannot: this flow's only call site
+    /// builds its rename buttons FROM this very list, so the subject is present by construction and a
+    /// membership test alone is a tautology that always says yes. Currency is a fact about the host and
+    /// time, never about the list's contents, so it can only ever arrive as an argument.</para>
     ///
-    /// <para>Pure — takes the list, not the host — so the rule is unit-testable without a NIC.</para>
+    /// <para>What that clause prevents, concretely: Settings is open with [Ethernet, Dock LAN]; the user
+    /// swaps to a different dock — this app's core use case, and it renames nothing, so nothing this app
+    /// did marks the list stale; the user then renames Ethernet to the NEW dock's description. The
+    /// comparands lack that name, the uniqueness check accepts, and two adapters end up carrying one
+    /// description — the ambiguity §5.5 requires the app to prevent and issue #32 exists to remove.
+    /// Falling back to a live sweep costs a few hundred ms on a path the user reaches a handful of times
+    /// (and no longer costs a Class-key walk at all — <see cref="ClassEntryCache"/> holds that); getting
+    /// this wrong costs two adapters with one name.</para>
+    ///
+    /// <para>The membership clause is kept as a second line of defence rather than as the test: a list
+    /// declared current that nevertheless lacks the adapter describes a different host than the caller
+    /// believes, and "I cannot see the subject" is never a reason to trust the comparands.</para>
+    ///
+    /// <para>Pure — takes the list and the verdict, not the host — so the rule is unit-testable without a NIC.</para>
     /// </summary>
-    internal static bool CanRenameFromKnownAdapters(IReadOnlyList<PhysicalAdapterInfo>? known, string interfaceGuid) =>
-        known is { Count: > 0 } &&
-        known.Any(p => p.InterfaceGuid.Equals(interfaceGuid, StringComparison.OrdinalIgnoreCase));
+    internal static bool CanRenameFromKnownAdapters(KnownAdapters? known, string interfaceGuid) =>
+        known is { IsCurrent: true, Adapters.Count: > 0 } k &&
+        k.Adapters.Any(p => p.InterfaceGuid.Equals(interfaceGuid, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// The DISPLAY names of every adapter except the one with <paramref name="interfaceGuid"/> — the
