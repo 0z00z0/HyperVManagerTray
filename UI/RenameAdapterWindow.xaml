@@ -11,7 +11,10 @@
     <Grid x:Name="Root">
         <StackPanel Padding="16,14,16,14" Spacing="8">
             <TextBlock x:Name="TitleText" FontSize="13" FontWeight="SemiBold"
-                       Text="Rename Network Adapter"/>
+                       Text="Rename Adapter Description"/>
+
+            <TextBlock x:Name="ScopeText" FontSize="11" TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
 
             <TextBlock x:Name="WarningText" FontSize="11" TextWrapping="Wrap"
                        Foreground="{ThemeResource SystemFillColorCautionBrush}"/>
@@ -24,8 +27,23 @@
 
             <TextBlock FontSize="11" Margin="0,4,0,0"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       Text="New name"/>
+                       Text="New description"/>
             <TextBox x:Name="InputBox" FontSize="12"/>
+
+            <!-- Inline validation (issue #40): the dialog is the single consent point, so a rejected
+                 name is reported in place rather than in yet another message box. Collapsed when valid
+                 so the window keeps its height. -->
+            <TextBlock x:Name="ErrorText" FontSize="11" TextWrapping="Wrap"
+                       Visibility="Collapsed"
+                       Foreground="{ThemeResource SystemFillColorCriticalBrush}"/>
+
+            <!-- The device-restart choice lives here (issue #40) — beside the warning it belongs to,
+                 at the moment of decision, instead of ambushing the user afterwards. -->
+            <CheckBox x:Name="RestartCheck" Margin="0,4,0,0" IsChecked="True"
+                      Content="Restart the adapter now to apply it everywhere"/>
+            <TextBlock x:Name="RestartHintText" FontSize="11" TextWrapping="Wrap"
+                       Margin="28,-6,0,0"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
 
             <Grid ColumnSpacing="8" Margin="0,6,0,0">
                 <Grid.ColumnDefinitions>

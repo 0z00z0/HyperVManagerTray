@@ -15,8 +15,22 @@ namespace HyperVManagerTray.UI;
 /// context menu into the Settings window (issue #18).  The safe, consent-gated write path
 /// (<see cref="AdapterRenamer"/>) is unchanged; this class just makes the orchestration reusable and
 /// keeps <c>TrayMenu</c> focused on quick actions.  Every user-facing message box goes through
-/// <see cref="NativeMethods"/> (safe from any thread); the one post-restart success/warning toast is
+/// <see cref="NativeMethods"/> (safe from any thread); the one post-restart outcome notification is
 /// marshalled back to the UI thread via the captured <see cref="DispatcherQueue"/>.</para>
+///
+/// <para><b>One consent, one outcome (issue #40).</b> A completed rename used to cost up to four
+/// stacked dialogs — the rename window, a From/To confirm, a restart prompt, then an outcome box. That
+/// is consent theatre: by the second box the user is pattern-matching "yes, yes, yes", which is the
+/// worst possible state for a device-mutating action that drops the link. The consent stack is now
+/// exactly one dialog (<see cref="RenameAdapterWindow"/>, carrying the full consequence and the restart
+/// checkbox) followed by exactly one outcome notification. The happy path shows no intermediate boxes
+/// at all; the remaining <see cref="NativeMethods"/> calls here are hard-failure paths only.</para>
+///
+/// <para><b>What was collapsed was the consent, NOT the verification.</b> The write still re-reads the
+/// value from disk and throws on a mismatch (<see cref="AdapterRenamer.WriteFriendlyName"/>), and the
+/// post-restart path still re-reads it again before the outcome is decided. Because the outcome is now
+/// the single thing the user reads, that verification matters more, not less — see
+/// <see cref="ApplyDeviceRestart"/>.</para>
 /// </summary>
 internal sealed class AdapterRenameFlow
 {
@@ -129,15 +143,22 @@ internal sealed class AdapterRenameFlow
             return;
         }
 
+        // The dialog IS the consent (issue #40): clicking Rename/Reset consented to the write, and the
+        // checkbox consented to the restart. Both are recorded here as the single consent event, then the
+        // flow proceeds with no further prompting.
         if (result.Choice == RenameDialogChoice.Reset)
         {
-            UiActivityLog.Logger.LogInformation("Rename flow: reset requested for '{Adapter}'", adapter.DisplayName);
-            await ResetAdapterNameAsync(adapter, deviceInstanceId, existing!);
+            UiActivityLog.Logger.LogInformation(
+                "Rename flow: consent — reset requested for '{Adapter}' (restart now: {Restart})",
+                adapter.DisplayName, result.RestartNow);
+            await ResetAdapterNameAsync(adapter, deviceInstanceId, existing!, result.RestartNow);
         }
         else
         {
-            UiActivityLog.Logger.LogInformation("Rename flow: rename requested for '{Adapter}' → '{NewName}'", adapter.DisplayName, result.NewName);
-            await ApplyRenameAsync(adapter, deviceInstanceId, result.NewName!, existing, factoryDescription);
+            UiActivityLog.Logger.LogInformation(
+                "Rename flow: consent — rename requested for '{Adapter}' → '{NewName}' (restart now: {Restart})",
+                adapter.DisplayName, result.NewName, result.RestartNow);
+            await ApplyRenameAsync(adapter, deviceInstanceId, result.NewName!, existing, factoryDescription, result.RestartNow);
         }
     }
 
@@ -145,23 +166,14 @@ internal sealed class AdapterRenameFlow
     /// The device's DeviceDesc-derived factory description (null when it could not be derived), read
     /// once by <see cref="RunAsync"/>. Ground truth for the saved original — see issue #33.
     /// </param>
+    /// <param name="restartNow">The restart consent from the dialog's checkbox (issue #40).</param>
     private async Task ApplyRenameAsync(
         PhysicalAdapterInfo adapter, string deviceInstanceId, string newName, AdapterNameOverride? existing,
-        string? factoryDescription)
+        string? factoryDescription, bool restartNow)
     {
-        if (!NativeMethods.Confirm(
-                "Rename this network adapter's description?\n\n" +
-                $"  From :  {adapter.DisplayName}\n" +
-                $"  To   :  {newName}\n\n" +
-                "This changes the description everywhere Windows shows it. To appear everywhere the " +
-                "adapter may need to be disabled/enabled or the PC restarted, which will briefly drop " +
-                "this adapter's network connection.",
-                AppName))
-        {
-            UiActivityLog.Logger.LogInformation("Rename flow: rename confirmation declined for '{Adapter}'", adapter.DisplayName);
-            return;
-        }
-
+        // No confirmation box here (issue #40): the dialog already showed the From/To, the system-wide
+        // effect and the link drop, and the user clicked Rename against all of it. Re-asking the same
+        // question is what trains the click-through this flow needs the user NOT to be doing.
         try
         {
             // Persist the true original BEFORE the first write so Reset can always restore it (§5.4).
@@ -190,7 +202,8 @@ internal sealed class AdapterRenameFlow
                 await Task.Run(() => _config.UpsertAdapterName(existing));
             }
 
-            // ★ DEVICE-MUTATING WRITE ★ (SetupAPI, parameterized — no shell). Consent captured above.
+            // ★ DEVICE-MUTATING WRITE ★ (parameterized registry set — no shell). Consent = the dialog's
+            // Rename click. Throws unless the value is re-read from disk and matches (issue #15).
             await Task.Run(() => AdapterRenamer.WriteFriendlyName(deviceInstanceId, newName));
         }
         catch (Exception ex)
@@ -200,32 +213,30 @@ internal sealed class AdapterRenameFlow
             return;
         }
 
-        UiActivityLog.Logger.LogInformation("Rename flow: FriendlyName written for '{Adapter}' → '{NewName}'", adapter.DisplayName, newName);
-        OfferDeviceRestart(deviceInstanceId, newName);
+        UiActivityLog.Logger.LogInformation("Rename flow: FriendlyName written and verified for '{Adapter}' → '{NewName}'", adapter.DisplayName, newName);
+        ApplyDeviceRestart(deviceInstanceId, newName, restartNow);
     }
 
+    /// <param name="restartNow">The restart consent from the dialog's checkbox (issue #40).</param>
     private async Task ResetAdapterNameAsync(
-        PhysicalAdapterInfo adapter, string deviceInstanceId, AdapterNameOverride existing)
+        PhysicalAdapterInfo adapter, string deviceInstanceId, AdapterNameOverride existing, bool restartNow)
     {
         if (existing.OriginalWasAbsent || string.IsNullOrEmpty(existing.OriginalFriendlyName))
         {
-            // Defensive: Reset should be disabled in this case. Never delete — it could leave two
+            // Defensive: Reset is disabled in the dialog in this case. Never delete — it could leave two
             // identically-named adapters (§5.4).
+            UiActivityLog.Logger.LogWarning(
+                "Rename flow: reset requested for '{Adapter}' with no original to restore — no changes made",
+                adapter.DisplayName);
             NativeMethods.Info(
                 "This adapter had no custom description originally, so there is nothing to restore. " +
-                "The app won't delete the name automatically.",
+                "The app won't delete the description automatically.",
                 AppName);
             return;
         }
 
-        if (!NativeMethods.Confirm(
-                "Restore this adapter's original description?\n\n" +
-                $"  Current  :  {adapter.DisplayName}\n" +
-                $"  Restore  :  {existing.OriginalFriendlyName}\n\n" +
-                "The adapter may need a restart or reboot to update everywhere, briefly dropping its connection.",
-                AppName))
-            return;
-
+        // No confirmation box here (issue #40): the dialog's Reset button carries the original name in
+        // its tooltip and sits beside the same warning the rename does. The click is the consent.
         try
         {
             existing.CurrentFriendlyName = existing.OriginalFriendlyName;
@@ -237,64 +248,71 @@ internal sealed class AdapterRenameFlow
         catch (Exception ex)
         {
             UiActivityLog.Logger.LogWarning("Rename flow: reset write failed for '{Adapter}'", adapter.DisplayName);
-            NativeMethods.Error($"Could not restore the original name:\n{ex.Message}", AppName);
+            NativeMethods.Error($"Could not restore the original description:\n{ex.Message}", AppName);
             return;
         }
 
-        UiActivityLog.Logger.LogInformation("Rename flow: original name restored for '{Adapter}' → '{NewName}'", adapter.DisplayName, existing.OriginalFriendlyName);
-        OfferDeviceRestart(deviceInstanceId, existing.OriginalFriendlyName);
+        UiActivityLog.Logger.LogInformation("Rename flow: original description restored and verified for '{Adapter}' → '{NewName}'", adapter.DisplayName, existing.OriginalFriendlyName);
+        ApplyDeviceRestart(deviceInstanceId, existing.OriginalFriendlyName, restartNow);
     }
 
     /// <summary>
-    /// After a successful FriendlyName write, offers to disable/enable the adapter so the change
-    /// propagates immediately (warning about the brief link drop), or defer it to a later reboot.
+    /// After a successful, on-disk-verified FriendlyName write, either restarts the device so the change
+    /// propagates immediately or defers it — then shows <b>the one outcome notification</b> the user gets
+    /// (issue #40). No prompt: <paramref name="restartNow"/> is the consent already captured by the
+    /// dialog's checkbox, whose text carries the link-drop consequence.
+    ///
+    /// <para><b>The verification is the point (issue #15/#40).</b> Success is never reported for an
+    /// attempt — only for a description re-read from disk AFTER the device cycle and found to match.
+    /// The verdict and its wording live in <see cref="AdapterNameRules.DescribeRestartOutcome"/> so that
+    /// rule is unit-testable without a device; this method only performs the I/O and shows the result.</para>
     /// </summary>
-    private void OfferDeviceRestart(string deviceInstanceId, string appliedName)
+    private void ApplyDeviceRestart(string deviceInstanceId, string appliedName, bool restartNow)
     {
-        bool restart = NativeMethods.Confirm(
-            $"The adapter description was set to \"{appliedName}\".\n\n" +
-            "Some places may still show the old name until the adapter is restarted. " +
-            "Restart (disable + enable) this adapter now?\n\n" +
-            "Your network connection on this adapter will drop for a few seconds. " +
-            "Choose No to apply it later — a PC restart will also pick it up.",
-            AppName);
-
-        if (!restart)
+        if (!restartNow)
         {
-            UiActivityLog.Logger.LogInformation("Rename flow: device restart deferred (name '{Name}')", appliedName);
-            NativeMethods.Info(
-                "The new name is saved. Restart the adapter or reboot to see it everywhere.", AppName);
+            // Honest "saved", not "applied": the write is verified on disk (WriteFriendlyName throws
+            // otherwise), but nothing has re-read it into NDIS yet.
+            UiActivityLog.Logger.LogInformation("Rename flow: device restart declined in dialog — description '{Name}' saved, not yet live", appliedName);
+            Show(AdapterNameRules.DescribeDeferredOutcome(appliedName));
             return;
         }
 
-        UiActivityLog.Logger.LogInformation("Rename flow: restarting device to apply name '{Name}'", appliedName);
+        UiActivityLog.Logger.LogInformation("Rename flow: restarting device to apply description '{Name}'", appliedName);
         _ = Task.Run(() =>
         {
+            AdapterNameRules.RenameOutcome outcome;
             try
             {
                 // ★ DEVICE-MUTATING ★ Disable + enable to force NDIS to re-read the description.
                 AdapterRenamer.RestartDevice(deviceInstanceId);
 
-                // Confirm the name is still on disk after the cycle before claiming success — a PnP
+                // Confirm the description is still on disk after the cycle before claiming success — a PnP
                 // re-enumeration could, in principle, have regenerated it (issue #15: never report a
                 // success we haven't verified).
                 var (present, current) = AdapterDeviceRegistry.ReadFriendlyName(deviceInstanceId);
-                if (AdapterNameRules.FriendlyNameApplied(present, current, appliedName))
-                    _ui.TryEnqueue(() => NativeMethods.Info(
-                        "Adapter restarted. The new name should now appear everywhere.", AppName));
-                else
-                    _ui.TryEnqueue(() => NativeMethods.Warn(
-                        "The adapter was restarted, but the name on disk is now " +
-                        (present ? $"\"{current}\"" : "absent") +
-                        $" instead of \"{appliedName}\" — Windows may have reset it. Try renaming again " +
-                        "or reboot to re-apply.", AppName));
+                outcome = AdapterNameRules.DescribeRestartOutcome(present, current, appliedName);
             }
             catch (Exception ex)
             {
-                _ui.TryEnqueue(() => NativeMethods.Warn(
-                    "The name was saved, but the adapter could not be restarted automatically:\n" +
-                    $"{ex.Message}\n\nRestart the adapter manually or reboot to apply it.", AppName));
+                outcome = AdapterNameRules.DescribeRestartFailure(appliedName, ex.Message);
             }
+
+            UiActivityLog.Logger.LogInformation(
+                "Rename flow: verified outcome for description '{Name}' — {Outcome}", appliedName, outcome.Kind);
+
+            _ui.TryEnqueue(() => Show(outcome));
         });
+    }
+
+    /// <summary>
+    /// Shows the single outcome notification. The mismatch and restart-failure cases stay real warnings;
+    /// the verified success and the user's own deferred choice are plain information. The message text is
+    /// the outcome's own — this method never composes a claim of its own.
+    /// </summary>
+    private static void Show(AdapterNameRules.RenameOutcome outcome)
+    {
+        if (outcome.NeedsAttention) NativeMethods.Warn(outcome.Message, AppName);
+        else                        NativeMethods.Info(outcome.Message, AppName);
     }
 }
