@@ -16,8 +16,8 @@ namespace HyperVManagerTray.Services;
 /// thread pool (MTA). The UI never calls into WMI directly — it subscribes to <see cref="StatusesChanged"/>
 /// and <see cref="OperationProgress"/> and marshals to its dispatcher. Nothing blocks the UI thread.
 ///
-/// Phase 1 scope: status, metrics, power, guest IPs. Switch binding / host-vNIC repair stay on the
-/// PowerShell worker in <see cref="HyperVManager"/> (Phase 2).
+/// Scope: status, metrics, power, guest IPs. Switch binding / host-vNIC repair live in
+/// <see cref="HyperVManager"/>, which is also native WMI (issue #17).
 /// </summary>
 public sealed class VmService : IDisposable
 {

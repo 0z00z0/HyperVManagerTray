@@ -163,6 +163,7 @@ The tray menu is the **quick-command surface**; the Settings window is the compl
 | **Override VM switch (until next network change) ▶** | Force a managed VM onto a specific switch — transient, undone by the next network change |
 | **Manage VMs ▶** | Every VM on the host as a checkable list: a checkmark means this app manages it. Click an unmanaged VM to start managing it, a managed one to stop (with one confirmation) |
 | **Settings…** | Opens the [Settings window](#settings-window) |
+| **Check for updates** | Runs an update check now and reports the answer either way — including "you're up to date", which the badge above can never say |
 | **About…** | Version, links, licences, check for updates |
 | **Exit** | Stops the application |
 

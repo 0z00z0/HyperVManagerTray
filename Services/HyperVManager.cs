@@ -9,7 +9,7 @@ namespace HyperVManagerTray.Services;
 /// switch onto a physical adapter, and collapsing duplicate host (management-OS) vNICs — implemented on
 /// native WMI (<c>System.Management</c> against <c>root\virtualization\v2</c>).
 ///
-/// <para><b>Phase 2 (issue #17): PowerShell eliminated.</b> This class previously drove three
+/// <para><b>PowerShell eliminated (issue #17).</b> This class previously drove three
 /// <c>powershell.exe</c> cmdlet operations (<c>Connect-VMNetworkAdapter</c>, <c>Set-VMSwitch</c>) through
 /// a persistent Base64 worker. It now talks to the Hyper-V WMI providers directly, the same way
 /// <see cref="VmService"/> does for status/metrics/power — removing the ~80 MB idle worker, the 1-2 s

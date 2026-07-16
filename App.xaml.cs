@@ -20,7 +20,7 @@ public partial class App : Application
     private ILoggerFactory? _loggerFactory;
     private LogLevelSwitch? _logLevelSwitch;   // live minimum level for all file logs (issue #22)
     private ConfigManager?  _config;
-    private HyperVManager?  _hyperV;   // Phase 1: switch binding / host-vNIC repair only (PowerShell)
+    private HyperVManager?  _hyperV;   // switch binding / host-vNIC repair (native WMI, issue #17)
     private VmService?      _vm;       // VM status/metrics/power/IPs via WMI
     private NetworkMonitor? _monitor;
     private StartupManager  _startup = null!;
