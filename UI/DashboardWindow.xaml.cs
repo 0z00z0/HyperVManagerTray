@@ -889,9 +889,16 @@ public sealed partial class DashboardWindow : Window
     /// </summary>
     private async Task ConnectAsync(VmTarget vm)
     {
+        // Read ONCE and use that value everywhere below, including the log. _monitor.LastApplied is a
+        // plain non-volatile field written by NetworkMonitor's own thread, so re-reading it after the
+        // await could return a different result than the one this connect bound against — and the log
+        // line would then name a different switch than the balloon the user just read, in the very file
+        // that balloon tells them to consult.
+        var appliedSwitch = _monitor.LastApplied?.VirtualSwitch;
+
         var result = await VmConnectFlow.RunAsync(
             vm.Name,
-            _monitor.LastApplied?.VirtualSwitch,
+            appliedSwitch,
             sw     => _hyperV.ApplySwitchAsync(vm.Name, vm.NicName, sw),
             // Same channel and same reasoning as the tray's manual network actions (App.InitTrayIcon):
             // a balloon, NOT suppressed by a visible dashboard. The dashboard is by definition visible
@@ -899,14 +906,25 @@ public sealed partial class DashboardWindow : Window
             // this report entirely, which is the failure mode issue #37's FailureAnnouncer rule 2 was
             // written about. A modal dialog was the alternative and is worse: it would block the console
             // the user asked for behind an OK button.
-            message => _notify($"{AppInfo.Name} — {vm.Name}", message, true),
+            //
+            // The Task.Yield is what makes VmConnectFlow's ordering rule real rather than aspirational.
+            // _notify reaches App.ShowBalloon, whose whole body is _ui.TryEnqueue(...) — it QUEUES the
+            // balloon at Normal priority and returns, so without this the balloon would still be sitting
+            // in the queue while Process.Start put vmconnect in the foreground. Yielding posts this
+            // continuation through the same DispatcherQueue at the same priority, which is FIFO, so
+            // resuming here means the balloon's callback has already run.
+            async message =>
+            {
+                _notify($"{AppInfo.Name} — {vm.Name}", message, true);
+                await Task.Yield();
+            },
             ()      => Shell.OpenVmConnect(vm.Name));
 
         if (result.Error is not null)
             UiActivityLog.Logger.LogWarning(result.Error, "Connect: switch bind threw for '{Vm}'", vm.Name);
         else if (result.Bind == VmConnectFlow.BindStep.Failed)
             UiActivityLog.Logger.LogWarning("Connect: could not confirm '{Vm}' on switch '{Switch}'; connecting anyway",
-                                            vm.Name, _monitor.LastApplied?.VirtualSwitch);
+                                            vm.Name, appliedSwitch);
     }
 
     private async Task StartAndConnectAsync(VmTarget vm)

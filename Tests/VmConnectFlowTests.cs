@@ -1,4 +1,5 @@
 using HyperVManagerTray.Helpers;
+using HyperVManagerTray.Services;
 using Xunit;
 
 namespace HyperVManagerTray.Tests;
@@ -40,8 +41,39 @@ public class VmConnectFlowTests
             return Task.FromException<bool>(ex);
         };
 
-        public Action<string> Warn => m => { Events.Add("warn"); Warnings.Add(m); };
-        public Action Launch        => () => Events.Add("launch");
+        /// <summary>True once the report has actually reached the user, as opposed to merely being queued.</summary>
+        public bool WarnShown;
+
+        /// <summary>
+        /// Whether the report had been SHOWN at the instant vmconnect launched. Sampled inside
+        /// <see cref="Launch"/>, synchronously, which is what makes the ordering assertion deterministic:
+        /// it is a fact about the moment of launch, not a comparison of two list positions that a
+        /// still-pending continuation may or may not have reached by the time the test looks.
+        /// </summary>
+        public bool? LaunchedAfterReport;
+
+        /// <summary>
+        /// A report channel that does NOT finish synchronously — which is the only kind production has.
+        /// <c>App.ShowBalloon</c>'s entire body is <c>_ui.TryEnqueue(…)</c>, so the balloon appears on a
+        /// later dispatcher turn; a delegate that recorded "warn" and returned would model a channel the
+        /// app does not own, and that is exactly how these tests came to assert an ordering production
+        /// never produced (code review, 2026-07-16). "warn-queued" is the call; "warn-shown" is the
+        /// report actually reaching the user, and the flow must not launch vmconnect between the two.
+        /// </summary>
+        public Func<string, Task> Warn => async m =>
+        {
+            Events.Add("warn-queued");
+            await Task.Yield();
+            WarnShown = true;
+            Events.Add("warn-shown");
+            Warnings.Add(m);
+        };
+
+        public Action Launch => () =>
+        {
+            LaunchedAfterReport = WarnShown;
+            Events.Add("launch");
+        };
     }
 
     // ── The bug itself ───────────────────────────────────────────────────────────
@@ -120,6 +152,14 @@ public class VmConnectFlowTests
     /// The warning must land BEFORE vmconnect does. vmconnect takes foreground focus, so a balloon raised
     /// after it competes with a window that has just grabbed the user's attention — the report would
     /// technically fire and still not be read.
+    ///
+    /// <para><b>This test was green and wrong, which is the point of its current shape.</b> It asserted
+    /// exactly this ordering while production did the opposite: <c>warn</c> was an <c>Action</c> over
+    /// <c>App.ShowBalloon</c>, which only enqueues, whereas <c>launchVmConnect</c> starts a process
+    /// synchronously — so vmconnect always won. The test passed because its own <c>warn</c> delegate was
+    /// synchronous, i.e. it modelled a channel the app does not have. <see cref="Recorder.Warn"/> now
+    /// completes on a later turn like the real one, and asserting "warn-shown" precedes "launch" is
+    /// therefore a claim about the app rather than about the double.</para>
     /// </summary>
     [Fact]
     public async Task RunAsync_FailedBindWarnsBeforeLaunchingTheConsole()
@@ -127,7 +167,32 @@ public class VmConnectFlowTests
         var r = new Recorder();
         await VmConnectFlow.RunAsync(Vm, Switch, r.Apply(false), r.Warn, r.Launch);
 
-        Assert.Equal(["apply", "warn", "launch"], r.Events);
+        Assert.Equal(["apply", "warn-queued", "warn-shown", "launch"], r.Events);
+    }
+
+    /// <summary>
+    /// The same rule as the invariant rather than the sequence: the console must not open until the report
+    /// has actually been SHOWN. A fire-and-forget <c>_ = warn(message);</c> — the realistic regression, and
+    /// the one that compiles without even a CS4014 warning — fails here.
+    ///
+    /// <para><b>Why the flag and not the event list.</b> The obvious version of this test compares the
+    /// positions of "warn-shown" and "launch" in <see cref="Recorder.Events"/>, and it is worthless: under
+    /// the fire-and-forget mutation "warn-shown" is never recorded at all, so <c>IndexOf</c> returns -1,
+    /// -1 is less than everything, and the test PASSES on the exact bug it was written for. (It did. The
+    /// mutation check caught it.) Sampling <see cref="Recorder.WarnShown"/> inside the launch delegate
+    /// asks the question at the only moment it has an answer, and cannot be raced.</para>
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_DoesNotLaunchUntilTheReportIsActuallyShown()
+    {
+        var r = new Recorder();
+        await VmConnectFlow.RunAsync(Vm, Switch, r.Apply(false), r.Warn, r.Launch);
+
+        Assert.True(r.LaunchedAfterReport,
+            "vmconnect launched before the failed-bind report reached the user. VmConnectFlow must AWAIT "
+          + "warn, not call it: the app's report channel (App.ShowBalloon) only enqueues the balloon, so "
+          + "an un-awaited call lets Process.Start take the foreground first — see the ordering note on "
+          + "VmConnectFlow. Events were: " + string.Join(" → ", r.Events));
     }
 
     // ── The ordinary paths ───────────────────────────────────────────────────────
@@ -227,5 +292,32 @@ public class VmConnectFlowTests
         Assert.Contains("anyway", msg);
         // "virtual switch", never a bare "switch" beside "network" (issue #42's pinned vocabulary).
         Assert.Contains("virtual switch", msg);
+    }
+
+    /// <summary>
+    /// The two places that report "these VMs are not on that switch" must say it with ONE sentence, not
+    /// two literals that happen to match today.
+    ///
+    /// <para><b>Why this is asserted rather than commented.</b> <see cref="NetworkStatusUi"/> committed to
+    /// this in prose — "deliberately the same sentence … because it is the same fact" — while holding it
+    /// as two separate string literals, so the comment asserted an invariant nothing enforced. Fixing the
+    /// bare-"switch" vocabulary in one, or repointing "switcher.log" after the #20/#21 log split, would
+    /// have changed one and silently left the other reading differently about the same fact. The two are
+    /// now built from one private helper; this pins that from the outside, where a re-duplication is
+    /// visible.</para>
+    /// </summary>
+    [Fact]
+    public void ConnectBindFailedMessage_SharesItsSentenceWithTheApplyPassReport()
+    {
+        // The same fact from the automatic side: one VM, same switch, VM-connect failed.
+        var applyReport = NetworkStatusUi.FailureMessage(
+            new MatchResult("Office LAN", Switch, [Vm])
+            {
+                ApplyStatus = NetworkStatusUi.SwitchApplyStatus.VmConnectFailed,
+                FailedVms   = [Vm],
+            });
+
+        Assert.NotNull(applyReport);
+        Assert.StartsWith(applyReport, NetworkStatusUi.ConnectBindFailedMessage(Vm, Switch), StringComparison.Ordinal);
     }
 }

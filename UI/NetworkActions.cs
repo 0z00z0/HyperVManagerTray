@@ -71,7 +71,7 @@ internal sealed class NetworkActions
             {
                 // Busy/disposed/threw — we genuinely don't know the outcome, so say that rather than
                 // report a re-check that may never have run.
-                _notify($"{AppName} — network", "Could not re-check the network right now — see switcher.log.", true);
+                _notify($"{AppName} — network", NetworkStatusUi.ReCheckUnavailableMessage(), true);
                 return;
             }
 
@@ -85,7 +85,7 @@ internal sealed class NetworkActions
         catch (Exception ex)
         {
             UiActivityLog.Logger.LogWarning(ex, "Re-check network failed");
-            _notify($"{AppName} — network", $"Re-check failed: {ex.Message}", true);
+            _notify($"{AppName} — network", NetworkStatusUi.ReCheckUnexpectedErrorMessage(ex.Message), true);
         }
     }
 
@@ -117,7 +117,7 @@ internal sealed class NetworkActions
         catch (Exception ex)
         {
             UiActivityLog.Logger.LogWarning(ex, "Override switch failed for {Vm}", vmName);
-            _notify($"{AppName} — {vmName}", $"Override failed: {ex.Message}", true);
+            _notify($"{AppName} — {vmName}", NetworkStatusUi.OverrideUnexpectedErrorMessage(vmName, ex.Message), true);
         }
     }
 
@@ -143,32 +143,44 @@ internal sealed class NetworkActions
                 return;
             }
 
-            var repaired = new List<string>();
-            bool anyError = false;
+            // Collect what happened to EACH switch and let NetworkStatusUi compose the report. This used
+            // to be an if/else chain right here, which is how it came to say three untrue things — most
+            // sharply, NoSwitch (the configured switch does not exist on the host) matched neither the
+            // "repaired" nor the "error" arm and so fell into the else, reporting a clean bill of health
+            // for a switch that was never found. Nothing here decides what to SAY any more; this loop only
+            // reports what it saw, and the pure class is where the claims are made and tested.
+            var outcomes = new List<NetworkStatusUi.RepairStepOn>();
             foreach (var sw in switches)
             {
                 var state = await _hyperV.RepairHostVNicAsync(sw).ConfigureAwait(true);
-                if (state is HyperVManager.HostVNicState.Repaired or HyperVManager.HostVNicState.Reshared)
-                    repaired.Add(sw);
-                else if (state == HyperVManager.HostVNicState.Error)
-                    anyError = true;
+                outcomes.Add(new NetworkStatusUi.RepairStepOn(sw, StepFor(state)));
             }
 
-            // A repair that fixed something reports the fix even if another switch errored: the collapse
-            // is a confirmed fact and the user's link is coming back. The error still reaches switcher.log.
-            if (repaired.Count > 0)
-                _notify(NetworkTitle, NetworkStatusUi.RepairedMessage(repaired), false);
-            else if (anyError)
-                _notify(NetworkTitle, NetworkStatusUi.RepairFailedMessage(), true);
-            else
-                _notify(NetworkTitle, NetworkStatusUi.RepairNothingToDoMessage(), false);
+            var report = NetworkStatusUi.RepairReportFor(outcomes);
+            _notify(NetworkTitle, report.Message, report.IsError);
         }
         catch (Exception ex)
         {
             UiActivityLog.Logger.LogWarning(ex, "Repair host networking failed");
-            _notify(NetworkTitle, $"Repair failed: {ex.Message}", true);
+            _notify(NetworkTitle, NetworkStatusUi.RepairUnexpectedErrorMessage(ex.Message), true);
         }
     }
+
+    /// <summary>
+    /// Maps the WMI mutator's per-switch outcome to the pure reporting enum. The only line in this class
+    /// that knows both types, and deliberately total: a new <c>HostVNicState</c> lands in the
+    /// <see cref="NetworkStatusUi.RepairStep.Failed"/> arm — "we do not know that this worked" — rather
+    /// than defaulting into a success or a silent no-op, which is the same never-optimistic-by-default
+    /// rule <see cref="NetworkStatusUi.IconFor"/> and <see cref="NetworkStatusUi.FromBindOutcome"/> hold.
+    /// </summary>
+    private static NetworkStatusUi.RepairStep StepFor(HyperVManager.HostVNicState state) => state switch
+    {
+        HyperVManager.HostVNicState.Ok       => NetworkStatusUi.RepairStep.Inspected,
+        HyperVManager.HostVNicState.Repaired => NetworkStatusUi.RepairStep.Collapsed,
+        HyperVManager.HostVNicState.Reshared => NetworkStatusUi.RepairStep.ShareRestored,
+        HyperVManager.HostVNicState.NoSwitch => NetworkStatusUi.RepairStep.SwitchNotFound,
+        _                                    => NetworkStatusUi.RepairStep.Failed,   // Error, and any future member
+    };
 
     /// <summary>
     /// "Add current network" — captures the LIVE host network (adapter description, MAC, IPv4 subnet) and
@@ -197,7 +209,7 @@ internal sealed class NetworkActions
         catch (Exception ex)
         {
             UiActivityLog.Logger.LogWarning(ex, "Add current network failed");
-            _notify(NetworkTitle, $"Could not add the current network: {ex.Message}", true);
+            _notify(NetworkTitle, NetworkStatusUi.AddRuleUnexpectedErrorMessage(ex.Message), true);
         }
     }
 
