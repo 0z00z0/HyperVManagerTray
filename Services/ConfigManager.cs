@@ -1,10 +1,41 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Models;
 using Microsoft.Extensions.Logging;
 
 namespace HyperVManagerTray.Services;
+
+/// <summary>
+/// What a <see cref="ConfigManager.ConfigReloaded"/> subscriber is told: the freshly-loaded config, and
+/// whether the reload actually changed anything the <see cref="NetworkMonitor"/> acts on (issue #49).
+///
+/// <para>Before this existed, every subscriber got only the config and had to assume the worst. The
+/// NetworkMonitor's "worst" is a full NIC enumeration plus a registry Class-key walk that can reach
+/// <c>UpdateSwitchBindingAsync</c> — i.e. <b>a cosmetic write could move a real VM's switch</b>. So
+/// changing the log level, or saving the Settings window's position, re-evaluated the network. Two
+/// separate agents independently built private opt-outs around that (a <c>raiseReloaded: false</c>
+/// parameter, and a UI-side re-entrancy guard justified by it); this event arg replaces the need for
+/// either by answering the question at the one place that can actually answer it — the config store,
+/// which is the only thing that sees both the before and the after.</para>
+/// </summary>
+public sealed class ConfigReloadedEventArgs(AppConfig config, bool affectsNetwork) : EventArgs
+{
+    /// <summary>The newly-loaded config — the same object as <see cref="ConfigManager.Current"/>.</summary>
+    public AppConfig Config { get; } = config;
+
+    /// <summary>
+    /// True when this reload changed at least one field the <see cref="NetworkMonitor"/> consumes, so it
+    /// must re-evaluate. <b>Conservatively true</b>: see <see cref="ConfigManager.AffectsNetwork"/> — a
+    /// false here is a positive assertion that nothing network-relevant moved, and it is earned by
+    /// comparing everything EXCEPT an explicit list of known-cosmetic fields.
+    ///
+    /// <para>Subscribers other than the NetworkMonitor should ignore this and refresh regardless: it
+    /// answers "must the network be re-evaluated?", not "did anything change?".</para>
+    /// </summary>
+    public bool AffectsNetwork { get; } = affectsNetwork;
+}
 
 /// <summary>
 /// Loads <c>config.json</c>, exposes the current <see cref="AppConfig"/>, and watches the file
@@ -46,10 +77,11 @@ public sealed class ConfigManager : IDisposable
     // so a ConfigReloaded subscriber that re-enters on the same thread can't self-deadlock.
     private readonly object _saveLock = new();
 
-    /// <summary>Raised after the config is reloaded (file change or rule addition). NOT raised when a
-    /// reload FAILED — see <see cref="OnDebounceElapsed"/>: nothing was reloaded, so telling subscribers
-    /// otherwise would hand them stale data dressed as fresh (issue #39).</summary>
-    public event EventHandler<AppConfig>? ConfigReloaded;
+    /// <summary>Raised after the config is reloaded (file change or rule addition), carrying WHAT the
+    /// reload means — see <see cref="ConfigReloadedEventArgs.AffectsNetwork"/> (issue #49). NOT raised
+    /// when a reload FAILED — see <see cref="OnDebounceElapsed"/>: nothing was reloaded, so telling
+    /// subscribers otherwise would hand them stale data dressed as fresh (issue #39).</summary>
+    public event EventHandler<ConfigReloadedEventArgs>? ConfigReloaded;
 
     /// <summary>
     /// Raised (at most once per broken save — see <see cref="_failureAnnounced"/>) when an unsolicited
@@ -139,6 +171,11 @@ public sealed class ConfigManager : IDisposable
     private void OnDebounceElapsed(object? _)
     {
         _logger.LogInformation("Config file changed — reloading");
+        // Snapshot BEFORE Load swaps _config, so the reload can be classified against what it replaced
+        // (issue #49). A hand-edit to config.json is classified by exactly the same rule as an in-app
+        // write — editing the file's logLevel by hand must no more re-evaluate the network than the
+        // Settings combo that writes the same field.
+        var before  = _config;
         var outcome = Load();
 
         if (!outcome.Succeeded)
@@ -155,7 +192,7 @@ public sealed class ConfigManager : IDisposable
         }
 
         // No re-arm here: Load() already cleared _failureAnnounced when it succeeded, for every caller.
-        try { ConfigReloaded?.Invoke(this, _config); }
+        try { ConfigReloaded?.Invoke(this, new ConfigReloadedEventArgs(_config, AffectsNetwork(before, _config))); }
         catch (Exception ex) { _logger.LogError(ex, "A ConfigReloaded subscriber threw an exception"); }
     }
 
@@ -473,12 +510,14 @@ public sealed class ConfigManager : IDisposable
     /// Settings without moving it doesn't rewrite the file.
     /// </summary>
     /// <remarks>
-    /// Deliberately does NOT raise <see cref="ConfigReloaded"/> (<c>raiseReloaded: false</c>): a window
-    /// rect has no bearing on any subscriber, and the only two subscribers would both misbehave — the
-    /// <see cref="NetworkMonitor"/> would schedule a pointless network re-evaluation (which can move a
-    /// VM's switch) every time Settings is closed, and an open Settings window would rebuild all of its
-    /// sections in response to its own write.  Throws on a write failure like the other mutators; the
-    /// caller (a <c>Closed</c> handler) is expected to swallow it — a lost rect is cosmetic.
+    /// This mutator used to pass <c>raiseReloaded: false</c> to keep the <see cref="NetworkMonitor"/> from
+    /// re-evaluating the network — moving a VM's switch — every time the user closed Settings. That
+    /// opt-out is gone (issue #49) and nothing replaced it at this call site: the rect properties are
+    /// named in <see cref="NonNetworkProperties"/>, so <see cref="ConfigReloadedEventArgs.AffectsNetwork"/>
+    /// comes out false for this write on its own and the monitor stands down without being told to. The
+    /// point of the change is that this is now a fact about the DATA rather than a promise each mutator
+    /// has to remember to make.  Throws on a write failure like the other mutators; the caller (a
+    /// <c>Closed</c> handler) is expected to swallow it — a lost rect is cosmetic.
     ///
     /// <para><b>Cosmetic, but not harmless if it races.</b> This runs on the UI thread from
     /// <c>OnClosed</c>, at the exact moment the window's last LostFocus commit may still be in flight on
@@ -501,8 +540,73 @@ public sealed class ConfigManager : IDisposable
                 With(settingsWindowRect: rect),
                 $"Settings window rect {rect.Width}×{rect.Height} at ({rect.X},{rect.Y}) saved to {_configPath}");
         },
-        "Failed to save the Settings window rect",
-        raiseReloaded: false);
+        "Failed to save the Settings window rect");
+
+    // ── "Does this reload matter to the network?" (issue #49) ──────────────────────────────────────
+
+    /// <summary>
+    /// The config.json property names (camelCase, exactly as <see cref="WriteOptions"/> writes them) that
+    /// the <see cref="NetworkMonitor"/> demonstrably does NOT read. Determined by reading every
+    /// <c>_config.Current</c> access the monitor makes, transitively:
+    /// <list type="bullet">
+    /// <item><c>AdapterMatcher.Evaluate(_config.Current)</c> → <c>Rules</c> + <c>Fallback</c>.</item>
+    /// <item><c>ApplyAsync</c> → <c>VirtualMachines</c> (a target's <c>NicName</c> is what
+    ///   <c>ApplySwitchAsync</c> binds) and <c>Rules</c> (a matched rule's <c>AutoStart</c>/<c>TargetVms</c>
+    ///   start VMs).</item>
+    /// <item><c>ScheduleDisconnectActions</c> → <c>VirtualMachines</c> (<c>OnBridgeLostAction</c> and its
+    ///   delay can PAUSE/SAVE/SHUT DOWN a VM).</item>
+    /// </list>
+    /// Everything else — the verbosity gate, the saved adapter-rename originals, the Settings window's
+    /// rect — is never read on any path the monitor can reach.
+    ///
+    /// <para><b>This list is the exclusion, not the inclusion, and that direction is the entire safety
+    /// argument.</b> <see cref="NetworkProjection"/> compares the serialised config with exactly these
+    /// names removed, so every OTHER property — including one added to <see cref="AppConfig"/> tomorrow by
+    /// someone who never reads this comment — lands in the comparison automatically and triggers a
+    /// re-evaluation. Getting a skip wrong strands a VM with no network, silently; getting a
+    /// re-evaluation wrong costs a NIC enumeration. So a skip must be EARNED by naming a field here after
+    /// checking the monitor doesn't read it; the default, for anything unclassified, is to re-evaluate.</para>
+    /// </summary>
+    internal static readonly string[] NonNetworkProperties =
+    [
+        "logLevel",            // the live verbosity gate (issue #22) — applied by Load, read by the loggers
+        "adapterNames",        // saved original adapter descriptions (issue #15) — read by the rename dialog
+        "settingsWindowX",     // the Settings window's rect (issue #31) — read by WindowPlacement only
+        "settingsWindowY",
+        "settingsWindowWidth",
+        "settingsWindowHeight",
+    ];
+
+    /// <summary>
+    /// Whether the move from <paramref name="before"/> to <paramref name="after"/> touched anything the
+    /// <see cref="NetworkMonitor"/> acts on — i.e. whether this reload is allowed to move a VM's switch.
+    /// See <see cref="NonNetworkProperties"/> for how the answer is derived and why it defaults to true.
+    /// </summary>
+    internal static bool AffectsNetwork(AppConfig before, AppConfig after) =>
+        !string.Equals(NetworkProjection(before), NetworkProjection(after), StringComparison.Ordinal);
+
+    /// <summary>
+    /// The config as JSON with the <see cref="NonNetworkProperties"/> stripped out — a structural
+    /// fingerprint of "everything the network cares about".
+    ///
+    /// <para>Deliberately built by serialising and REMOVING, rather than by hand-copying the three
+    /// interesting fields into a new object. A hand-built projection is the same trap as
+    /// <see cref="With"/>: a field it forgets to name reads as "unchanged" on both sides and compares
+    /// equal — which here would mean silently never re-evaluating for it. Serialising means a property
+    /// only escapes the comparison by being named above, on purpose.</para>
+    ///
+    /// <para>Reuses <see cref="WriteOptions"/> so the fingerprint is over exactly the shape that reaches
+    /// the file, and <see cref="Load"/> sorts rules by priority on both sides, so two configs that differ
+    /// only in the order rules were written compare equal — correctly: the monitor evaluates them sorted.
+    /// Runs at most once per config write over a file of a few KB; the pass it may save enumerates every
+    /// NIC on the host.</para>
+    /// </summary>
+    private static string NetworkProjection(AppConfig config)
+    {
+        var node = JsonSerializer.SerializeToNode(config, WriteOptions)!.AsObject();
+        foreach (var name in NonNetworkProperties) node.Remove(name);
+        return node.ToJsonString();
+    }
 
     /// <summary>What a mutator decided to write: the whole-config snapshot, and the line to log once it
     /// lands. Returned by the builder <see cref="SaveAndReload"/> runs INSIDE the save lock.</summary>
@@ -510,10 +614,16 @@ public sealed class ConfigManager : IDisposable
 
     /// <summary>
     /// Runs <paramref name="build"/> and, if it asked for a write, serialises its snapshot to config.json,
-    /// reloads, and (unless <paramref name="raiseReloaded"/> is false) raises <see cref="ConfigReloaded"/>
-    /// — with the watcher paused so the write itself doesn't trigger a second, debounced reload.  On
-    /// failure the error is logged and rethrown so the caller can surface it.  Shared by every
-    /// config-mutating method.
+    /// reloads, and raises <see cref="ConfigReloaded"/> — with the watcher paused so the write itself
+    /// doesn't trigger a second, debounced reload.  On failure the error is logged and rethrown so the
+    /// caller can surface it.  Shared by every config-mutating method.
+    ///
+    /// <para>Every successful write raises the event; what it does NOT do is make each mutator guess who
+    /// cares (issue #49). The event carries <see cref="ConfigReloadedEventArgs.AffectsNetwork"/>, computed
+    /// here from the before/after configs, so a mutator cannot forget to opt out of a network
+    /// re-evaluation it had no business triggering — there is nothing left to remember. This replaced a
+    /// <c>raiseReloaded: false</c> parameter that <see cref="SaveSettingsWindowRect"/> had to pass by
+    /// hand, whose real cost was the next cosmetic mutator that didn't.</para>
     /// </summary>
     /// <param name="build">
     /// Builds the snapshot to write, or returns <c>null</c> to write nothing (the mutator found its value
@@ -539,18 +649,18 @@ public sealed class ConfigManager : IDisposable
     /// answered against the same config the snapshot is built from.</para>
     /// </param>
     /// <param name="failureMessage">Message logged if the write throws.</param>
-    /// <param name="raiseReloaded">
-    /// False to persist and refresh <see cref="Current"/> without notifying subscribers — for a write
-    /// no subscriber cares about (see <see cref="SaveSettingsWindowRect"/>).  Defaults to true so every
-    /// existing caller keeps its current behaviour.
-    /// </param>
-    private void SaveAndReload(Func<SaveRequest?> build, string failureMessage, bool raiseReloaded = true)
+    private void SaveAndReload(Func<SaveRequest?> build, string failureMessage)
     {
         // Serialise the whole build+write+reload so concurrent saves queue rather than clobbering each
         // other. The build is inside deliberately — see the <paramref name="build"/> remarks.
         lock (_saveLock)
         {
             if (build() is not { } request) return;   // nothing to write
+
+            // The config this write replaces. Captured inside the lock, before the write, for the same
+            // reason the builder runs inside it: it is a read of _config, and it must pair with the
+            // snapshot that is about to be written, not with one a concurrent mutator has since replaced.
+            var before = _config;
 
             _watcher.EnableRaisingEvents = false;
             try
@@ -569,7 +679,7 @@ public sealed class ConfigManager : IDisposable
                     return;
                 }
 
-                if (raiseReloaded) ConfigReloaded?.Invoke(this, _config);
+                ConfigReloaded?.Invoke(this, new ConfigReloadedEventArgs(_config, AffectsNetwork(before, _config)));
             }
             catch (Exception ex)
             {

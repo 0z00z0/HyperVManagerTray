@@ -69,17 +69,46 @@ public sealed class NetworkMonitor : IDisposable
 
         NetworkChange.NetworkAddressChanged += OnNetworkChanged;
         NetworkChange.NetworkAvailabilityChanged += OnNetworkChanged;
-        _config.ConfigReloaded += (_, _) => Schedule();
+        _config.ConfigReloaded += OnConfigReloaded;
     }
 
     /// <summary>Triggers an immediate first evaluation (called once at startup).</summary>
-    public void Start() => Schedule();
+    public void Start() => Schedule(0);
+
+    /// <summary>
+    /// A config reload re-evaluates ONLY when it moved something this monitor acts on — the rules, the
+    /// fallback, or the managed VMs (issue #49). Every config write used to land here, so setting the log
+    /// level in Settings ran a full NIC enumeration and a registry Class-key walk, and could reach
+    /// <see cref="HyperVManager.UpdateSwitchBindingAsync"/>: a cosmetic change moving a real VM's switch.
+    ///
+    /// <para><b>The classification is not made here, deliberately.</b> This monitor sees only the new
+    /// config; only <see cref="ConfigManager"/> sees the before AND the after, so only it can say what
+    /// changed. It errs toward true — see <see cref="ConfigManager.AffectsNetwork"/> — which is the right
+    /// direction: a re-evaluation that wasn't needed costs an enumeration, a skipped one that WAS needed
+    /// leaves a VM on the wrong switch (or none) and says nothing.</para>
+    /// </summary>
+    private void OnConfigReloaded(object? sender, ConfigReloadedEventArgs e)
+    {
+        if (!e.AffectsNetwork)
+        {
+            _logger.LogDebug("Config reloaded, but nothing this monitor acts on changed — not re-evaluating");
+            return;
+        }
+
+        // 250 ms, not 0 — a deliberate choice, not the inherited immediacy (issue #49). The rules editor
+        // commits each control edit separately, so one logical edit ("retarget this rule") arrives as a
+        // burst of writes; at 0 each one started its own pass. This coalesces the burst into one. It is a
+        // DELAY, never a skip: every reload still evaluates, ~a quarter-second later than the save — far
+        // below the several seconds the enumeration and bind themselves take. The single-flight _evalLock
+        // already prevents overlap, but it can only merge passes that collide; this stops them starting.
+        Schedule(250);
+    }
 
     private void OnNetworkChanged(object? sender, EventArgs e) =>
         _debounceTimer.Change(1500, Timeout.Infinite);
 
-    private void Schedule() =>
-        _debounceTimer.Change(0, Timeout.Infinite);
+    private void Schedule(int dueMs) =>
+        _debounceTimer.Change(dueMs, Timeout.Infinite);
 
     private async void OnDebounceElapsed(object? _)
     {
@@ -501,6 +530,10 @@ public sealed class NetworkMonitor : IDisposable
     {
         NetworkChange.NetworkAddressChanged -= OnNetworkChanged;
         NetworkChange.NetworkAvailabilityChanged -= OnNetworkChanged;
+        // Now unsubscribable, because the handler is a method rather than the closure it used to be:
+        // a disposed monitor no longer keeps itself alive through ConfigManager's event, nor arms a
+        // disposed timer when a config write lands during shutdown.
+        _config.ConfigReloaded -= OnConfigReloaded;
         _debounceTimer.Dispose();
         CancelDisconnectActions();
         _evalLock.Dispose();
