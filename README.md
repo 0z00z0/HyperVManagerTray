@@ -315,11 +315,17 @@ Every third-party package the app references (`HyperVManagerTray.csproj`):
 | [Microsoft.Windows.SDK.BuildTools](https://www.nuget.org/packages/Microsoft.Windows.SDK.BuildTools) | 10.0.28000.1839 | Microsoft | Windows SDK build tooling for the App SDK | MS-EULA¹ |
 | [H.NotifyIcon.WinUI](https://github.com/HavenDV/H.NotifyIcon) | 2.4.1 | HavenDV | System-tray icon + native context menu for WinUI 3 | MIT |
 | [System.Drawing.Common](https://www.nuget.org/packages/System.Drawing.Common) | 10.0.8 | Microsoft | Renders the tray `.ico` at runtime | MIT |
-| [Microsoft.Extensions.Logging](https://www.nuget.org/packages/Microsoft.Extensions.Logging) | 10.0.8 | Microsoft | Logging abstraction; output goes to a small custom file sink | MIT |
+| [Microsoft.Extensions.Logging](https://www.nuget.org/packages/Microsoft.Extensions.Logging) | 10.0.8 | Microsoft | Logging abstraction the whole app codes against; the sink behind it is NLog | MIT |
+| [NLog](https://nlog-project.org/) | 6.1.4 | Jarek Kowalski, Kim Christensen, Julian Verdurmen (NLog Project) | File sink behind the logging abstraction — writes `switcher.log` / `vm-power.log` / `ui.log` and rotates them at 2 MB (issue #55) | BSD-3-Clause² |
 | [System.Management](https://www.nuget.org/packages/System.Management) | 10.0.8 | Microsoft | WMI access (`root\virtualization\v2`) for VM status/power and switch binding — replaced the earlier PowerShell path | MIT |
 
 ¹ The NuGet packages ship under the Microsoft Software License Terms; the Windows App SDK
 *source* is MIT on [GitHub](https://github.com/microsoft/WindowsAppSDK).
+
+² NLog is Copyright © 2004-2026 NLog Project — <https://nlog-project.org/>. BSD-3-Clause requires the
+copyright notice, the licence text and the disclaimer to travel with redistributions, and forbids using
+the NLog name to endorse this app; the full text is at
+[LICENSE.txt](https://github.com/NLog/NLog/blob/master/LICENSE.txt).
 
 The only **non-Microsoft** runtime dependency is **H.NotifyIcon.WinUI** (the tray icon — used the
 same way as in the sibling ChargeKeeper app).
@@ -347,6 +353,9 @@ workspace subfolder and points the `ZeroZeroSharedDir` MSBuild property at it (s
 - **[H.NotifyIcon](https://github.com/HavenDV/H.NotifyIcon)** by **HavenDV** (MIT) — the WinUI 3
   tray-icon support this whole app hangs off. It continues the earlier
   [Hardcodet NotifyIcon for WPF](https://github.com/hardcodet/wpf-notifyicon) by Philipp Sumi.
+- **[NLog](https://nlog-project.org/)** by the **NLog Project** — Jarek Kowalski, Kim Christensen and
+  Julian Verdurmen (BSD-3-Clause, Copyright © 2004-2026) — the file sink behind every log this app
+  writes, and the log rotation that replaced a hand-rolled writer which had none.
 - **[0z0-shared](https://github.com/0z00z0/0z0-shared)** (MIT) — ZeroZero Software's shared
   branding/components library provides the About window (see [Shared components](#shared-components)).
 - **[fsharplu](https://github.com/microsoft/fsharplu)** (Microsoft, MIT) — its
@@ -381,8 +390,21 @@ Logs are written to `%APPDATA%\HyperVManagerTray\`, split by concern:
 | `ui.log` | Tray-menu commands, window open/close, rename-flow events, and interactive-path latency |
 
 One setting governs all three: the log level in **Settings → General** (or `logLevel` in
-`config.json`); `None` silences them. A crash additionally writes `crash.log` in the same folder.
-All files are openable from **Settings → Maintenance**.
+`config.json`); `None` silences them, and a change applies immediately — no restart. A crash
+additionally writes `crash.log` in the same folder. All files are openable from
+**Settings → Maintenance**.
+
+**Rotation** (issue #55). Each log rotates at **2 MB**, keeping **5** archives beside it
+(`switcher_00.log`, `switcher_01.log`, …), oldest discarded first. The live file always keeps its own
+name, so the Maintenance links always open the current log. That bounds each log at ~12 MB and the set
+at ~36 MB; before this they grew without limit.
+
+Rotation bounds a log's *size*; it cannot repair one already damaged. A log whose head has become NUL
+bytes — an append NTFS sized but whose data a power cut never committed to disk, which is what happened
+to `switcher.log` on the dev machine — is repaired at startup: the NUL run is dropped and the surviving
+entries are kept, so the history is salvaged rather than discarded. Note this failure mode is a property
+of buffered file writes and not of the old sink specifically: NLog flushes to the same OS cache and can
+produce it again, which is why the repair exists rather than being assumed away.
 
 **Latency lines** (`ui.log`) exist to answer "why did that feel slow" with numbers rather than
 impressions. The startup milestones — time from process start to the tray icon, and to the icon first
