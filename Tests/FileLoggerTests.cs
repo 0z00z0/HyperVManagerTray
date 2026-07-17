@@ -186,4 +186,140 @@ public class FileLoggerTests : IDisposable
         Assert.Contains("debug-after", text);
         Assert.DoesNotContain("error-after-none", text);
     }
+
+    // The specific way the NLog migration (issue #55) could silently break the live switch: every NLog
+    // rule is pinned to Trace precisely so the switch is the ONLY gate. Raise a rule's minimum to Info
+    // and the switch would still SAY Trace is enabled while NLog quietly dropped the line — the shipped
+    // no-restart feature half-working, with nothing to notice it. Lowering to Trace at runtime must put
+    // a Trace line in the file.
+    [Fact]
+    public void LogLevelSwitch_LoweredToTraceLive_ActuallyDeliversTraceAndDebugLines()
+    {
+        var sw = new LogLevelSwitch(LogLevel.Information);
+        using (var p = new FileLoggerProvider(_path, categoryPaths: null, levelSwitch: sw))
+        {
+            var logger = p.CreateLogger("cat");
+
+            logger.LogTrace("trace-while-info");   // below Information → dropped
+
+            sw.MinimumLevel = LogLevel.Trace;      // live change, same logger instance
+            logger.LogTrace("trace-after-switch"); // must reach the file, not be eaten by an NLog rule
+            logger.LogDebug("debug-after-switch");
+        }
+
+        var text = File.ReadAllText(_path);
+        Assert.DoesNotContain("trace-while-info", text);
+        Assert.Contains("trace-after-switch", text);
+        Assert.Contains("debug-after-switch", text);
+    }
+
+    // ── Log line format ─────────────────────────────────────────────────────────
+
+    // The level renders from the MEL level name, not NLog's: the logs must keep saying "Information",
+    // not switch to NLog's "Info" vocabulary halfway through a file across the upgrade.
+    [Fact]
+    public void LogLine_UsesMelLevelNames_AndSubSecondTimestamp()
+    {
+        using (var p = new FileLoggerProvider(_path))
+        {
+            p.CreateLogger("cat").LogInformation("hello");
+            p.CreateLogger("cat").LogWarning("careful");
+            p.CreateLogger("cat").LogCritical("boom");
+        }
+
+        var text = File.ReadAllText(_path);
+        Assert.Contains("[Information]", text);
+        Assert.Contains("[Warning    ]", text);   // padded to the same width as before
+        Assert.Contains("[Critical   ]", text);
+        Assert.DoesNotContain("[Info ", text);    // NLog's own vocabulary must not leak through
+        Assert.DoesNotContain("[Fatal", text);
+
+        // yyyy-MM-dd HH:mm:ss.ffff — the old sink stamped whole seconds only (issue #54's report).
+        Assert.Matches(@"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{4} \[Information\] cat: hello$",
+                       File.ReadAllLines(_path)[0]);
+    }
+
+    // An exception still lands under its line, as the old sink's "\n{exception}" did.
+    [Fact]
+    public void LogLine_WithException_WritesTheExceptionUnderTheMessage()
+    {
+        using (var p = new FileLoggerProvider(_path))
+            p.CreateLogger("cat").LogError(new InvalidOperationException("the-cause"), "the-message");
+
+        var text = File.ReadAllText(_path);
+        Assert.Contains("cat: the-message", text);
+        Assert.Contains("InvalidOperationException", text);
+        Assert.Contains("the-cause", text);
+    }
+
+    // ── Rotation (issue #55) ────────────────────────────────────────────────────
+
+    // The bug this issue exists for: switcher.log/vm-power.log/ui.log grew without bound. Writes past
+    // the real production cap must archive the file and start a fresh one — no test-only cap, so the
+    // 2 MB constant the app actually ships with is what gets proven here.
+    //
+    // The second half matters as much as the first, and is subtler: the log must still be AT the path
+    // it is supposed to be at. NLog 6's default (no ArchiveFileName) bounds the size perfectly well
+    // while leaving switcher.log holding the oldest lines and writing new ones to switcher_01.log —
+    // rotation "working" and AppInfo.LogFile / Settings' "Switcher log" link quietly pointing at dead
+    // history. A size-only assertion passes straight through that.
+    [Fact]
+    public void Rotation_WhenLogGrowsPastTheCap_ArchivesOldContentAndKeepsTheLiveFileAtItsOwnPath()
+    {
+        // ~4 KB per line, so the 2 MB cap is passed in a few hundred writes rather than ~20 000.
+        var padding   = new string('x', 4096);
+        var lineCount = (int)(FileLoggerProvider.ArchiveAboveSizeBytes / 4096) + 200;
+
+        using (var p = new FileLoggerProvider(_path))
+        {
+            var logger = p.CreateLogger("cat");
+            for (int i = 0; i < lineCount; i++) logger.LogInformation("line {I} {Pad}", i, padding);
+        }
+
+        var archives = Archives();
+
+        // It rotated at all …
+        Assert.NotEmpty(archives);
+        // … the live log is still exactly where the app says it is …
+        Assert.True(File.Exists(_path), "the live log vanished from its own path — NLog rotated the writer away from it");
+        // … it is bounded …
+        Assert.True(new FileInfo(_path).Length < FileLoggerProvider.ArchiveAboveSizeBytes,
+            $"live log is {new FileInfo(_path).Length} bytes — it should have been archived at the cap");
+
+        // … and it is the file holding the NEWEST lines, not an abandoned stub of the oldest ones.
+        var live = File.ReadAllText(_path);
+        Assert.Contains($"cat: line {lineCount - 1} ", live);
+        Assert.DoesNotContain("cat: line 0 ", live);
+
+        // The rotated-away history is kept, not discarded.
+        Assert.Contains("cat: line 0 ", File.ReadAllText(archives.OrderBy(a => a).First()));
+    }
+
+    // Retention: the archives are capped too, or rotation would just rename the unbounded growth.
+    [Fact]
+    public void Rotation_KeepsAtMostMaxArchiveFiles()
+    {
+        var padding   = new string('x', 4096);
+        // Enough to roll over the cap several more times than MaxArchiveFiles allows to keep.
+        var lineCount = (int)(FileLoggerProvider.ArchiveAboveSizeBytes / 4096)
+                        * (FileLoggerProvider.MaxArchiveFiles + 3);
+
+        using (var p = new FileLoggerProvider(_path))
+        {
+            var logger = p.CreateLogger("cat");
+            for (int i = 0; i < lineCount; i++) logger.LogInformation("line {I} {Pad}", i, padding);
+        }
+
+        Assert.InRange(Archives().Length, 1, FileLoggerProvider.MaxArchiveFiles);
+    }
+
+    /// <summary>The rotated archives beside <see cref="_path"/>, registered for cleanup.</summary>
+    private string[] Archives()
+    {
+        var archives = Directory.GetFiles(
+            Path.GetDirectoryName(_path)!,
+            Path.GetFileNameWithoutExtension(_path) + "_*.log");
+        _extraPaths.AddRange(archives);
+        return archives;
+    }
 }

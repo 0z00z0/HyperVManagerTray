@@ -87,6 +87,10 @@
          (a read that started before a change landing after it and being trusted) testable at all. -->
     <Compile Include="..\Helpers\HostReadGeneration.cs" Link="Linked\HostReadGeneration.cs" />
     <Compile Include="..\Services\FileLogger.cs"      Link="Linked\FileLogger.cs" />
+    <!-- Issue #55: repairs a log file whose head a power cut turned into NUL bytes. Required by the
+         linked FileLogger.cs, which salvages each path before NLog opens a handle on it. Pure file IO
+         over a path handed in — temp files are all its tests need. -->
+    <Compile Include="..\Services\LogFileSalvage.cs"  Link="Linked\LogFileSalvage.cs" />
     <Compile Include="..\Models\AppConfig.cs"         Link="Linked\AppConfig.cs" />
     <Compile Include="..\Models\NetworkRule.cs"       Link="Linked\NetworkRule.cs" />
     <Compile Include="..\Models\VmTarget.cs"          Link="Linked\VmTarget.cs" />
@@ -105,6 +109,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.8" />
+    <!-- Required by the linked FileLogger.cs, whose sink is now NLog (issue #55). -->
+    <PackageReference Include="NLog" Version="6.1.4" />
     <PackageReference Include="System.Drawing.Common" Version="10.0.8" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
