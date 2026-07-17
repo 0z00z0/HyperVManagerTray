@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http;
 using H.NotifyIcon;
 using Microsoft.Extensions.Logging;
@@ -39,6 +40,10 @@ public partial class App : Application
     private TrayIconState? _iconState;
     private System.Drawing.Icon? _iconImage;
 
+    // Latches the issue #54 startup milestone for the icon leaving grey, so it is logged once per process
+    // and not on every later state change. UI-thread only (set inside OnSwitchApplied's TryEnqueue body).
+    private bool _iconMeaningfulLogged;
+
     // Last tooltip text actually posted, so event-driven rebuilds only touch the UI on a real change
     // (VmService raises StatusesChanged on every refresh, incl. the dashboard's 2.5 s metrics loop).
     private string? _lastTooltip;
@@ -60,6 +65,14 @@ public partial class App : Application
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
+        // Issue #54, item 3, measured HERE and emitted later. #54 specifies logging this at OnLaunched's
+        // first line, which cannot be done as written: UiActivityLog.Logger is a NullLogger until it is
+        // assigned further down (after the config read builds the LoggerFactory), so the call would emit
+        // nothing at all. Splitting the measurement from the emission keeps the boundary the issue asked
+        // for — a clock read is all that is possible this early anyway — and the line is written the
+        // moment there is somewhere to write it. Cheap and ungated: one DateTime read, once per process.
+        var onLaunchedAt = DateTime.Now;
+
         // Handlers FIRST, before anything that can throw: a WinUI tray app that throws on the
         // dispatcher thread otherwise dies silently (stowed exception in CoreMessagingXP.dll) with
         // nothing in the log. Registering first also lets a UI-thread startup exception be marked
@@ -135,6 +148,11 @@ public partial class App : Application
             // ConfigManager's settings-change lines. Set the static UI gateway before any UI exists.
             var uiLog = _loggerFactory.CreateLogger("ui");
             UI.UiActivityLog.Logger = uiLog;
+
+            // The first thing written to ui.log, now that there is a logger: the OnLaunched moment
+            // captured at the top of this method. Its elapsed is the runtime + WinUI framework share of
+            // startup — everything before our first executable line — which #52 could only infer.
+            LogStartupMilestone("OnLaunched entered", onLaunchedAt);
 
             _exeDir  = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
 
@@ -305,9 +323,106 @@ public partial class App : Application
                                  ShowBalloon(title, message, isError, suppressWhenDashboardVisible: false));
         _trayIcon.ContextFlyout     = _menu.Flyout;
         _trayIcon.LeftClickCommand  = new RelayCommand(ToggleDashboard);
-        _trayIcon.RightClickCommand = new RelayCommand(() => _menu!.RefreshState());
+        _trayIcon.RightClickCommand = new RelayCommand(OnTrayRightClick);
 
         _trayIcon.ForceCreate();
+
+        // Issue #54 milestone. ForceCreate() has returned, so Shell_NotifyIcon(NIM_ADD) was accepted —
+        // "created", deliberately not "visible": when the shell paints it (or whether it folds it into
+        // the overflow chevron) is not something this process is told.
+        LogStartupMilestone("tray icon created (shell accepted the add)");
+    }
+
+    // ── Interactive-path instrumentation (issue #54) ────────────────────────────
+
+    /// <summary>Entry timestamp of the previous right-click, for the idle gap on the next one. See below.</summary>
+    private long _lastRightClickTicks;
+
+    /// <summary>
+    /// The tray right-click handler. Its ONLY behaviour is <c>_menu.RefreshState()</c>, exactly as before
+    /// issue #54 — everything else here is measurement, and this method must stay that way. #54 exists
+    /// because #52's page-in hypothesis is unfalsifiable without numbers; a change that altered the timing
+    /// while adding the timers would make the first measurement worthless.
+    ///
+    /// <para><b>What this can and cannot see.</b> H.NotifyIcon's default <c>ContextMenuMode</c> is
+    /// <c>PopupMenu</c> (verified against the 2.4.1 package: "This value is the default value"), so the
+    /// order is shell message → <c>RightClickCommand</c> (us) → H.NotifyIcon converts the
+    /// <c>MenuFlyout</c> to a native Win32 menu and calls <c>TrackPopupMenuEx</c>. We are handed control
+    /// once, before the menu exists, and are never called back once it does. So <b>menu-open latency
+    /// cannot be measured from in here at all</b>, and this method does not pretend to: it reports the
+    /// rebuild, which is ours, and refuses to call it the menu's.</para>
+    ///
+    /// <para><b>How it makes #52 falsifiable anyway</b>, without measuring the thing directly: by
+    /// correlation across consecutive lines. Working set at entry says how much of the process was
+    /// resident when the click landed; the idle gap says how long Windows had to trim it. #52 predicts a
+    /// first-click-after-idle line at a low working set followed, seconds later, by one several times
+    /// higher — the pages faulted back in by the very open that felt slow. If instead both lines sit at
+    /// the same working set after a long idle, the page-in theory is dead and the cause is elsewhere.
+    /// Either way the log answers it, which today's cannot.</para>
+    ///
+    /// <para><b>Cost when logging is off: nothing measurable.</b> The disabled path is the original one
+    /// line plus a timestamp read (<c>Stopwatch.GetTimestamp</c> — a counter read, no syscall). The
+    /// working-set read is a real Win32 call and is gated behind <c>IsEnabled</c>; so is composing the
+    /// line, since the string is the expensive part and the level switch may be about to discard it.</para>
+    /// </summary>
+    private void OnTrayRightClick()
+    {
+        // Unconditional, and cheap enough to be: it makes the gap honest. Were this tracked only on the
+        // enabled path, the reported gap after a spell at a quieter log level would be the time since the
+        // last LOGGED right-click — silently over-reporting idle, which is the one covariate #52 turns on.
+        var now      = Stopwatch.GetTimestamp();
+        var previous = _lastRightClickTicks;
+        _lastRightClickTicks = now;
+
+        if (!UiActivityLog.Logger.IsEnabled(LogLevel.Debug))
+        {
+            _menu!.RefreshState();
+            return;
+        }
+
+        // Read before doing any work of our own — twice over. It is the honest boundary (the question is
+        // what the click ARRIVED to, not what our own rebuild grew it to), and it keeps this Win32 call
+        // outside the timed region below, so the one figure this method reports cannot be inflated by the
+        // act of measuring it.
+        var workingSet = Environment.WorkingSet;
+
+        var sw = Stopwatch.StartNew();
+        _menu!.RefreshState();
+        sw.Stop();
+
+        var sincePrevious = previous == 0
+            ? (TimeSpan?)null
+            : Stopwatch.GetElapsedTime(previous, now);
+
+        UiActivityLog.Logger.LogDebug("{Event}",
+            LatencyLog.RightClickLine(sw.Elapsed.TotalMilliseconds, workingSet, sincePrevious));
+    }
+
+    /// <summary>
+    /// Emits a startup milestone as elapsed since the OS process start (issue #54, item 3).
+    ///
+    /// <para><see cref="Process.StartTime"/> rather than a timestamp taken in <c>Main</c>, deliberately:
+    /// #52's finding is that ~2 s of the ~2 s to a visible icon is runtime + WinUI framework startup that
+    /// runs before any line of ours could execute. A baseline captured in our own code would exclude
+    /// exactly the share that dominates the number, and would report a flattering ~0 ms.</para>
+    ///
+    /// <para>Information, not Debug: startup happens once, so these cost nothing per-interaction, and #52
+    /// needed them on an ordinary boot rather than one staged with the verbosity turned up. The
+    /// <c>Process</c> read is behind the level check regardless. Never throws — a milestone is diagnostic,
+    /// and <see cref="Process.StartTime"/> can throw if the process is exiting underneath us.</para>
+    /// </summary>
+    private static void LogStartupMilestone(string milestone, DateTime? measuredAt = null)
+    {
+        if (!UiActivityLog.Logger.IsEnabled(LogLevel.Information)) return;
+
+        try
+        {
+            using var self   = Process.GetCurrentProcess();
+            var elapsed      = (measuredAt ?? DateTime.Now) - self.StartTime;
+            UiActivityLog.Logger.LogInformation("{Event}", LatencyLog.StartupLine(
+                milestone, elapsed.TotalMilliseconds, SelfHealWatchdog.IsAutoRelaunch));
+        }
+        catch { /* instrumentation must never affect the thing it measures, least of all fatally */ }
     }
 
     // ── Switch-applied → update icon + open dashboard ───────────────────────────
@@ -328,6 +443,19 @@ public partial class App : Application
                 {
                     _iconState = state;
                     SetTrayIcon(state);
+
+                    // Issue #54, item 3 — the milestone that matters to the user, logged where the fact
+                    // actually becomes true rather than inferred by subtracting switcher.log timestamps
+                    // across files (which is what #52 had to do to arrive at "~8 s", and at second
+                    // resolution). Unknown is the grey "we have not established this" state the icon
+                    // starts in (issue #37), so the first state that is NOT Unknown is the moment the
+                    // icon first means something — success or failure alike. #52's real complaint is the
+                    // length of that grey window; this is the number for it.
+                    if (!_iconMeaningfulLogged && state != TrayIconState.Unknown)
+                    {
+                        _iconMeaningfulLogged = true;
+                        LogStartupMilestone($"tray icon first showed an established state ({state})");
+                    }
                 }
                 _dashboard?.OnSwitchApplied(result);
             }
@@ -420,17 +548,40 @@ public partial class App : Application
     private void ShowBalloon(string title, string message, bool isError, bool suppressWhenDashboardVisible,
                              Action? onShown = null)
     {
+        // Issue #54, item 2. Measured from HERE — before the hop — because the delay under suspicion is
+        // the hop itself: ShowBalloon is called from background threads (apply passes, VM power outcomes,
+        // config reloads), and a UI thread that is busy or paged out is what would hold the toast. Gated
+        // at the post, so a disabled log costs one counter read on a path that runs at balloon rates.
+        bool trace       = UiActivityLog.Logger.IsEnabled(LogLevel.Debug);
+        long enqueuedAt  = trace ? Stopwatch.GetTimestamp() : 0;
+
         _ui.TryEnqueue(() =>
         {
             try
             {
                 if (suppressWhenDashboardVisible && _dashboard is { } d && d.AppWindow.IsVisible) return;
                 if (_trayIcon is null) return;   // nothing was shown — onShown must not claim otherwise
+
+                // Both early returns are ABOVE this line on purpose: a suppressed or dropped balloon has
+                // no latency to report, and timing one would put a "shown after N ms" line in the log for
+                // a toast that never existed — the same overclaim onShown is documented to avoid.
+                var queued        = trace ? Stopwatch.GetElapsedTime(enqueuedAt) : TimeSpan.Zero;
+                long handoffStart = trace ? Stopwatch.GetTimestamp() : 0;
+
                 _trayIcon.ShowNotification(
                     title: title,
                     message: message,
                     icon: isError ? H.NotifyIcon.Core.NotificationIcon.Error
                                   : H.NotifyIcon.Core.NotificationIcon.Info);
+
+                // Re-checked rather than trusting `trace`: the level is live (issue #22) and may have been
+                // turned down during the hop. Composing a line the switch is about to discard is the one
+                // cost this instrumentation is not allowed to impose.
+                if (trace && UiActivityLog.Logger.IsEnabled(LogLevel.Debug))
+                    UiActivityLog.Logger.LogDebug("{Event}", LatencyLog.BalloonLine(
+                        title, queued.TotalMilliseconds,
+                        Stopwatch.GetElapsedTime(handoffStart).TotalMilliseconds));
+
                 onShown?.Invoke();
             }
             catch (Exception ex) { LogCrash("Tray balloon", ex); }

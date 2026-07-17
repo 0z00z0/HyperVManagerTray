@@ -21,6 +21,11 @@
     <Compile Include="..\Helpers\DefaultConfig.cs"    Link="Linked\DefaultConfig.cs" />
     <Compile Include="..\Helpers\ConfigLoadUi.cs"     Link="Linked\ConfigLoadUi.cs" />
     <Compile Include="..\Helpers\UptimeFormatter.cs"  Link="Linked\UptimeFormatter.cs" />
+    <!-- Issue #54: the log lines the tray/balloon/startup latency diagnosis will be read off. Pure
+         numbers→text (the callers do the measuring and hand the figures in), which is exactly what makes
+         the boundary caveats on each line — the part that stops a rebuild figure being read as menu-open
+         latency — assertable here rather than trusted. -->
+    <Compile Include="..\Helpers\LatencyLog.cs"       Link="Linked\LatencyLog.cs" />
     <Compile Include="..\Helpers\WmiVmMapper.cs"      Link="Linked\WmiVmMapper.cs" />
     <!-- Pure state→UI decisions for VM power controls (issue #30). Depends only on VmOperation. -->
     <Compile Include="..\Helpers\VmStateUi.cs"        Link="Linked\VmStateUi.cs" />

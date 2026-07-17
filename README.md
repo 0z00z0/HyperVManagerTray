@@ -378,11 +378,25 @@ Logs are written to `%APPDATA%\HyperVManagerTray\`, split by concern:
 |---|---|
 | `switcher.log` | Switch changes, rule evaluation, network events, errors — the catch-all |
 | `vm-power.log` | A begin + outcome audit line for every VM power action, with its origin |
-| `ui.log` | Tray-menu commands, window open/close, rename-flow events |
+| `ui.log` | Tray-menu commands, window open/close, rename-flow events, and interactive-path latency |
 
 One setting governs all three: the log level in **Settings → General** (or `logLevel` in
 `config.json`); `None` silences them. A crash additionally writes `crash.log` in the same folder.
 All files are openable from **Settings → Maintenance**.
+
+**Latency lines** (`ui.log`) exist to answer "why did that feel slow" with numbers rather than
+impressions. The startup milestones — time from process start to the tray icon, and to the icon first
+showing an established (non-grey) state — are logged at `Information`, so an ordinary boot records them.
+The per-interaction lines — the tray right-click and the balloon hop — are logged at `Debug`, so set the
+log level to **Debug** before reproducing a slow interaction or they will not appear.
+
+Each line names its own boundaries, because every one of these figures is a *subset* of the delay you
+actually feel and none should be read as the whole of it. In particular the right-click line reports the
+app-side menu **rebuild**, which is not menu-open latency: the shell's dispatch before the handler, and
+the native Win32 menu that H.NotifyIcon builds and paints after it returns, are both outside this
+process and cannot be timed from within it. What the line does carry is the working set at the moment
+the click arrived, and the idle gap since the previous right-click — enough to tell a paged-out process
+from a slow one by comparing two consecutive opens.
 
 ---
 
