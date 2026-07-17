@@ -63,6 +63,44 @@ The test for whether a future flow qualifies is that pairing, not its location: 
 prompt immediately precede it, for a mutation the user cannot easily undo?** If not, it is a report, and
 reports are balloons.
 
+## Why the "tell" channel is still a legacy `Shell_NotifyIcon` balloon
+
+Windows 11 renders these through the legacy-balloon compatibility path, and #53 proposed replacing them
+with Windows App SDK `AppNotifications` (`AppNotificationManager`) — modern toasts, Action Center
+presence, and survival of Focus Assist. **That migration is not available to this app**, for a reason
+that has nothing to do with effort:
+
+> **"Apps running with administrator privileges (elevated) cannot send or receive app notifications."**
+> — [App notifications overview](https://learn.microsoft.com/en-us/windows/apps/develop/notifications/app-notifications/), *Limitations*
+
+`app.manifest` requests `requireAdministrator`, and **not optionally**: the Hyper-V WMI calls this app
+exists to make need it. So the app is elevated 100 % of the time, and elevated is precisely the case
+Microsoft excludes. The quickstart is explicit about the failure mode: `Show` **"will fail silently and
+no notification will be displayed."**
+
+**Silence is what makes this disqualifying rather than merely unsupported.** The app's report channel
+carries every failure it knows about (#37). A migration whose failure mode is *no exception, no error,
+no toast* would turn every one of those reports back into the silence #37 spent its effort eliminating —
+and would look, from the code, exactly like success.
+
+The obvious guard does not close the hole. `AppNotificationManager.IsSupported()` tests for the
+[Singleton package](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/self-contained-deploy/deploy-self-contained-apps#dependencies-on-additional-msix-packages)
+— which this app also lacks, since it publishes `WindowsAppSDKSelfContained=true` — but it says nothing
+about elevation. On a machine where the Singleton package happens to be present (any framework-dependent
+WinUI 3 app installs it), `IsSupported()` returns **true**, `Show()` is called, and it fails silently
+anyway. The guard would pass and the toast would still never appear. **There is no delivery signal to
+test against**, so a fallback cannot detect the failure it exists to catch.
+
+This is not a version gap to wait out: [microsoft/WindowsAppSDK#3595](https://github.com/microsoft/WindowsAppSDK/issues/3595)
+has been open since April 2023 and is labelled **`feature proposal`**, not `bug` — elevated support is a
+request, not a fix in flight.
+
+So the legacy balloon stays, on merit: it is the only channel that **actually delivers** for an elevated
+process. Its known costs are real and accepted — ~1–2 s latency, and Focus Assist drops it. Balloons and
+modern toasts *both* lose to Focus Assist here; the modern one would merely lose more quietly. If this
+is ever revisited, the only real path is architectural (a non-elevated helper process owning the
+notification surface), which is a much larger change than swapping an API — not a re-try of #53.
+
 ## History
 
 | Issue | What it settled |
@@ -71,3 +109,4 @@ reports are balloons.
 | #40 | The rename's one-consent/one-verified-outcome pair — the bounded exception above. |
 | #45 | A balloon answering a window's own button must not be suppressed by that window being visible. |
 | #51 | The rule above, written down. `NetworkActions`' repair and add-rule commands moved from modals to balloons, ending the split where two adjacent buttons in one Settings row answered in two vocabularies. The `XamlRoot` constraint that seemed to force the split turned out not to exist. |
+| #53 | The "tell" channel stays a legacy balloon. Windows App SDK `AppNotifications` is unavailable to an elevated process and fails **silently** — the one failure mode this app's report channel cannot accept. See the section above. |
