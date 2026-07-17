@@ -81,6 +81,27 @@ public static class DashboardSizing
     public const double MaxContentWidth = 480;
 
     /// <summary>
+    /// Breathing room (DIP) added to each row's required width (issue #59). #57 sized the popup to the
+    /// text's EXACT advance sum, so a row could be sized to fit to the DIP — and then truncate on screen
+    /// anyway: WinUI measures with its own font metrics and rounds every column to a whole pixel at the
+    /// active DPI, and a trimmed TextBlock reserves space for the "…", so a dead-even fit renders an
+    /// ellipsis while the arithmetic (and the test built on the same arithmetic) both said it fit. This
+    /// is a full character at the header's 12px value (≈ 7 DIP) plus a rounding pixel, so the Star text
+    /// always gets STRICTLY more room than it needs, never exactly equal.
+    /// </summary>
+    public const double FitSlack = 8;
+
+    /// <summary>
+    /// Sub-pixel safety (DIP) for <see cref="IsLeftTruncated"/> (issue #59): a row whose Star text fills
+    /// its slot to within this margin is treated as truncated, so it still carries a tooltip. At the
+    /// width cap a value can need almost exactly its slot, where a strict "&gt;" comparison would call a
+    /// will-render-an-ellipsis row "fits" and drop the tooltip — the one unreachable-value case the
+    /// tooltip exists to prevent. Erring toward attaching a tooltip is free (it only ever repeats the
+    /// on-screen text in the boundary case); dropping one is the bug.
+    /// </summary>
+    public const double SubPixelSafety = 1.0;
+
+    /// <summary>
     /// Horizontal chrome between the popup's content width and a card row's usable width:
     /// <c>Root</c>'s Padding (20+20) + the card Border's Padding (10+10) and BorderThickness (1+1).
     /// At the 320 floor this leaves 258 DIP — the figure issue #44 independently measured the
@@ -92,10 +113,15 @@ public static class DashboardSizing
     public static double TextWidth(string? text, double fontSize)
         => string.IsNullOrEmpty(text) || fontSize <= 0 ? 0 : text.Length * fontSize * MonoAdvanceEm;
 
-    /// <summary>Content width (DIP) at which <paramref name="row"/> shows both its values in full.</summary>
+    /// <summary>
+    /// Content width (DIP) at which <paramref name="row"/> shows both its values in full, plus
+    /// <see cref="FitSlack"/> so the Star text is never sized to a to-the-DIP-exact fit that renders an
+    /// ellipsis anyway (issue #59).
+    /// </summary>
     public static double RequiredContentWidth(SplitRow row)
         => CardChromeWidth
          + TextWidth(row.Left,  row.LeftFontSize)
+         + FitSlack
          + Math.Max(0, row.Gap)
          + TextWidth(row.Right, row.RightFontSize);
 
@@ -136,9 +162,13 @@ public static class DashboardSizing
     public static double AvailableForLeft(SplitRow row, double contentWidth)
         => Math.Max(0, contentWidth - CardChromeWidth - Math.Max(0, row.Gap) - TextWidth(row.Right, row.RightFontSize));
 
-    /// <summary>True when <paramref name="row"/>'s Star text cannot be shown in full at <paramref name="contentWidth"/>.</summary>
+    /// <summary>
+    /// True when <paramref name="row"/>'s Star text cannot be shown in full at
+    /// <paramref name="contentWidth"/> — including the case where it fills the slot to within
+    /// <see cref="SubPixelSafety"/>, which renders an ellipsis on screen (issue #59).
+    /// </summary>
     public static bool IsLeftTruncated(SplitRow row, double contentWidth)
-        => TextWidth(row.Left, row.LeftFontSize) > AvailableForLeft(row, contentWidth);
+        => TextWidth(row.Left, row.LeftFontSize) > AvailableForLeft(row, contentWidth) - SubPixelSafety;
 
     /// <summary>
     /// The tooltip <paramref name="row"/>'s Star text must carry at <paramref name="contentWidth"/>:

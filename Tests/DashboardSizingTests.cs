@@ -71,6 +71,44 @@ public class DashboardSizingTests
         Assert.InRange(cw, 320, 480);
         Assert.False(DashboardSizing.IsLeftTruncated(row, cw));
         Assert.Null(DashboardSizing.LeftTooltip(row, cw));
+
+        // And it fits with REAL room to spare, not to the DIP (issue #59). #57 sized this row to a
+        // dead-even fit that passed here but rendered an ellipsis on screen; the slack is what closes
+        // the gap between "the arithmetic says it fits" and "the pixels show it in full". A regression
+        // that removed the slack would size it flush again and this margin would vanish.
+        double margin = DashboardSizing.AvailableForLeft(row, cw)
+                      - DashboardSizing.TextWidth(row.Left, 10);
+        Assert.True(margin >= DashboardSizing.FitSlack - 0.001,
+            $"sub-row fits by only {margin:F2} DIP — too thin to survive WinUI's pixel rounding (issue #59).");
+    }
+
+    [Fact]
+    public void The_reported_row_with_Espens_actual_IP_no_longer_sizes_to_a_dead_tie()
+    {
+        // The concrete #59 regression. The row that shipped in 2.5.9 truncated on screen even though
+        // #57's arithmetic said it fit: with Espen's real 11-character IP (10.0.20.108) the required
+        // width landed on ~340 DIP where the subtitle's advance sum EQUALLED its slot to the DIP, so
+        // the popup settled at ~340 and the value rendered "Bridged · Petterhaugen [dockin…". The band
+        // used the same slack-free maths as the test that "proved" it fit — which is why that test
+        // never caught it. With the slack the popup opens wider and the value shows in full.
+        var row   = ReportedRow("10.0.20.108");
+        double cw = DashboardSizing.ContentWidth(DashboardSizing.RequiredContentWidth(row), 0);
+
+        Assert.InRange(cw, 320, 480);
+        Assert.False(DashboardSizing.IsLeftTruncated(row, cw));
+        Assert.Null(DashboardSizing.LeftTooltip(row, cw));
+
+        // The defining property of the bug: at the slack-free width #57 WOULD have chosen, the subtitle
+        // fills its slot to within a sub-pixel — a dead tie that renders an ellipsis on screen — and the
+        // slack is exactly what makes the width the popup actually opens at strictly greater than that.
+        double slacklessWidth = DashboardSizing.CardChromeWidth
+                              + DashboardSizing.TextWidth(row.Left, 10)
+                              + Math.Max(0, row.Gap)
+                              + DashboardSizing.TextWidth(row.Right, 12);
+        Assert.True(DashboardSizing.IsLeftTruncated(row, slacklessWidth),
+            "the reported row was NOT a dead tie at the slack-free width — the #59 diagnosis no longer holds.");
+        Assert.True(cw > slacklessWidth,
+            $"the chosen width {cw:F1} is not wider than the slack-free {slacklessWidth:F1} — the slack did nothing.");
     }
 
     [Fact]
@@ -188,11 +226,14 @@ public class DashboardSizingTests
         var row = new SplitRow(left, 10, right, 12, 8);
 
         // Decided independently of the helper's own truncation flag, so the two cannot agree by
-        // construction: measure the text and the room, and compare them here.
+        // construction: measure the text and the room, and compare them here. The sub-pixel safety
+        // (issue #59) is modelled explicitly — a value that fills its slot to within it renders an
+        // ellipsis, so it must carry a tooltip — but the comparison is still made from raw metrics,
+        // never by calling IsLeftTruncated.
         double needed    = left.Length * 10 * DashboardSizing.MonoAdvanceEm;
         double available = Math.Max(0, contentWidth - DashboardSizing.CardChromeWidth - 8
                                      - right.Length * 12 * DashboardSizing.MonoAdvanceEm);
-        bool willBeCut = needed > available;
+        bool willBeCut = needed > available - DashboardSizing.SubPixelSafety;
 
         string? tip = DashboardSizing.LeftTooltip(row, contentWidth);
 

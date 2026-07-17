@@ -199,7 +199,22 @@ public sealed partial class DashboardWindow : Window
     }
 
     /// <summary>Called by App (UI thread) when a switch change is applied.</summary>
-    public void OnSwitchApplied(MatchResult result) => ApplyHostStatus(result);
+    public void OnSwitchApplied(MatchResult result)
+    {
+        ApplyHostStatus(result);
+
+        // The VM sub-row's subtitle embeds LastApplied.RuleName (see Subtitle()), and THIS event is what
+        // changes that rule — so it changes what every VM sub-row has to show, and with it the popup's
+        // width requirement. Refresh the subtitles from the new rule and re-size. Without this the popup
+        // keeps the width it computed before the rule name was known, and the sub-row truncates under an
+        // un-grown window until the next VM status tick happens to correct it — the width lagging the
+        // content it is supposed to size to (issue #59). ResizeAndPlace re-reads these subtitles and
+        // re-applies the tooltips, so the truncation guarantee follows the new width too.
+        foreach (var card in _cards.Values)
+            card.Subtitle.Text = Subtitle(FindStatus(_latest, card.VmName));
+
+        if (AppWindow.IsVisible) ResizeAndPlace();
+    }
 
     // ── Window chrome / placement ───────────────────────────────────────────────
 
