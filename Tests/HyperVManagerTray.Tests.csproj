@@ -67,6 +67,11 @@
          ConfigManager.cs, which both use WindowRect. The WinUI panel that consumes the stacking
          decision (UI\SettingRowPanel.cs) is deliberately NOT linked. -->
     <Compile Include="..\Helpers\WindowPlacement.cs"  Link="Linked\WindowPlacement.cs" />
+
+    <!-- Issue #57's dashboard width band and truncation/tooltip rule. Pure arithmetic over text
+         metrics and work-area numbers — no WinUI, no live host — the same reason WindowPlacement
+         above links in here rather than being reachable only through a window. -->
+    <Compile Include="..\Helpers\DashboardSizing.cs"  Link="Linked\DashboardSizing.cs" />
     <!-- Pure adapter-rename rules (validation, uniqueness, GUID→device resolution, display-name
          choice). No Win32 deps, so it links cleanly; the device-mutating AdapterRenamer.cs is
          deliberately NOT linked. -->
