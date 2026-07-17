@@ -70,6 +70,43 @@ public sealed class HyperVManager : IDisposable
     public Task<bool> ApplySwitchAsync(string vmName, string nicName, string switchName) =>
         WithLock(() => ApplySwitchCore(vmName, nicName, switchName));
 
+    /// <summary>
+    /// Opens this manager's WMI connection ahead of the first caller that needs it, on the thread pool.
+    /// Pure warm-up: it connects and nothing else — no query, no write, no lock. Idempotent, and safe to
+    /// skip entirely (every entry point still calls <see cref="EnsureScope"/> for itself).
+    ///
+    /// <para><b>What this buys, precisely (issue #56 part 2).</b> The cold-start chain at logon is
+    /// serialised: <c>AdapterMatcher.Evaluate</c> enumerates NICs for ~2 s, and only THEN does the apply
+    /// pass reach <see cref="EnsureScope"/> and pay the cold <c>root\virtualization\v2</c> connect. The
+    /// connect needs nothing the enumeration produces — it is a namespace constant — so the two can
+    /// overlap, and the connect leaves the critical path entirely. This is the only serialisation in that
+    /// chain that is ours: the ~2 s of NIC enumeration is Win32 IP Helper, the ~3–4 s after it is the WMI
+    /// round-trips that CONFIRM the bind, and #37 is exactly the rule that those may not be skipped.</para>
+    ///
+    /// <para><b>Do not expect seconds.</b> <c>VmService.SubscribeStateWatcher</c> already connects to the
+    /// same namespace on the thread pool moments earlier, so the expensive server-side half — spinning up
+    /// the WmiPrvSE host and the vmms handshake — is very likely already paid by the time this runs. What
+    /// is left for this to overlap is a DCOM connect against a warm provider, on a distinct connection
+    /// (this one asks for <c>EnablePrivileges</c>; the watcher's does not, so the two cannot share). That
+    /// is a real cost and it is on the critical path today, but it is hundreds of milliseconds at best,
+    /// not the fix for #52's ~8 s. See the issue for why most of that 8 s is not ours to remove.</para>
+    ///
+    /// <para><b>Never throws.</b> On a host with no Hyper-V role the connect fails, exactly as it would
+    /// have on the first real call, which handles it. A warm-up that could take the app down at launch
+    /// would be a strictly worse trade than the milliseconds it saves.</para>
+    /// </summary>
+    public Task PrewarmAsync() => Task.Run(() =>
+    {
+        try { EnsureScope(); }
+        catch (Exception ex)
+        {
+            // Debug, not Warning: on a non-Hyper-V host this is expected and says nothing the first real
+            // call will not say louder. It is logged at all only so a "why was the first apply still
+            // slow?" question has an answer.
+            _logger.LogDebug(ex, "WMI pre-warm failed — the first real call will connect instead");
+        }
+    });
+
     /// <summary>Performs the VM-NIC reconnect; true = the NIC is now on <paramref name="switchName"/>.</summary>
     private bool ApplySwitchCore(string vmName, string nicName, string switchName)
     {
