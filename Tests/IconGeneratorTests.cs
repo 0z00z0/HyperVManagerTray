@@ -20,6 +20,7 @@ public class IconGeneratorTests : IDisposable
 
     [Theory]
     [InlineData(TrayIconState.Unknown,  "icon-unknown-v5.ico")]
+    [InlineData(TrayIconState.Starting, "icon-starting-v5.ico")]   // issue #56
     [InlineData(TrayIconState.Bridged,  "icon-bridged-v5.ico")]
     [InlineData(TrayIconState.Fallback, "icon-fallback-v5.ico")]
     [InlineData(TrayIconState.Failed,   "icon-failed-v5.ico")]     // issue #37
@@ -50,6 +51,7 @@ public class IconGeneratorTests : IDisposable
 
     [Theory]
     [InlineData(TrayIconState.Unknown)]
+    [InlineData(TrayIconState.Starting)]
     [InlineData(TrayIconState.Bridged)]
     [InlineData(TrayIconState.Fallback)]
     [InlineData(TrayIconState.Failed)]
@@ -83,6 +85,7 @@ public class IconGeneratorTests : IDisposable
     // The background must be fully transparent so the icon reads on light AND dark taskbars.
     [Theory]
     [InlineData(TrayIconState.Unknown)]
+    [InlineData(TrayIconState.Starting)]
     [InlineData(TrayIconState.Bridged)]
     [InlineData(TrayIconState.Fallback)]
     [InlineData(TrayIconState.Failed)]
@@ -98,6 +101,7 @@ public class IconGeneratorTests : IDisposable
     // The glyph itself must actually be drawn (opaque pixels present somewhere).
     [Theory]
     [InlineData(TrayIconState.Unknown)]
+    [InlineData(TrayIconState.Starting)]
     [InlineData(TrayIconState.Bridged)]
     [InlineData(TrayIconState.Fallback)]
     [InlineData(TrayIconState.Failed)]
@@ -142,6 +146,57 @@ public class IconGeneratorTests : IDisposable
     [Fact]
     public void RenderIcon_UnknownAndFailedAreDifferentColours() =>
         Assert.NotEqual(DominantGlyphColor(TrayIconState.Unknown), DominantGlyphColor(TrayIconState.Failed));
+
+    // ── Starting (issue #56) ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Issue #56, as a pixel. "Still looking" and "looked, don't know" were the same grey for ~8 s at
+    /// logon, so the app's honesty was indistinguishable from a hang. They must not share a colour, and
+    /// (RenderIcon_EveryStateHasItsOwnColour above enumerates the same rule for all five states) neither
+    /// may Starting share one with anything else.
+    /// </summary>
+    [Fact]
+    public void RenderIcon_StartingAndUnknownAreDifferentColours() =>
+        Assert.NotEqual(DominantGlyphColor(TrayIconState.Starting), DominantGlyphColor(TrayIconState.Unknown));
+
+    /// <summary>
+    /// Starting must not read as either CONFIRMED colour — the pre-#37 defect (an unconfirmed state
+    /// wearing a success colour) would be no less a lie for happening in the first 8 s. The rule is
+    /// enforced upstream by NetworkStatusUi.IconFor's enumerating guard, which decides that Starting is
+    /// never Bridged/Fallback; this pins the other half, that the amber it does get cannot be MISTAKEN
+    /// for one. Green- and blue-dominance are the signatures those two states are tested by
+    /// (RenderIcon_StateColoursAreDistinctAndCorrectHue), so amber must be neither: R-dominant puts it on
+    /// the "not a success colour" side of the palette by construction, not by luck.
+    /// </summary>
+    [Fact]
+    public void RenderIcon_StartingIsNotASuccessColour()
+    {
+        var starting = DominantGlyphColor(TrayIconState.Starting);
+
+        Assert.False(starting.G > starting.R && starting.G > starting.B,
+            $"Starting is green-dominant ({starting}) — it reads as the confirmed 'bridged' state.");
+        Assert.False(starting.B > starting.R && starting.B > starting.G,
+            $"Starting is blue-dominant ({starting}) — it reads as the confirmed 'fallback' state.");
+    }
+
+    /// <summary>
+    /// Amber and red are the closest pair in this palette — both warm, both R-dominant — so "they are
+    /// different Color values" (which EveryStateHasItsOwnColour already checks) is far too weak a bar
+    /// here: an orange one shade off Failed would pass it while telling the user their network had
+    /// broken every time the app launched. The green channel is what separates a gold from a red, so the
+    /// gap is asserted there, and asserted WIDE.
+    /// </summary>
+    [Fact]
+    public void RenderIcon_StartingIsClearlyNotFailed()
+    {
+        var starting = DominantGlyphColor(TrayIconState.Starting);
+        var failed   = DominantGlyphColor(TrayIconState.Failed);
+
+        Assert.True(starting.G - failed.G > 60,
+            $"Starting {starting} is too close to Failed {failed}: only {starting.G - failed.G} apart in the " +
+            "green channel. A 'still starting up' icon that reads as red tells the user their network is " +
+            "broken every single logon (issue #56).");
+    }
 
     // Averages every fully-opaque glyph pixel to get the icon's dominant colour.
     private static Color DominantGlyphColor(TrayIconState state)

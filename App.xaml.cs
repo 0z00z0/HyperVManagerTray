@@ -181,6 +181,15 @@ public partial class App : Application
                             isError: true, suppressWhenDashboardVisible: false);
 
             _monitor.SwitchApplied += OnSwitchApplied;
+
+            // Overlap the cold WMI connect with the first evaluation instead of queueing it behind
+            // (issue #56 part 2). Start() below arms a 0 ms timer, so the ~2 s of NIC enumeration begins
+            // on a timer thread almost immediately and the apply pass only reaches WMI once it finishes —
+            // and the connect depends on nothing that enumeration produces. Must be kicked off BEFORE
+            // Start() to overlap it at all; fire-and-forget, because nothing here waits on the result and
+            // every WMI entry point still connects for itself if this has not landed (or failed).
+            _ = _hyperV.PrewarmAsync();
+
             _monitor.Start();
 
             // Drive the tray tooltip off VmService's push channel (issue #16, conversion #2):
@@ -313,7 +322,12 @@ public partial class App : Application
     private void InitTrayIcon()
     {
         _trayIcon = (TaskbarIcon)Resources["TrayIcon"];
-        SetTrayIcon(TrayIconState.Unknown);  // grey = unknown until the first apply reports an outcome
+        // Amber = "still looking", not grey "unknown" (issue #56). At this line the first evaluation has
+        // not even been scheduled (_monitor.Start() is a few lines below), so "the app is starting up" is
+        // true by construction — the one thing the app can honestly say before it has asked the host
+        // anything. It stays amber until OnSwitchApplied posts a confirmed outcome; nothing ever puts it
+        // back, because a process only starts once.
+        SetTrayIcon(TrayIconState.Starting);
 
         // The tray's manual network actions report through the same balloon channel a failed apply uses
         // (issue #37). Not suppressed by a visible dashboard: unlike an automatic apply, these are direct
@@ -447,11 +461,15 @@ public partial class App : Application
                     // Issue #54, item 3 — the milestone that matters to the user, logged where the fact
                     // actually becomes true rather than inferred by subtracting switcher.log timestamps
                     // across files (which is what #52 had to do to arrive at "~8 s", and at second
-                    // resolution). Unknown is the grey "we have not established this" state the icon
-                    // starts in (issue #37), so the first state that is NOT Unknown is the moment the
-                    // icon first means something — success or failure alike. #52's real complaint is the
-                    // length of that grey window; this is the number for it.
-                    if (!_iconMeaningfulLogged && state != TrayIconState.Unknown)
+                    // resolution). The first ESTABLISHED state is the moment the icon first means
+                    // something — success or failure alike. #52's real complaint is the length of the
+                    // window before that; this is the number for it.
+                    //
+                    // NetworkStatusUi.IsEstablished, not an inline `state != Unknown` (issue #56): the
+                    // icon now starts amber rather than grey, so the old test would have called Starting
+                    // "established" and logged this milestone at ~2 s — turning #56's part 1 into a
+                    // spurious 6 s improvement on the very metric its part 2 is measured by.
+                    if (!_iconMeaningfulLogged && NetworkStatusUi.IsEstablished(state))
                     {
                         _iconMeaningfulLogged = true;
                         LogStartupMilestone($"tray icon first showed an established state ({state})");
@@ -629,13 +647,20 @@ public partial class App : Application
     /// </summary>
     private string BuildTooltipText()
     {
-        var applied    = _monitor?.LastApplied;
-        var switchName = applied?.VirtualSwitch ?? "No switch";
-        var vmNames    = _config!.Current.VirtualMachines.Select(v => v.Name).ToList();
+        var applied = _monitor?.LastApplied;
+        var vmNames = _config!.Current.VirtualMachines.Select(v => v.Name).ToList();
+
+        // No published result yet ⇒ the first evaluation is still in flight ⇒ the app is starting up
+        // (issue #56). This is the ONLY thing a null LastApplied can mean: _lastApplied is set by the
+        // first apply pass and never cleared, and the pass is scheduled at Start() with a 0 ms due time.
+        var status = applied?.ApplyStatus ?? NetworkStatusUi.SwitchApplyStatus.Starting;
 
         // The switch row states the OUTCOME, not just the intended switch (issue #37): a hover after a
         // failed bind must not read as a plain, healthy "Switch: Bridged". Empty for a confirmed apply.
-        var switchSuffix = applied is null ? "" : NetworkStatusUi.TooltipSwitchSuffix(applied.ApplyStatus);
+        // Both halves of the row are composed in NetworkStatusUi now — the name used to be built here as
+        // `?? "No switch"`, which asserted an unlooked-at host for the whole startup window (issue #56).
+        var switchName   = NetworkStatusUi.TooltipSwitchName(applied?.VirtualSwitch, status);
+        var switchSuffix = NetworkStatusUi.TooltipSwitchSuffix(status);
 
         var lines = new System.Collections.Generic.List<string>
         {
@@ -649,7 +674,13 @@ public partial class App : Application
             // ⚠️ replaces it when the apply didn't land, so the row reads as a problem at a glance
             // (issue #37). The switch NAME absorbs the truncation, never the failure suffix — a
             // long switch name must not be able to hide "— bind failed".
-            TruncateLine($"{(switchSuffix.Length == 0 ? "\U0001F500" : "⚠️")} Switch: {switchName}",
+            //
+            // Gated on IsFailure, not on "the suffix is non-empty" (issue #56). The two agreed only while
+            // every non-Applied status was a failure; Starting has a suffix and is NOT a problem, so the
+            // old test would have hung a warning triangle on a healthy app for its first 8 s — the tray's
+            // loudest "something is wrong" marker, raised because nothing is wrong yet. IsFailure is the
+            // one place that decides what counts as a problem; ask it rather than re-deriving from text.
+            TruncateLine($"{(NetworkStatusUi.IsFailure(status) ? "⚠️" : "\U0001F500")} Switch: {switchName}",
                          63 - switchSuffix.Length) + switchSuffix,
         };
 

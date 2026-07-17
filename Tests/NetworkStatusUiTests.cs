@@ -62,6 +62,65 @@ public class NetworkStatusUiTests
             }
     }
 
+    /// <summary>
+    /// <see cref="SwitchApplyStatus.Starting"/> is not an OUTCOME (issue #56) — it is the app saying it
+    /// has not finished looking. <see cref="Classify"/> only ever runs on a pass that has already
+    /// finished, so it must never be able to produce it: a completed pass that reported "starting up"
+    /// would pin the icon amber over a real, established result and strand the user in a startup that
+    /// ended. Enumerated over every input the function accepts.
+    /// </summary>
+    [Fact]
+    public void Classify_NeverReturnsStarting()
+    {
+        foreach (var bind in Enum.GetValues<BindStep>())
+            for (int failedVms = 0; failedVms <= 3; failedVms++)
+                Assert.NotEqual(SwitchApplyStatus.Starting, Classify(bind, failedVms));
+    }
+
+    // Starting claims nothing, so there is nothing to report and nothing to colour red — it is not a
+    // failure. (Its own row in IsFailure_IdentifiesReportableFailures below covers the same fact; this
+    // states it as the invariant rather than as one table row among five.)
+    [Fact]
+    public void IsFailure_StartingIsNotAFailure() =>
+        Assert.False(IsFailure(SwitchApplyStatus.Starting));
+
+    // ── IsEstablished: the definition of #54's milestone ─────────────────────────
+
+    /// <summary>
+    /// The states that assert something about the host, and the states that do not. This is what #54's
+    /// "tray icon first showed an established state" milestone means, and #56 part 2 is measured by it —
+    /// so it must not be movable by a cosmetic change. Enumerated, so a state added later has to pick a
+    /// side here deliberately rather than inherit one.
+    /// </summary>
+    [Theory]
+    [InlineData(TrayIconState.Unknown,  false)]  // we looked and could not establish it
+    [InlineData(TrayIconState.Starting, false)]  // we have not finished looking (issue #56)
+    [InlineData(TrayIconState.Bridged,  true)]
+    [InlineData(TrayIconState.Fallback, true)]
+    [InlineData(TrayIconState.Failed,   true)]   // a CONFIRMED failure is established knowledge
+    public void IsEstablished_IdentifiesStatesTheAppHasActuallyConfirmed(TrayIconState state, bool expected) =>
+        Assert.Equal(expected, IsEstablished(state));
+
+    /// <summary>
+    /// The cross-check that keeps the metric honest: an icon counts as established EXACTLY when the
+    /// status behind it is a real outcome of a completed pass. Without this, #56's amber icon could quietly
+    /// satisfy the milestone at ~2 s and report a 6 s "improvement" in which nothing whatsoever got
+    /// faster — a metric a cosmetic change can move is worse than no metric.
+    /// </summary>
+    [Fact]
+    public void IsEstablished_AgreesWithIconFor_OnlyForCompletedOutcomes()
+    {
+        foreach (var status in Enum.GetValues<SwitchApplyStatus>())
+            foreach (var bridgedTarget in new[] { true, false })
+            {
+                bool isRealOutcome = status is SwitchApplyStatus.Applied
+                                            or SwitchApplyStatus.BindFailed
+                                            or SwitchApplyStatus.VmConnectFailed;
+
+                Assert.Equal(isRealOutcome, IsEstablished(IconFor(status, bridgedTarget)));
+            }
+    }
+
     // ── IconFor: the invariant this whole issue exists to enforce ────────────────
 
     [Theory]
@@ -77,8 +136,30 @@ public class NetworkStatusUiTests
     // Nothing applied yet → grey. Not a guess in either direction.
     [InlineData(SwitchApplyStatus.NotEvaluated,    true,  TrayIconState.Unknown)]
     [InlineData(SwitchApplyStatus.NotEvaluated,    false, TrayIconState.Unknown)]
+    // Still looking → amber, and amber regardless of what the rules INTEND (issue #56). The intent is
+    // known the moment config loads, so a bridgedTarget-sensitive Starting arm would be the pre-#37
+    // "show the target colour before it is confirmed" defect relocated to startup.
+    [InlineData(SwitchApplyStatus.Starting,        true,  TrayIconState.Starting)]
+    [InlineData(SwitchApplyStatus.Starting,        false, TrayIconState.Starting)]
     public void IconFor_RendersEachStatus(SwitchApplyStatus status, bool bridgedTarget, TrayIconState expected) =>
         Assert.Equal(expected, IconFor(status, bridgedTarget));
+
+    // Starting must be its OWN pixel — not grey. This is issue #56 in one assertion: the app was honest
+    // for ~8 s at logon and rendered that honesty as the same grey it uses for "unknown", so a correct
+    // answer was indistinguishable from a hang. Distinct from every established state too, since it is
+    // not one.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void IconFor_StartingIsNeitherUnknownNorAnyEstablishedState(bool bridgedTarget)
+    {
+        var starting = IconFor(SwitchApplyStatus.Starting, bridgedTarget);
+
+        Assert.NotEqual(TrayIconState.Unknown, starting);
+        Assert.NotEqual(IconFor(SwitchApplyStatus.Applied,         bridgedTarget), starting);
+        Assert.NotEqual(IconFor(SwitchApplyStatus.BindFailed,      bridgedTarget), starting);
+        Assert.NotEqual(IconFor(SwitchApplyStatus.VmConnectFailed, bridgedTarget), starting);
+    }
 
     /// <summary>
     /// THE regression test for issue #37. Enumerates every <see cref="SwitchApplyStatus"/> — including
@@ -157,8 +238,76 @@ public class NetworkStatusUiTests
     [InlineData(SwitchApplyStatus.BindFailed)]
     [InlineData(SwitchApplyStatus.VmConnectFailed)]
     [InlineData(SwitchApplyStatus.NotEvaluated)]
+    [InlineData(SwitchApplyStatus.Starting)]
     public void TooltipSwitchSuffix_NonAppliedQualifiesTheSwitchRow(SwitchApplyStatus status) =>
         Assert.NotEqual("", TooltipSwitchSuffix(status));
+
+    // The tooltip is where the icon's "different colour" becomes an actual reason, and it is the first
+    // place a user looks when they suspect a hang (issue #56). It must say the app is starting — not
+    // reuse the shared "not applied yet", which reports a missing outcome and invites "why not?".
+    [Fact]
+    public void TooltipSwitchSuffix_StartingSaysTheAppIsStartingUp()
+    {
+        var suffix = TooltipSwitchSuffix(SwitchApplyStatus.Starting);
+
+        Assert.Contains("starting up", suffix, StringComparison.OrdinalIgnoreCase);
+        Assert.NotEqual(TooltipSwitchSuffix(SwitchApplyStatus.NotEvaluated), suffix);
+    }
+
+    // No status may describe the switch row as a problem unless it IS one — the ⚠️ in the tooltip's
+    // switch row is gated on IsFailure, so a suffix that reads like a fault while IsFailure says
+    // otherwise puts the two halves of one row in contradiction (issue #56).
+    [Fact]
+    public void TooltipSwitchSuffix_OnlyRealFailuresUseFailureWording()
+    {
+        foreach (var status in Enum.GetValues<SwitchApplyStatus>())
+        {
+            if (IsFailure(status)) continue;
+
+            Assert.DoesNotContain("failed", TooltipSwitchSuffix(status), StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    // ── Tray tooltip: the switch NAME ────────────────────────────────────────────
+
+    /// <summary>
+    /// The overclaim issue #56 found beside the honest icon. For the ~8 s before the first pass
+    /// publishes, the tooltip was built at the call site as <c>LastApplied?.VirtualSwitch ?? "No
+    /// switch"</c> — so the hover a user reaches for when the icon looks stuck told them, as a flat
+    /// fact, that the host had no switch in play. The app had not looked yet.
+    /// </summary>
+    [Fact]
+    public void TooltipSwitchName_StartingClaimsNothingAboutTheHost()
+    {
+        var name = TooltipSwitchName(null, SwitchApplyStatus.Starting);
+
+        Assert.DoesNotContain("No switch", name, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("—", name);
+    }
+
+    // Starting overrides the name even if a switch somehow rides along: the status is the authority on
+    // whether the app has established anything, and a name is an established fact or it is not shown.
+    [Fact]
+    public void TooltipSwitchName_StartingIgnoresAnySwitchNamePassedToIt() =>
+        Assert.Equal("—", TooltipSwitchName("Bridged", SwitchApplyStatus.Starting));
+
+    // "No switch" is still the right answer for a NON-Starting null — a pass ran and published nothing
+    // to name. That is a real fact about the host, unlike the startup case.
+    [Theory]
+    [InlineData(SwitchApplyStatus.Applied)]
+    [InlineData(SwitchApplyStatus.BindFailed)]
+    [InlineData(SwitchApplyStatus.VmConnectFailed)]
+    [InlineData(SwitchApplyStatus.NotEvaluated)]
+    public void TooltipSwitchName_NonStartingWithNoSwitchStillSaysNoSwitch(SwitchApplyStatus status)
+    {
+        Assert.Equal("No switch", TooltipSwitchName(null, status));
+        Assert.Equal("No switch", TooltipSwitchName("   ", status));
+    }
+
+    // An established result shows its switch name verbatim — the row's normal, overwhelming-majority case.
+    [Fact]
+    public void TooltipSwitchName_AppliedShowsTheSwitchVerbatim() =>
+        Assert.Equal("Bridged", TooltipSwitchName("Bridged", SwitchApplyStatus.Applied));
 
     // ── Failure balloon ──────────────────────────────────────────────────────────
 

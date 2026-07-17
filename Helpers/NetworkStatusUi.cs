@@ -19,11 +19,21 @@ namespace HyperVManagerTray.Helpers;
 /// <see cref="TrayIconState.Bridged"/> or <see cref="TrayIconState.Fallback"/> — the two "all is
 /// well, the VM is on this network" colours — for <see cref="SwitchApplyStatus.Applied"/> and for
 /// nothing else. Every other status renders as <see cref="TrayIconState.Failed"/> (red: we tried and
-/// it did not work) or <see cref="TrayIconState.Unknown"/> (grey: we have not established the state).
+/// it did not work), <see cref="TrayIconState.Starting"/> (amber: we are still looking — issue #56) or
+/// <see cref="TrayIconState.Unknown"/> (grey: we have not established the state).
 /// There is deliberately no "probably fine" state. If a future status is added, it lands in the
 /// <c>_ =&gt; Unknown</c> arm rather than silently reading as success — and
 /// <c>NetworkStatusUiTests.IconFor_OnlyAppliedEverRendersAsSuccess</c> enumerates the enum to enforce
 /// exactly that.</para>
+///
+/// <para><b>Issue #56 tested that guard rather than trusting it.</b> #56 added the first new member to
+/// <see cref="SwitchApplyStatus"/> since #37 wrote the rule above — the case the rule was written in
+/// advance for. It held: the new arm was covered by the enumerating test the moment the member existed,
+/// with no test edit. The other half of #56 is the lesson that the icon was never the whole surface —
+/// the tooltip beside it was composed from <c>LastApplied?.VirtualSwitch ?? "No switch"</c> at the call
+/// site and asserted, for the entire startup window, a fact about the host that the app had not
+/// established. Honesty enforced in this file is only honesty where the text is BUILT in this file; see
+/// <see cref="TooltipSwitchName"/>.</para>
 /// </summary>
 public static class NetworkStatusUi
 {
@@ -34,8 +44,14 @@ public static class NetworkStatusUi
     /// </summary>
     public enum SwitchApplyStatus
     {
-        /// <summary>No apply pass has completed yet (startup, before the first evaluation). We do not
-        /// know where the VMs are — the icon is grey, not an optimistic guess.</summary>
+        /// <summary>No apply pass has completed yet. We do not know where the VMs are — the icon is grey,
+        /// not an optimistic guess.
+        ///
+        /// <para>This is the <b>default</b> (0), and it stays 0 deliberately: an unstamped
+        /// <see cref="MatchResult"/> must claim nothing. It no longer means "startup" — that is
+        /// <see cref="Starting"/>'s job since issue #56, because the two need opposite reactions from the
+        /// user ("wait" vs. "it stopped looking"). What is left here is the genuinely unclassifiable
+        /// case: a result nothing stamped an outcome onto.</para></summary>
         NotEvaluated,
 
         /// <summary>The switch is on the intended host adapter (bound now, already bound, or no bind
@@ -52,6 +68,31 @@ public static class NetworkStatusUi
         /// could not be attached to it — a bad <c>nicName</c>, a VM missing from Hyper-V, a target VM
         /// absent from config, or a failed WMI modify. See <see cref="MatchResult.FailedVms"/>.</summary>
         VmConnectFailed,
+
+        /// <summary>
+        /// The app's FIRST evaluation is still in flight — it launched moments ago and has not finished
+        /// looking yet (issue #56). Like <see cref="NotEvaluated"/> it claims nothing whatsoever about the
+        /// network; unlike it, it says WHY there is nothing to claim.
+        ///
+        /// <para><b>Why this is a separate member and not just NotEvaluated.</b> They are the same state
+        /// of knowledge but not the same state of affairs, and the user's correct reaction to each is
+        /// opposite: "still looking, wait" vs. "it has stopped looking and has nothing" — the same
+        /// grey/red distinction #37 drew between <see cref="TrayIconState.Unknown"/> and
+        /// <see cref="TrayIconState.Failed"/>, one step earlier. Collapsed into one pixel for ~8 s at
+        /// logon, a correct answer read as a hang. That is #56.</para>
+        ///
+        /// <para><b>Deliberately last, so <see cref="NotEvaluated"/> keeps the default 0.</b> A
+        /// <see cref="MatchResult"/> that nobody stamped must stay "no pass has completed", never
+        /// "starting up" — a stale or unstamped result arriving hours into the session would otherwise
+        /// announce a startup that finished long ago.</para>
+        ///
+        /// <para><b>This never rides on a published <see cref="MatchResult"/>.</b> It is not an outcome,
+        /// so <see cref="Classify"/> cannot return it (enforced by <c>Classify_NeverReturnsStarting</c>)
+        /// and <c>NetworkMonitor</c> never stamps it. It reaches the UI from the two places that know the
+        /// app is starting because no result exists yet: <c>App.InitTrayIcon</c>, and the tooltip's
+        /// <c>LastApplied is null</c> arm.</para>
+        /// </summary>
+        Starting,
     }
 
     /// <summary>The switch-binding half of an apply pass, reduced to what the status decision needs.</summary>
@@ -115,8 +156,30 @@ public static class NetworkStatusUi
         SwitchApplyStatus.Applied         => bridgedTarget ? TrayIconState.Bridged : TrayIconState.Fallback,
         SwitchApplyStatus.BindFailed      => TrayIconState.Failed,
         SwitchApplyStatus.VmConnectFailed => TrayIconState.Failed,
+        // Issue #56. Note what this arm does NOT do: it does not consult bridgedTarget. The rules' intent
+        // is known the instant config loads, so an icon could show the target colour here — and that is
+        // precisely the pre-#37 defect, just moved to startup. Starting is a fact about the app; it may
+        // not borrow a colour that asserts a fact about the host.
+        SwitchApplyStatus.Starting        => TrayIconState.Starting,
         _                                 => TrayIconState.Unknown,   // NotEvaluated, and any future member
     };
+
+    /// <summary>
+    /// True when the tray icon is showing a state the app has actually ESTABLISHED — a confirmed apply
+    /// (<see cref="TrayIconState.Bridged"/>/<see cref="TrayIconState.Fallback"/>) or a confirmed failure
+    /// (<see cref="TrayIconState.Failed"/>). False for the two states that assert nothing about the host:
+    /// <see cref="TrayIconState.Unknown"/> and <see cref="TrayIconState.Starting"/>.
+    ///
+    /// <para><b>This is the definition of issue #54's "tray icon first showed an established state"
+    /// milestone</b> — the number #52's ~8 s finding is about, and the one #56 part 2 is trying to move.
+    /// It lives here, pure and enumerable, rather than as an inline <c>state != Unknown</c> test in
+    /// <c>App.OnSwitchApplied</c>: as an inline test it was a list of cases that #56's new state would
+    /// have silently joined the wrong side of, quietly redefining the milestone to "the icon went amber"
+    /// and reporting a ~2 s startup that had improved by nothing at all. A metric that a cosmetic change
+    /// can move without the underlying work getting faster is worse than no metric.</para>
+    /// </summary>
+    public static bool IsEstablished(TrayIconState state) =>
+        state is not (TrayIconState.Unknown or TrayIconState.Starting);
 
     /// <summary>
     /// The dashboard HOST NETWORK card's "Rule" row: the rule name, suffixed with the failure when the
@@ -141,8 +204,35 @@ public static class NetworkStatusUi
         SwitchApplyStatus.Applied         => "",
         SwitchApplyStatus.BindFailed      => " — bind failed",
         SwitchApplyStatus.VmConnectFailed => " — VM connect failed",
+        // Issue #56 — the tooltip half of the amber icon, and the half that carries the actual words. The
+        // icon can only say "different"; this says WHICH different, and it is the first thing a user
+        // reaches for when they suspect a hang. "starting up" over "not applied yet": both are true, but
+        // the latter reports a missing outcome (which invites "why not? what's broken?"), where the point
+        // is that nothing is wrong and the answer is coming.
+        SwitchApplyStatus.Starting        => " — starting up",
         _                                 => " — not applied yet",
     };
+
+    /// <summary>
+    /// The switch NAME for the tray tooltip's switch row, given the published result's switch (null when
+    /// nothing has been published yet) and the status.
+    ///
+    /// <para><b>Why the name needs a decision at all (issue #56).</b> The tooltip composed this as
+    /// <c>LastApplied?.VirtualSwitch ?? "No switch"</c>, so for the whole ~8 s startup window the hover —
+    /// the exact thing a user checks when the icon looks stuck — read <i>"Switch: No switch"</i>. That is
+    /// not "we don't know yet"; it is a flat assertion that the host has no switch in play, made by an app
+    /// that had not yet looked. The icon was scrupulously honest during that window and the tooltip beside
+    /// it was not, which is the more serious half of #56: an ambiguous pixel invites a hover, and the
+    /// hover was where the overclaim was waiting. <see cref="SwitchApplyStatus.Starting"/> renders "—" —
+    /// no answer yet — and <see cref="TooltipSwitchSuffix"/> supplies the reason.</para>
+    ///
+    /// <para>"No switch" survives for a NON-Starting null, which is a different fact: a pass has run and
+    /// published nothing to name.</para>
+    /// </summary>
+    public static string TooltipSwitchName(string? virtualSwitch, SwitchApplyStatus status) =>
+        status == SwitchApplyStatus.Starting
+            ? "—"
+            : string.IsNullOrWhiteSpace(virtualSwitch) ? "No switch" : virtualSwitch;
 
     /// <summary>
     /// The balloon text for a failed apply, mirroring <c>App.OnVmOperationFailed</c>'s treatment of a
