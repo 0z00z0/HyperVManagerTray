@@ -28,3 +28,7 @@ CodeDocumentation*
 
 # Local task tracking — not for the repo. See TODO-HANDLING.md.
 TODO.md
+
+# Session handover bundle — exported memory + conversation transcript for a
+# fresh Claude session started in this directory. Local only, not for the repo.
+_handover/
