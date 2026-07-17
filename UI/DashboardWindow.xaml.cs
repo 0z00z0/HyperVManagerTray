@@ -20,8 +20,20 @@ namespace HyperVManagerTray.UI;
 /// </summary>
 public sealed partial class DashboardWindow : Window
 {
-    private const double ContentWidth = 320;
-    private const int    EdgeMargin   = 12;
+    private const int EdgeMargin = 12;
+
+    // Font sizes of the two card rows DashboardSizing reasons about. Named because the sizing
+    // arithmetic and the TextBlocks must agree by construction: a literal changed in one place and
+    // not the other would mis-measure the row and hand it the wrong tooltip decision.
+    private const double TitleFontSize    = 12;   // VM name (header, Star column)
+    private const double ValueFontSize    = 12;   // the dashboard's unified right-column value size
+    private const double SubtitleFontSize = 10;   // "switch · rule" (sub-row, Star column)
+
+    /// <summary>Gap between a sub-row's subtitle and its IP — the IP label's left margin.</summary>
+    private const double SubRowGap = 8;
+
+    /// <summary>The header row's title and state labels sit in adjacent columns with no spacing.</summary>
+    private const double HeaderGap = 0;
 
     // Cold boot under host load can legitimately take a while; long enough to cover that without
     // hanging the "Start & Connect" button indefinitely if the VM is unusually slow to report in.
@@ -56,6 +68,11 @@ public sealed partial class DashboardWindow : Window
     private readonly Dictionary<string, (string Name, DateTime HoldUntil)> _effectiveState = new(StringComparer.OrdinalIgnoreCase);
     private bool _metricsOn;   // true while subscribed to VmService metrics (dashboard shown)
     private bool _priming;     // true during the off-screen composition warm-up (see Prime)
+
+    // The popup's current content width (DIP) and the same value before the screen cap — set by
+    // ResizeAndPlace, read by the per-tick value path to decide tooltips without a layout pass.
+    private double _contentWidth = DashboardSizing.MinContentWidth;
+    private double _bandedWidth  = DashboardSizing.MinContentWidth;
 
     /// <summary>
     /// When false (the default), a close request (Alt+F4, etc.) is cancelled and the window is
@@ -198,18 +215,88 @@ public sealed partial class DashboardWindow : Window
         AppWindow.SetPresenter(presenter);
     }
 
+    /// <summary>
+    /// Every row whose Star text can outgrow its slot, paired with the bounded value beside it — the
+    /// input to <see cref="DashboardSizing"/>. Read from the live TextBlocks rather than recomputed
+    /// from status, so what is measured is exactly what is on screen.
+    /// </summary>
+    private IEnumerable<SplitRow> SplitRows()
+    {
+        foreach (var card in _cards.Values)
+        {
+            yield return new SplitRow(card.Title.Text,    TitleFontSize,    card.State.Text, ValueFontSize, HeaderGap);
+            yield return new SplitRow(card.Subtitle.Text, SubtitleFontSize, card.Ip.Text,    ValueFontSize, SubRowGap);
+        }
+    }
+
+    /// <summary>
+    /// Applies the width decision's consequence to each row: the full value as a tooltip on anything
+    /// that truncates at <paramref name="contentWidth"/>, and no tooltip on anything that doesn't.
+    ///
+    /// <para>Both halves matter. Assigning whatever <see cref="DashboardSizing.LeftTooltip"/> returns —
+    /// including its null — means a value that stops truncating (the window grew, the IP went away,
+    /// the VM was renamed) also loses the tooltip it no longer needs, instead of keeping a stale one.
+    /// This method never decides truncation itself; that lives in one place on purpose.</para>
+    /// </summary>
+    private void ApplyRowTooltips(double contentWidth)
+    {
+        foreach (var card in _cards.Values)
+        {
+            SetTooltip(card.Title,
+                new SplitRow(card.Title.Text, TitleFontSize, card.State.Text, ValueFontSize, HeaderGap), contentWidth);
+            SetTooltip(card.Subtitle,
+                new SplitRow(card.Subtitle.Text, SubtitleFontSize, card.Ip.Text, ValueFontSize, SubRowGap), contentWidth);
+        }
+
+        static void SetTooltip(TextBlock target, SplitRow row, double contentWidth) =>
+            ToolTipService.SetToolTip(target, DashboardSizing.LeftTooltip(row, contentWidth));
+    }
+
+    /// <summary>
+    /// Sizes the popup to its content and parks it above the tray.
+    ///
+    /// <para><b>Width is a band, not a pin</b> (issue #57): the content takes what it needs between
+    /// <see cref="DashboardSizing.MinContentWidth"/> and <see cref="DashboardSizing.MaxContentWidth"/>,
+    /// and only past the cap does a value truncate — with its full text on a tooltip.</para>
+    ///
+    /// <para><b>Why the width is computed, not measured.</b> The obvious implementation — measure
+    /// <c>Root</c> at 480 and take its DesiredSize — cannot work here. Every card row is a Grid with a
+    /// <c>Star</c> column, and a Star column consumes whatever width it is offered, so <c>Root</c>
+    /// measured against 480 reports 480 no matter how short the VM names are. It would pin the popup
+    /// to the cap rather than autosize it. The width therefore comes from the content's own text
+    /// metrics, which the brand mono face makes exact (see <see cref="DashboardSizing"/>); HEIGHT is
+    /// still derived by measuring, because nothing here stretches vertically.</para>
+    ///
+    /// <para><b>Staying on screen at any DPI.</b> The band is in DIP and multiplied by the CURSOR
+    /// monitor's own scale, so the popup is 480 px wide at 100 % and 840 px at 175 % — the mixed-DPI
+    /// case. Width is capped to the work area (in DIP, before scaling) exactly as height already was,
+    /// so <c>work.Right - w - margin</c> cannot fall left of the work area no matter how wide the
+    /// content wants to be. The popup is re-placed on every open and whenever a card's layout changes,
+    /// so it re-reads the scale of the monitor it is actually appearing on.</para>
+    /// </summary>
     private void ResizeAndPlace()
     {
         var (work, scale) = NativeMethods.GetCursorMonitorMetrics();
 
-        Root.Width = ContentWidth;
-        Root.Measure(new Size(ContentWidth, double.PositiveInfinity));
+        int margin = (int)Math.Ceiling(EdgeMargin * scale);
+        int maxW   = work.Right  - work.Left - margin * 2;
+        int maxH   = work.Bottom - work.Top  - margin * 2;
+
+        double required     = DashboardSizing.RequiredContentWidth(SplitRows());
+        _bandedWidth        = DashboardSizing.ContentWidth(required, screenLimit: 0);
+        double contentWidth = DashboardSizing.ContentWidth(required, screenLimit: maxW / scale);
+        _contentWidth       = contentWidth;
+
+        // Tooltips are decided against the width actually chosen — including one narrowed by the
+        // screen cap — so a value truncated by a small display is reachable too.
+        ApplyRowTooltips(contentWidth);
+
+        Root.Width = contentWidth;
+        Root.Measure(new Size(contentWidth, double.PositiveInfinity));
         double contentHeight = Root.DesiredSize.Height;
 
-        int w      = (int)Math.Ceiling(ContentWidth * scale);
-        int margin = (int)Math.Ceiling(EdgeMargin   * scale);
-        int maxH   = work.Bottom - work.Top - margin * 2;
-        int h      = Math.Min((int)Math.Ceiling(contentHeight * scale), maxH);
+        int w = Math.Min((int)Math.Ceiling(contentWidth  * scale), maxW);
+        int h = Math.Min((int)Math.Ceiling(contentHeight * scale), maxH);
 
         AppWindow.Resize(new Windows.Graphics.SizeInt32(w, h));
         AppWindow.Move(new Windows.Graphics.PointInt32(work.Right - w - margin, work.Bottom - h - margin));
@@ -283,15 +370,28 @@ public sealed partial class DashboardWindow : Window
         {
             _latest = statuses;
             bool layoutChanged = BuildCards(statuses);
-            // Only re-measure the window when a card's layout actually changed (rows
-            // appeared/disappeared); pure value updates never affect the size.  Defer
-            // by one frame so WinUI's layout pass has processed the new children —
-            // otherwise DesiredSize still reflects the previous layout.
-            if (layoutChanged)
+
+            // Re-measure when a card's layout changed (rows appeared/disappeared) — or, since issue
+            // #57 made width follow content, when a pure VALUE update moved the width requirement: a
+            // guest IP arriving, a VM renamed, a rule swapped. Defer by one frame so WinUI's layout
+            // pass has processed the new children — otherwise DesiredSize still reflects the previous
+            // layout. Comparison is against the BANDED width, so a name growing from 600 to 700 DIP of
+            // demand (both past the cap) doesn't churn the window.
+            bool widthChanged = Math.Abs(
+                DashboardSizing.ContentWidth(DashboardSizing.RequiredContentWidth(SplitRows()), screenLimit: 0)
+                - _bandedWidth) > 0.5;
+
+            if (layoutChanged || widthChanged)
                 DispatcherQueue.TryEnqueue(() =>
                 {
                     if (AppWindow.IsVisible) ResizeAndPlace();
                 });
+            else
+                // Same width, same shape — but the TEXT may still have changed, and with it what
+                // truncates and what a tooltip must say. Refreshing here (no layout pass, so the
+                // per-tick cost the shape check exists to avoid is preserved) is what stops a value
+                // silently losing its tooltip, or keeping a stale one naming the previous rule.
+                ApplyRowTooltips(_contentWidth);
         });
     }
 
@@ -322,7 +422,13 @@ public sealed partial class DashboardWindow : Window
 
             // Update just the affected card in place — no need to wait for the next status tick.
             if (_cards.TryGetValue(progress.VmName, out var card))
+            {
                 ApplyOverlay(card, FindStatus(_latest, progress.VmName));
+                // The overlay rewrites the state label ("Requesting start…" is far wider than
+                // "Running"), which shrinks the VM name's slot beside it — so what the header
+                // truncates changes here too, and the tooltips must follow (issue #57).
+                ApplyRowTooltips(_contentWidth);
+            }
         });
     }
 
@@ -337,6 +443,7 @@ public sealed partial class DashboardWindow : Window
         public required Border      Root;
         public required string      VmName;        // config VM name — keys the IP/op-progress lookups
         public required string      Shape;         // layout signature — rebuild when it changes
+        public required TextBlock   Title;         // VM name — Star column of the header row (issue #57: can truncate)
         public required TextBlock   State;
         public required TextBlock   Subtitle;
         public required TextBlock   Ip;            // right-justified IPv4 on the subtitle line
@@ -587,10 +694,23 @@ public sealed partial class DashboardWindow : Window
       : fraction <= 0.85 ? AppColors.GaugeMedBrush
       :                    AppColors.GaugeHighBrush;
 
+    /// <summary>
+    /// The VM sub-row's "switch · rule" line.
+    ///
+    /// <para>The separator is <c>" · "</c>, not the <c>"  ·  "</c> it was before issue #57: two spaces
+    /// each side spent 5 characters — ~29 DIP at this row's 10 px in the brand mono face, where EVERY
+    /// character costs the same 0.586 em — on a row that was truncating its rule name. Espen asked for
+    /// the empty space between the mode and the rule name to come back; this string IS that space, and
+    /// reclaiming it is free, whereas widening the window spends screen. One space each side still
+    /// separates the two values plainly. (The HOST NETWORK card's 62 DIP label column was the other
+    /// candidate — see <see cref="DashboardSizing.CardChromeWidth"/>'s siblings in the XAML — but its
+    /// ~17 DIP beyond "Gateway" is the gutter BETWEEN a label and its value, not between the mode and
+    /// the rule name, and it is a legible gutter rather than waste.)</para>
+    /// </summary>
     private string Subtitle(VmStatus? s)
     {
         var switchText = !string.IsNullOrWhiteSpace(s?.Switch) ? s!.Switch : "—";
-        return $"{switchText}  ·  {_monitor.LastApplied?.RuleName ?? "—"}";
+        return $"{switchText} · {_monitor.LastApplied?.RuleName ?? "—"}";
     }
 
     /// <summary>
@@ -634,9 +754,13 @@ public sealed partial class DashboardWindow : Window
         var title = new TextBlock
         {
             Text              = vm.Name,
-            FontSize          = 12,
+            FontSize          = TitleFontSize,
             FontWeight        = Microsoft.UI.Text.FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center,
+            // Trim rather than clip (issue #57). ApplyRowSizing gives this row a tooltip whenever the
+            // name cannot fit; the ellipsis is what makes an unforeseen trim (a name in a script the
+            // brand mono face lacks, which DashboardSizing under-measures) legible rather than silent.
+            TextTrimming      = TextTrimming.CharacterEllipsis,
         };
         Grid.SetRowSpan(title, 2);
         // Text/Foreground set below via ApplyOverlay once the VmCard exists (single source of
@@ -679,9 +803,10 @@ public sealed partial class DashboardWindow : Window
         var subtitle = new TextBlock
         {
             Text              = Subtitle(s),
-            FontSize          = 10,
+            FontSize          = SubtitleFontSize,
             Foreground        = tertiary,
             VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming      = TextTrimming.CharacterEllipsis,   // see `title` above (issue #57)
         };
         Grid.SetColumn(subtitle, 0);
 
@@ -689,11 +814,13 @@ public sealed partial class DashboardWindow : Window
         var ipLabel = new TextBlock
         {
             Text                = _vm.GetCachedVmIp(vm.Name) ?? "",
-            FontSize            = 12,   // matches the dashboard's unified right-column value size
+            FontSize            = ValueFontSize,   // matches the dashboard's unified right-column value size
             Foreground          = (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"],
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment   = VerticalAlignment.Center,
-            Margin              = new Thickness(8, 0, 0, 0),
+            // This margin IS the sub-row's gap — DashboardSizing is handed the same constant rather
+            // than a second copy of the number, so the arithmetic cannot drift from the layout.
+            Margin              = new Thickness(SubRowGap, 0, 0, 0),
         };
         Grid.SetColumn(ipLabel, 1);
 
@@ -733,6 +860,7 @@ public sealed partial class DashboardWindow : Window
             Root         = root,
             VmName       = vm.Name,
             Shape        = ShapeOf(s),
+            Title        = title,
             State        = stateLabel,
             Subtitle     = subtitle,
             Ip           = ipLabel,
