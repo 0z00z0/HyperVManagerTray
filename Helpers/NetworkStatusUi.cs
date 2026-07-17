@@ -19,8 +19,8 @@ namespace HyperVManagerTray.Helpers;
 /// <see cref="TrayIconState.Bridged"/> or <see cref="TrayIconState.Fallback"/> — the two "all is
 /// well, the VM is on this network" colours — for <see cref="SwitchApplyStatus.Applied"/> and for
 /// nothing else. Every other status renders as <see cref="TrayIconState.Failed"/> (red: we tried and
-/// it did not work), <see cref="TrayIconState.Starting"/> (amber: we are still looking — issue #56) or
-/// <see cref="TrayIconState.Unknown"/> (grey: we have not established the state).
+/// it did not work) or <see cref="TrayIconState.Unknown"/> (grey: we make no claim about the network —
+/// whether because no pass has completed or because the first one is still in flight, issue #58).
 /// There is deliberately no "probably fine" state. If a future status is added, it lands in the
 /// <c>_ =&gt; Unknown</c> arm rather than silently reading as success — and
 /// <c>NetworkStatusUiTests.IconFor_OnlyAppliedEverRendersAsSuccess</c> enumerates the enum to enforce
@@ -34,6 +34,15 @@ namespace HyperVManagerTray.Helpers;
 /// site and asserted, for the entire startup window, a fact about the host that the app had not
 /// established. Honesty enforced in this file is only honesty where the text is BUILT in this file; see
 /// <see cref="TooltipSwitchName"/>.</para>
+///
+/// <para><b>Issue #58 is where the two halves of #56 parted company.</b> The tooltip half above was a real
+/// overclaim and stays fixed. The icon half gave <see cref="SwitchApplyStatus.Starting"/> an amber pixel
+/// of its own, and Espen, looking at his own taskbar, read it as the thing amber means in a tray: the
+/// network is degraded. Both halves passed the suite — the suite can check that a state is DISTINCT, not
+/// what a colour SAYS to the person it is aimed at. The status survives here because the tooltip needs the
+/// distinction; <see cref="IconFor"/> now maps it to the grey it shares with
+/// <see cref="SwitchApplyStatus.NotEvaluated"/>, because on the one question an icon answers — do we claim
+/// anything about the network? — the two give the same answer.</para>
 /// </summary>
 public static class NetworkStatusUi
 {
@@ -74,12 +83,15 @@ public static class NetworkStatusUi
         /// looking yet (issue #56). Like <see cref="NotEvaluated"/> it claims nothing whatsoever about the
         /// network; unlike it, it says WHY there is nothing to claim.
         ///
-        /// <para><b>Why this is a separate member and not just NotEvaluated.</b> They are the same state
-        /// of knowledge but not the same state of affairs, and the user's correct reaction to each is
-        /// opposite: "still looking, wait" vs. "it has stopped looking and has nothing" — the same
-        /// grey/red distinction #37 drew between <see cref="TrayIconState.Unknown"/> and
-        /// <see cref="TrayIconState.Failed"/>, one step earlier. Collapsed into one pixel for ~8 s at
-        /// logon, a correct answer read as a hang. That is #56.</para>
+        /// <para><b>Why this is a separate member and not just NotEvaluated (issue #58 revised this).</b>
+        /// They are the same state of knowledge but not the same state of affairs. #56 concluded that the
+        /// difference was worth its own tray colour; Espen's taskbar disagreed, because a colour cannot say
+        /// "wait" — the tray vocabulary only has "fine", "unknown" and "something is wrong", and amber lands
+        /// on the last of those. <see cref="IconFor"/> therefore renders this as
+        /// <see cref="TrayIconState.Unknown"/>, the same grey as <see cref="NotEvaluated"/>: on the icon's
+        /// question the two ARE the same answer. The member survives for the surface that can carry the
+        /// difference in words — <see cref="TooltipSwitchName"/> and <see cref="TooltipSwitchSuffix"/>, where
+        /// "starting up" is a sentence a user can act on and the ~8 s of "No switch" was a lie.</para>
         ///
         /// <para><b>Deliberately last, so <see cref="NotEvaluated"/> keeps the default 0.</b> A
         /// <see cref="MatchResult"/> that nobody stamped must stay "no pass has completed", never
@@ -156,30 +168,44 @@ public static class NetworkStatusUi
         SwitchApplyStatus.Applied         => bridgedTarget ? TrayIconState.Bridged : TrayIconState.Fallback,
         SwitchApplyStatus.BindFailed      => TrayIconState.Failed,
         SwitchApplyStatus.VmConnectFailed => TrayIconState.Failed,
-        // Issue #56. Note what this arm does NOT do: it does not consult bridgedTarget. The rules' intent
-        // is known the instant config loads, so an icon could show the target colour here — and that is
-        // precisely the pre-#37 defect, just moved to startup. Starting is a fact about the app; it may
-        // not borrow a colour that asserts a fact about the host.
-        SwitchApplyStatus.Starting        => TrayIconState.Starting,
+        // Issue #58. Explicit rather than left to the _ arm below, because the equality IS the decision:
+        // grey means "no claim about the network", which is precisely what the app has to say while its
+        // first pass is in flight. Starting and NotEvaluated are the same claim, so they are the same
+        // pixel. #56 gave Starting an amber of its own; on a real taskbar amber is the degraded-network
+        // convention, so the app announced a fault at every logon for a state in which nothing was wrong.
+        //
+        // Note what this arm does NOT do: it does not consult bridgedTarget. The rules' intent is known
+        // the instant config loads, so an icon could show the target colour here — and that is precisely
+        // the pre-#37 defect, just moved to startup. Starting is a fact about the app; it may not borrow
+        // a colour that asserts a fact about the host.
+        //
+        // What separates the two statuses is the REASON there is nothing to claim, which is a sentence
+        // rather than a hue: TooltipSwitchName/TooltipSwitchSuffix keep saying "starting up", and that
+        // half of #56 — the tooltip's `?? "No switch"` overclaim — stays fixed.
+        SwitchApplyStatus.Starting        => TrayIconState.Unknown,
         _                                 => TrayIconState.Unknown,   // NotEvaluated, and any future member
     };
 
     /// <summary>
     /// True when the tray icon is showing a state the app has actually ESTABLISHED — a confirmed apply
     /// (<see cref="TrayIconState.Bridged"/>/<see cref="TrayIconState.Fallback"/>) or a confirmed failure
-    /// (<see cref="TrayIconState.Failed"/>). False for the two states that assert nothing about the host:
-    /// <see cref="TrayIconState.Unknown"/> and <see cref="TrayIconState.Starting"/>.
+    /// (<see cref="TrayIconState.Failed"/>). False for <see cref="TrayIconState.Unknown"/>, the state that
+    /// asserts nothing about the host — which since issue #58 is also the state a starting app shows, so
+    /// this one check still excludes startup.
     ///
     /// <para><b>This is the definition of issue #54's "tray icon first showed an established state"
     /// milestone</b> — the number #52's ~8 s finding is about, and the one #56 part 2 is trying to move.
     /// It lives here, pure and enumerable, rather than as an inline <c>state != Unknown</c> test in
-    /// <c>App.OnSwitchApplied</c>: as an inline test it was a list of cases that #56's new state would
-    /// have silently joined the wrong side of, quietly redefining the milestone to "the icon went amber"
-    /// and reporting a ~2 s startup that had improved by nothing at all. A metric that a cosmetic change
-    /// can move without the underlying work getting faster is worse than no metric.</para>
+    /// <c>App.OnSwitchApplied</c>. #56 added a state that such an inline test would have silently put on
+    /// the wrong side, quietly redefining the milestone to "the icon went amber" and reporting a ~2 s
+    /// startup that had improved by nothing at all. A metric that a cosmetic change can move without the
+    /// underlying work getting faster is worse than no metric — which is exactly why #58 removing that
+    /// state again must not move it either: <c>IconFor(Starting, _)</c> is <see cref="TrayIconState.Unknown"/>,
+    /// so the milestone still fires on the first CONFIRMED outcome and not a moment earlier.
+    /// <c>IsEstablished_StartingIsNotEstablished</c> pins that through IconFor rather than trusting it.</para>
     /// </summary>
     public static bool IsEstablished(TrayIconState state) =>
-        state is not (TrayIconState.Unknown or TrayIconState.Starting);
+        state is not TrayIconState.Unknown;
 
     /// <summary>
     /// The dashboard HOST NETWORK card's "Rule" row: the rule name, suffixed with the failure when the

@@ -5,7 +5,7 @@ using System.Drawing.Imaging;
 namespace HyperVManagerTray.Helpers;
 
 /// <summary>
-/// Five tray icon states reflected as the glyph colour.
+/// Four tray icon states reflected as the glyph colour.
 ///
 /// <para>The grey/red split is load-bearing (issue #37): <see cref="Unknown"/> means the app has not
 /// established where the VMs are, <see cref="Failed"/> means it tried and did not get there. Both are
@@ -13,21 +13,24 @@ namespace HyperVManagerTray.Helpers;
 /// and neither may ever be rendered as <see cref="Bridged"/>. See
 /// <see cref="NetworkStatusUi.IconFor"/>, which is the only thing that should choose between these.</para>
 ///
-/// <para><b><see cref="Starting"/> splits a pixel that was doing two jobs (issue #56).</b> #37's honesty
-/// rule is right and stays: for the ~8 s between the tray icon appearing and the first apply pass
-/// confirming an outcome, the app genuinely does not know where the VMs are, so it may not claim.
-/// But it rendered that as <see cref="Unknown"/> — the same grey as "we looked and could not establish
-/// it" — so a correct answer was indistinguishable from a hang, and the honest icon read as a broken
-/// one. <see cref="Starting"/> says the app's first pass is still in flight. That is a fact about the
-/// APP, not a claim about the host: it is true by construction the moment the tray icon is created, and
-/// it is the only state here that needs no confirmation from anything. It claims nothing about the
-/// network and it may never be a success colour — <see cref="NetworkStatusUi.IconFor"/>'s
-/// enum-enumerating guard covers it exactly as it covers every other member.</para>
+/// <para><b>There is deliberately no "starting" state (issue #58).</b> Issue #56 added an amber one for
+/// the window between the tray icon appearing and the first apply pass confirming an outcome. On a real
+/// taskbar amber reads as "network degraded" — the tray's warning convention — so an app that had merely
+/// not finished looking yet announced a problem at every logon. The amber was also forced rather than
+/// chosen: the glyph geometry is identical across states, so colour is the only channel carrying state,
+/// and <c>RenderIcon_EveryStateHasItsOwnColour</c> requires a new state to bring a new hue.
+///
+/// <para>The resolution is that "the first pass is in flight" was never a distinct ICON state to begin
+/// with. <see cref="Unknown"/> means <i>no claim about the network</i>, and that is exactly true while the
+/// app is still looking. Same claim, same pixel. What genuinely differs between the two is the REASON
+/// there is nothing to claim, and that is a sentence, not a colour — it lives on the tray tooltip, where
+/// <c>NetworkStatusUi.SwitchApplyStatus.Starting</c> still distinguishes "starting up" from "not applied
+/// yet". Deleting the state rather than exempting it from the one-colour-per-state rule is the point:
+/// there is now nothing to exempt, so the guard stays intact and honest.</para></para>
 /// </summary>
 public enum TrayIconState
 {
-    Unknown,  // grey  — no data: the state is not established (and we are no longer merely starting)
-    Starting, // amber — issue #56: the app's FIRST evaluation is still running. Claims nothing about the host.
+    Unknown,  // grey  — no claim about the network: not established yet, or the first pass is still in flight (#58)
     Bridged,  // green — CONFIRMED: VM on physical LAN
     Fallback, // blue  — CONFIRMED: VM on Default Switch / NAT
     Failed,   // red   — the switch bind or a VM-NIC reconnect FAILED (issue #37)
@@ -36,17 +39,17 @@ public enum TrayIconState
 /// <summary>
 /// Generates the tray icon at runtime (no image assets): a minimalist "virtual machine" glyph —
 /// a hollow monitor/display with two content bars and a stand — drawn in a single muted colour
-/// on a fully transparent background.  The colour signals state (grey = unknown, amber = starting up,
+/// on a fully transparent background.  The colour signals state (grey = no claim about the network,
 /// green = bridged to physical LAN, blue = NAT/fallback, red = the apply failed); the transparent
 /// background lets the same icon read on both light and dark taskbars.  Colours are intentionally
 /// medium-luminance, not vivid, so the glyph's edges stay crisp against either backdrop.
 ///
-/// One colour per state is a rule, not a coincidence: the geometry is identical across all five, so the
+/// One colour per state is a rule, not a coincidence: the geometry is identical across all four, so the
 /// colour is the ONLY channel carrying the state, and two states sharing one would be indistinguishable
-/// rather than merely similar (RenderIcon_EveryStateHasItsOwnColour enumerates it).  That is what ruled
-/// out a second grey for Starting in issue #56 — see GlyphStarting.
+/// rather than merely similar (RenderIcon_EveryStateHasItsOwnColour enumerates it).  Issue #58 removed
+/// the amber "starting" state rather than weakening that rule — see TrayIconState.
 ///
-/// Five multi-size .ico files are written next to the exe and swapped on state changes; writing
+/// Four multi-size .ico files are written next to the exe and swapped on state changes; writing
 /// to disk lets H.NotifyIcon reload them and avoids the GDI handle leak of Bitmap.GetHicon().
 ///
 /// Icon version: v5 — the restyled HyperVManagerTray product glyph (the 0z0-guideline product
@@ -60,7 +63,6 @@ internal static class IconGenerator
 {
     // v5 — rename forces regeneration on first run after upgrade; old v2/v3/v4 files are ignored.
     private const string UnknownFile  = "icon-unknown-v5.ico";
-    private const string StartingFile = "icon-starting-v5.ico";  // issue #56
     private const string BridgedFile  = "icon-bridged-v5.ico";
     private const string FallbackFile = "icon-fallback-v5.ico";
     private const string FailedFile   = "icon-failed-v5.ico";   // issue #37
@@ -74,18 +76,6 @@ internal static class IconGenerator
     private static readonly Color GlyphUnknown  = Color.FromArgb(255, 0x8C, 0x8C, 0x8C);  // muted grey
     private static readonly Color GlyphBridged  = Color.FromArgb(255, 0x35, 0x9E, 0x6A);  // muted green
     private static readonly Color GlyphFallback = Color.FromArgb(255, 0x3B, 0x7E, 0xC4);  // muted blue
-    // Muted amber (issue #56) — "still working on it", the one convention a tray user already reads
-    // without being told. Its constraints are tighter than they look, and each one excludes an option:
-    //   • NOT a second grey. A darker/lighter grey is the honest colour (grey is this app's "no claim"
-    //     hue) but it is not a DISTINGUISHABLE one — mid-grey vs dark-grey at 16 px is the same pixel
-    //     problem #56 was filed about, only harder to describe. The palette here is one colour per
-    //     state by design (see RenderIcon_EveryStateHasItsOwnColour), so the state needs its own hue.
-    //   • NOT green- or blue-leaning. Those are the two CONFIRMED colours; a yellow-green that drifted
-    //     toward Bridged would be #37's original defect wearing a new coat. Amber is deliberately
-    //     R-dominant — it sits on the "not a success colour" side of the palette by construction.
-    //   • FAR from GlyphFailed. Amber and red are the closest pair here (both warm, both R-dominant), so
-    //     the separation is in the GREEN channel (0x9A vs Failed's 0x45) — a gold, not an orange. Tested.
-    private static readonly Color GlyphStarting = Color.FromArgb(255, 0xC9, 0x9A, 0x2E);
     // Muted red (issue #37) — same medium-luminance treatment as the other three so the glyph edges
     // stay crisp on a white taskbar, but unmistakably a different hue from the green/blue "confirmed"
     // colours AND from the grey "don't know yet".
@@ -98,7 +88,6 @@ internal static class IconGenerator
     {
         var file = state switch
         {
-            TrayIconState.Starting => StartingFile,
             TrayIconState.Bridged  => BridgedFile,
             TrayIconState.Fallback => FallbackFile,
             TrayIconState.Failed   => FailedFile,
@@ -112,7 +101,6 @@ internal static class IconGenerator
 
     private static Color ColorFor(TrayIconState state) => state switch
     {
-        TrayIconState.Starting => GlyphStarting,
         TrayIconState.Bridged  => GlyphBridged,
         TrayIconState.Fallback => GlyphFallback,
         TrayIconState.Failed   => GlyphFailed,

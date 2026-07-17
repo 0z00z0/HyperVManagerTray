@@ -93,8 +93,7 @@ public class NetworkStatusUiTests
     /// side here deliberately rather than inherit one.
     /// </summary>
     [Theory]
-    [InlineData(TrayIconState.Unknown,  false)]  // we looked and could not establish it
-    [InlineData(TrayIconState.Starting, false)]  // we have not finished looking (issue #56)
+    [InlineData(TrayIconState.Unknown,  false)]  // we looked and could not establish it — or are still looking (issue #58)
     [InlineData(TrayIconState.Bridged,  true)]
     [InlineData(TrayIconState.Fallback, true)]
     [InlineData(TrayIconState.Failed,   true)]   // a CONFIRMED failure is established knowledge
@@ -136,26 +135,30 @@ public class NetworkStatusUiTests
     // Nothing applied yet → grey. Not a guess in either direction.
     [InlineData(SwitchApplyStatus.NotEvaluated,    true,  TrayIconState.Unknown)]
     [InlineData(SwitchApplyStatus.NotEvaluated,    false, TrayIconState.Unknown)]
-    // Still looking → amber, and amber regardless of what the rules INTEND (issue #56). The intent is
-    // known the moment config loads, so a bridgedTarget-sensitive Starting arm would be the pre-#37
-    // "show the target colour before it is confirmed" defect relocated to startup.
-    [InlineData(SwitchApplyStatus.Starting,        true,  TrayIconState.Starting)]
-    [InlineData(SwitchApplyStatus.Starting,        false, TrayIconState.Starting)]
+    // Still looking → grey Unknown, and grey regardless of what the rules INTEND (issue #58). #56 gave
+    // this its own amber pixel, but on a real taskbar amber reads as "network degraded", so the app
+    // announced a fault at every logon. The icon makes no claim about the network while the first pass is
+    // in flight — the same claim as NotEvaluated — so it is the same pixel. A bridgedTarget-sensitive arm
+    // would still be the pre-#37 "show the target colour before it is confirmed" defect relocated to startup.
+    [InlineData(SwitchApplyStatus.Starting,        true,  TrayIconState.Unknown)]
+    [InlineData(SwitchApplyStatus.Starting,        false, TrayIconState.Unknown)]
     public void IconFor_RendersEachStatus(SwitchApplyStatus status, bool bridgedTarget, TrayIconState expected) =>
         Assert.Equal(expected, IconFor(status, bridgedTarget));
 
-    // Starting must be its OWN pixel — not grey. This is issue #56 in one assertion: the app was honest
-    // for ~8 s at logon and rendered that honesty as the same grey it uses for "unknown", so a correct
-    // answer was indistinguishable from a hang. Distinct from every established state too, since it is
-    // not one.
+    // Starting shares grey Unknown with NotEvaluated — the icon's only question is whether the app claims
+    // anything about the network, and while the first pass is in flight it does not, exactly as when no
+    // pass has run (issue #58). The "starting up" vs "not applied yet" distinction is real but lives on
+    // the tooltip, not the icon (see the TooltipSwitchSuffix/Name Starting tests below). It must still
+    // never borrow a confirmed colour.
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public void IconFor_StartingIsNeitherUnknownNorAnyEstablishedState(bool bridgedTarget)
+    public void IconFor_StartingIsGreyUnknownAndNeverAConfirmedColour(bool bridgedTarget)
     {
         var starting = IconFor(SwitchApplyStatus.Starting, bridgedTarget);
 
-        Assert.NotEqual(TrayIconState.Unknown, starting);
+        Assert.Equal(TrayIconState.Unknown, starting);
+        Assert.Equal(IconFor(SwitchApplyStatus.NotEvaluated, bridgedTarget), starting);
         Assert.NotEqual(IconFor(SwitchApplyStatus.Applied,         bridgedTarget), starting);
         Assert.NotEqual(IconFor(SwitchApplyStatus.BindFailed,      bridgedTarget), starting);
         Assert.NotEqual(IconFor(SwitchApplyStatus.VmConnectFailed, bridgedTarget), starting);

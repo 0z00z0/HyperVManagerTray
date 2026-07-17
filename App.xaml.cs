@@ -322,12 +322,17 @@ public partial class App : Application
     private void InitTrayIcon()
     {
         _trayIcon = (TaskbarIcon)Resources["TrayIcon"];
-        // Amber = "still looking", not grey "unknown" (issue #56). At this line the first evaluation has
-        // not even been scheduled (_monitor.Start() is a few lines below), so "the app is starting up" is
-        // true by construction — the one thing the app can honestly say before it has asked the host
-        // anything. It stays amber until OnSwitchApplied posts a confirmed outcome; nothing ever puts it
-        // back, because a process only starts once.
-        SetTrayIcon(TrayIconState.Starting);
+        // At this line the first evaluation has not even been scheduled (_monitor.Start() is a few lines
+        // below), so "the app is starting up" is true by construction — the one thing the app can honestly
+        // say before it has asked the host anything. It renders GREY: the icon's only question is whether
+        // we claim anything about the network, and we do not (issue #58 — #56's amber read as a degraded
+        // network on a real taskbar). The reason we have nothing to claim reaches the user through the
+        // tooltip, which BuildTooltipText derives from the same status.
+        //
+        // Asked through IconFor rather than naming a colour here: the mapping from "what the app knows"
+        // to "what the pixel says" is that method's job alone, and a literal here would be a second,
+        // unguarded copy of it — exactly the call-site decision #56's tooltip bug was made of.
+        SetTrayIcon(NetworkStatusUi.IconFor(NetworkStatusUi.SwitchApplyStatus.Starting, bridgedTarget: false));
 
         // The tray's manual network actions report through the same balloon channel a failed apply uses
         // (issue #37). Not suppressed by a visible dashboard: unlike an automatic apply, these are direct
