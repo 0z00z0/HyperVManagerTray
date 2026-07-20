@@ -117,7 +117,7 @@
     <!-- Required by the linked FileLogger.cs, whose sink is now NLog (issue #55). -->
     <PackageReference Include="NLog" Version="6.1.4" />
     <PackageReference Include="System.Drawing.Common" Version="10.0.8" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
   </ItemGroup>
