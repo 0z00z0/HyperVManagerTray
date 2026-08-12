@@ -25,7 +25,7 @@
     <Product>Hyper-V Manager Tray</Product>
     <Description>System-tray app that auto-connects a Hyper-V VM to the right virtual switch and controls VMs from a dashboard.</Description>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
-    <Version>2.5.11</Version>
+    <Version>2.5.12</Version>
     <Authors>ZeroZero Software</Authors>
     <Company>ZeroZero Software</Company>
     <Copyright>Copyright © 2026 ZeroZero Software</Copyright>
@@ -47,6 +47,10 @@
     <PackageReference Include="H.NotifyIcon.WinUI" Version="2.4.1" />
     <PackageReference Include="System.Drawing.Common" Version="10.0.8" />
     <PackageReference Include="System.Management" Version="10.0.8" />
+    <!-- Typed Task Scheduler API behind Services\StartupManager.cs. schtasks /Create cannot set
+         DisallowStartIfOnBatteries/StopIfGoingOnBatteries, and their defaults are what stopped the
+         logon task ever starting the app on battery (issue #61). -->
+    <PackageReference Include="TaskScheduler" Version="2.12.2" />
   </ItemGroup>
 
   <!-- Shared ZeroZero Software branding: the About window now comes from here instead of a

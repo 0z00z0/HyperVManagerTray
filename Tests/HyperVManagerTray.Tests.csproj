@@ -103,6 +103,13 @@
          linked FileLogger.cs, which salvages each path before NLog opens a handle on it. Pure file IO
          over a path handed in — temp files are all its tests need. -->
     <Compile Include="..\Services\LogFileSalvage.cs"  Link="Linked\LogFileSalvage.cs" />
+    <!-- Issue #61: what the logon task must look like, and the self-heal decision for one already
+         registered with Task Scheduler's battery defaults. BuildLogonTask only builds an in-memory
+         definition and StartupTaskRepair takes its scheduler calls as delegates, so neither can
+         touch a real task; Services\StartupManager.cs — the one file that registers and deletes —
+         is deliberately NOT linked. -->
+    <Compile Include="..\Helpers\StartupTaskDefinition.cs" Link="Linked\StartupTaskDefinition.cs" />
+    <Compile Include="..\Helpers\StartupTaskRepair.cs"     Link="Linked\StartupTaskRepair.cs" />
     <Compile Include="..\Models\AppConfig.cs"         Link="Linked\AppConfig.cs" />
     <Compile Include="..\Models\NetworkRule.cs"       Link="Linked\NetworkRule.cs" />
     <Compile Include="..\Models\VmTarget.cs"          Link="Linked\VmTarget.cs" />
@@ -124,6 +131,8 @@
     <!-- Required by the linked FileLogger.cs, whose sink is now NLog (issue #55). -->
     <PackageReference Include="NLog" Version="6.1.4" />
     <PackageReference Include="System.Drawing.Common" Version="10.0.8" />
+    <!-- Required by the linked StartupTaskDefinition.cs (issue #61). -->
+    <PackageReference Include="TaskScheduler" Version="2.12.2" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />

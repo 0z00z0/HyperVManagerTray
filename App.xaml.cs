@@ -136,6 +136,11 @@ public partial class App : Application
             CrashDumps.TryRegisterLocalDumps(Path.Combine(logDir, "dumps"));
 
             _startup       = new StartupManager(_loggerFactory.CreateLogger<StartupManager>());
+            // Self-heal for issue #61: a logon task registered by an older build carries Task
+            // Scheduler's battery defaults and never starts the app when the machine boots on
+            // battery. Off the startup path — connecting to the scheduler costs tens of ms, and
+            // nothing here waits on the result.
+            _ = Task.Run(_startup.TryRepairPowerSettings);
             _httpClient    = new HttpClient();
             _updateChecker = new UpdateChecker(_httpClient, _loggerFactory.CreateLogger<UpdateChecker>());
 

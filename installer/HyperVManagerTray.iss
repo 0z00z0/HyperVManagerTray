@@ -327,9 +327,19 @@ begin
   // A logon task with RL HIGHEST lets the elevated app auto-start with no boot-time UAC
   // prompt. Creating a HIGHEST task needs admin, so this one step elevates via 'runas'
   // (exactly one UAC prompt — and only because the user ticked "Run at startup").
-  Params := '/Create /TN "' + TaskName + '" /TR "\"' + ExpandConstant('{app}\{#AppExe}') +
-            '\"" /SC ONLOGON /RL HIGHEST /F';
-  if not ShellExec('runas', 'schtasks.exe', Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  //
+  // schtasks has no switch for the battery settings, and Task Scheduler's defaults
+  // (DisallowStartIfOnBatteries/StopIfGoingOnBatteries) mean the task never starts the app on a
+  // laptop that boots on battery — issue #61. Clear them with PowerShell in the SAME elevated
+  // step, so this is still exactly one UAC prompt. The app repairs older tasks at startup.
+  Params := '/C schtasks.exe /Create /TN "' + TaskName + '" /TR "\"' + ExpandConstant('{app}\{#AppExe}') +
+            '\"" /SC ONLOGON /RL HIGHEST /F'
+          + ' && powershell.exe -NoProfile -ExecutionPolicy Bypass -Command'
+          + ' "$t = Get-ScheduledTask -TaskName ' + TaskName + ';'
+          + ' $t.Settings.DisallowStartIfOnBatteries = $false;'
+          + ' $t.Settings.StopIfGoingOnBatteries = $false;'
+          + ' Set-ScheduledTask -TaskName ' + TaskName + ' -Settings $t.Settings"';
+  if not ShellExec('runas', ExpandConstant('{cmd}'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
     MsgBox('Could not create the startup task. You can still enable "Run on startup" '
            + 'from the app''s tray menu later.', mbInformation, MB_OK);
 end;
