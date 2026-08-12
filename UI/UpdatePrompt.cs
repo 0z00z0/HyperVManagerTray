@@ -65,17 +65,12 @@ internal static class UpdatePrompt
                 // Cancel — do nothing
             }
         }
-        else if (result.LatestVersion == "none")
+        // Everything that is not an offered update is one sentence, and which sentence is a claim about
+        // what the app established — so it is decided in UpdateStatusUi, where it can be asserted.
+        else if (UpdateStatusUi.ReportFor(result, running, DateTimeOffset.Now) is { } report)
         {
-            NativeMethods.Info("No releases have been published yet.", AppInfo.Name);
-        }
-        else if (!string.IsNullOrEmpty(result.LatestVersion))
-        {
-            NativeMethods.Info($"You're on the latest version ({running}).", AppInfo.Name);
-        }
-        else
-        {
-            NativeMethods.Warn("Could not check for updates. Check your internet connection.", AppInfo.Name);
+            if (report.IsError) NativeMethods.Warn(report.Message, AppInfo.Name);
+            else                NativeMethods.Info(report.Message, AppInfo.Name);
         }
     }
 }

@@ -91,6 +91,13 @@
          comparisons — no WinUI, no host, no registry — which is what makes the race it exists to prevent
          (a read that started before a change landing after it and being trusted) testable at all. -->
     <Compile Include="..\Helpers\HostReadGeneration.cs" Link="Linked\HostReadGeneration.cs" />
+    <!-- The GitHub-response → outcome classification, and the outcome → message decisions built on it.
+         UpdateChecker is HTTP and JSON only — no WinUI, no live host — so it links here and its branches
+         are driven through a stub HttpMessageHandler rather than a real call to api.github.com. That is
+         the point: the branch this pair exists for (a 403 that is a rate limit, not a forbidden) is one
+         that cannot be produced on demand against the real API. -->
+    <Compile Include="..\Services\UpdateChecker.cs"   Link="Linked\UpdateChecker.cs" />
+    <Compile Include="..\Helpers\UpdateStatusUi.cs"   Link="Linked\UpdateStatusUi.cs" />
     <Compile Include="..\Services\FileLogger.cs"      Link="Linked\FileLogger.cs" />
     <!-- Issue #55: repairs a log file whose head a power cut turned into NUL bytes. Required by the
          linked FileLogger.cs, which salvages each path before NLog opens a handle on it. Pure file IO
