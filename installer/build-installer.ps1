@@ -7,8 +7,10 @@
     2. Publishes the app fully self-contained (win-x64, Windows App SDK bundled, no trimming  - 
        trimming breaks WinUI 3).
     3. Compiles installer\HyperVManagerTray.iss with Inno Setup (ISCC.exe).
+    4. Moves the signed setup to the local installer shelf — skipped in CI, which
+       signs and publishes from installer\Output.
 
-    Output: installer\Output\HyperVManagerTray-Setup.exe (per-user, no admin to install;
+    Output: HyperVManagerTray-Setup-{version}.exe (per-user, no admin to install;
     the app elevates itself at runtime).
 
     Requires Inno Setup (ISCC). If missing, install it once:
@@ -30,6 +32,7 @@ $root         = Split-Path $installerDir -Parent
 $proj         = Join-Path $root "HyperVManagerTray.csproj"
 $publishDir   = Join-Path $root "publish"
 $iss          = Join-Path $installerDir "HyperVManagerTray.iss"
+$shelfDir     = "C:\Users\EspenLaget\Nextcloud\Projects\Installers"   # local dev shelf; see step 6
 
 # -- 0. Resolve / bump version ------------------------------------------------
 $projContent = Get-Content $proj -Raw
@@ -130,6 +133,29 @@ if (Test-Path $setup) {
     Write-Host "==> Signing installer..." -ForegroundColor Cyan
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "scripts\sign.ps1") -Path $setup
     # Non-fatal: sign.ps1 prints a warning and exits 0 if the cert is absent.
+}
+
+# -- 6. Move the signed installer to the local installer shelf ----------------
+# Local dev only: CI signs from and attaches installer\Output, so the file must stay
+# put there. Guarded twice — GITHUB_ACTIONS is the explicit check, the folder test also
+# covers any other machine that has no shelf.
+if (-not $env:GITHUB_ACTIONS -and (Test-Path $shelfDir) -and (Test-Path $setup)) {
+    # Only this app's setups — the shelf is shared with the other studio apps.
+    Get-ChildItem $shelfDir -Filter "HyperVManagerTray-Setup-*.exe" -File -ErrorAction SilentlyContinue |
+        Where-Object Name -ne (Split-Path $setup -Leaf) |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+
+    $shelved  = Join-Path $shelfDir (Split-Path $setup -Leaf)
+    $expected = (Get-FileHash $setup -Algorithm SHA256).Hash
+    Move-Item $setup $shelved -Force
+
+    # A sync client has silently rolled back a fresh binary write here before, so the
+    # move is only believed once the bytes at the destination hash the same.
+    $actual = (Get-FileHash $shelved -Algorithm SHA256).Hash
+    if ($actual -ne $expected) {
+        throw "Moved installer does not match: expected $expected, got $actual at $shelved."
+    }
+    $setup = $shelved
 }
 
 Write-Host ""
