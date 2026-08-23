@@ -1,3 +1,4 @@
+using System.Globalization;
 using HyperVManagerTray.Models;
 using HyperVManagerTray.Services;
 using Microsoft.Extensions.Logging;
@@ -152,7 +153,10 @@ public static class SettingsOptions
         if (string.IsNullOrWhiteSpace(cidr)) return true;
         var parts = cidr.Trim().Split('/');
         if (parts.Length != 2) return false;
-        if (!int.TryParse(parts[1], out int prefix) || prefix < 0 || prefix > 32) return false;
+        // Invariant: a CIDR prefix is a protocol value and is stored verbatim in config.json, so it
+        // must read the same whatever the machine's locale does to digits and signs.
+        if (!int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int prefix)
+            || prefix < 0 || prefix > 32) return false;
         if (!System.Net.IPAddress.TryParse(parts[0], out var ip)) return false;
         return ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork;
     }

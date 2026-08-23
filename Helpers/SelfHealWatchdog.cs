@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Win32;
 
 namespace HyperVManagerTray.Helpers;
@@ -104,13 +105,16 @@ internal static class SelfHealWatchdog
             var recent = new List<long>();
             if (File.Exists(path))
                 foreach (var line in File.ReadAllLines(path))
-                    if (long.TryParse(line, out var ts) && ts >= cutoff) recent.Add(ts);
+                    // Invariant both ways: this file is written by one process and read by the next,
+                    // so its digits belong to the app, not to the machine's locale.
+                    if (long.TryParse(line, NumberStyles.Integer, CultureInfo.InvariantCulture, out var ts)
+                        && ts >= cutoff) recent.Add(ts);
 
             if (recent.Count >= 3) return false;
 
             recent.Add(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             Directory.CreateDirectory(AppInfo.DataDir);
-            File.WriteAllLines(path, recent.Select(t => t.ToString()));
+            File.WriteAllLines(path, recent.Select(t => t.ToString(CultureInfo.InvariantCulture)));
             return true;
         }
         catch

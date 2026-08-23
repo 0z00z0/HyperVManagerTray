@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -796,7 +797,10 @@ public static class AdapterMatcher
     internal static bool IsInCidr(IPAddress address, string cidr)
     {
         var parts = cidr.Split('/');
-        if (parts.Length != 2 || !int.TryParse(parts[1], out int prefixLen)) return false;
+        // Invariant: the prefix comes out of config.json, so it is a protocol value, not typed input.
+        if (parts.Length != 2
+            || !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int prefixLen))
+            return false;
 
         var network = IPAddress.Parse(parts[0]);
         uint mask = prefixLen == 0 ? 0u : ~((1u << (32 - prefixLen)) - 1u);

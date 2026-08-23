@@ -25,15 +25,27 @@
     <Product>Hyper-V Manager Tray</Product>
     <Description>System-tray app that auto-connects a Hyper-V VM to the right virtual switch and controls VMs from a dashboard.</Description>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
-    <Version>2.6.0</Version>
+    <Version>2.6.1</Version>
     <Authors>ZeroZero Software</Authors>
     <Company>ZeroZero Software</Company>
     <Copyright>Copyright © 2026 ZeroZero Software</Copyright>
     <RepositoryUrl>https://github.com/0z00z0/HyperVManagerTray</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
 
-    <!-- Drop the ~27 MB ICU payload (no localized UI; all formatting/parsing is ordinal/invariant). -->
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- InvariantGlobalization stays OFF, deliberately (issue #61).
+         Two reasons, both load-bearing:
+         1. Microsoft.Win32.TaskScheduler.Trigger's static initialiser calls
+            CultureInfo.CreateSpecificCulture("en"), which throws CultureNotFoundException in
+            globalization-invariant mode. It is reached from TaskRegistrationInfo.get_Date() inside
+            TaskFolder.RegisterTaskDefinition, so EVERY Task Scheduler write throws — the "run at
+            logon" toggle (StartupManager.Enable) and the battery-flag self-heal alike.
+         2. Invariant mode pins CultureInfo.CurrentCulture to the invariant culture, so every number
+            and date the UI shows is formatted invariantly instead of in the user's locale.
+         Machine-readable text — config.json, MQTT topics and payloads, log lines, the crash-stamp
+         file — pins CultureInfo.InvariantCulture at each call site instead; see CultureBoundaryTests.
+         The app is framework-dependent win-x64, so ICU comes from the shared runtime and no ICU
+         payload is published. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>

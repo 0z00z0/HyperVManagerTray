@@ -365,7 +365,7 @@ costs nothing.  The WinUI 3 runtime raises the memory baseline versus the old Wi
 
 | Lever | Verdict |
 |---|---|
-| `InvariantGlobalization=true` | **Kept.** ICU not loaded; no localized UI, all formatting is ordinal/invariant. |
+| `InvariantGlobalization=true` | **Rejected** (issue #61). `Microsoft.Win32.TaskScheduler.Trigger`'s static initialiser calls `CultureInfo.CreateSpecificCulture("en")`, which throws in invariant mode; it is reached from `TaskFolder.RegisterTaskDefinition`, so every Task Scheduler write fails — the startup toggle and the battery-flag self-heal alike. It also pins `CurrentCulture` to invariant, so displayed numbers and dates ignore the user's locale. The app is framework-dependent, so ICU comes from the shared runtime and costs nothing in the publish output. Machine-readable text pins `CultureInfo.InvariantCulture` per call site instead — see `Tests\CultureBoundaryTests.cs`. |
 | Remove unused `Logging.Console` pkg | **Kept.** Only the custom file sink is wired up. |
 | `EnableCompressionInSingleFile` | **N/A for WinUI.** (Was rejected for WinForms: −63 MB disk but +40 MB RAM.) |
 | `PublishTrimmed` | **Rejected.** WinUI 3 + reflection-based JSON trim poorly and break at runtime. |

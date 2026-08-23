@@ -61,7 +61,8 @@ and makes a third app nearly free to onboard.
 - The Inno `[Code]` block (startup task, auto-update task, launch/uninstall logic) — identical.
 - `release.yml` shape — build → test → sign → SHA → patch manifests → validate → release.
 - The csproj `SignOutput` MSBuild target and common metadata (Company, Authors, Copyright,
-  `InvariantGlobalization`, platform/runtime).
+  platform/runtime). `InvariantGlobalization` is deliberately not among them — this app must keep it
+  off (issue #61).
 - The winget manifest trio (pure templating: id, name, version, url, sha, description, tags).
 
 **Per-app (stays local, small):**

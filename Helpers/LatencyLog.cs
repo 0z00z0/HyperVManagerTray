@@ -106,8 +106,8 @@ public static class LatencyLog
     /// Milliseconds, at a precision that does not overstate what was measured: sub-10 ms figures keep one
     /// decimal (the rebuild is genuinely fractional), anything larger is whole milliseconds — a menu
     /// rebuild reported as "1234.7 ms" would imply a resolution the surrounding noise does not support.
-    /// Invariant culture: <c>InvariantGlobalization</c> is on, and a log parsed by tooling must not
-    /// acquire a decimal comma from a locale.
+    /// Invariant culture, pinned at the call site: a log line is machine-readable and must not acquire
+    /// a decimal comma from the machine's locale.
     /// </summary>
     public static string FormatMs(double ms) =>
         ms < 10

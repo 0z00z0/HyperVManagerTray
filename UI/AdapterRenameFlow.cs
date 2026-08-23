@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Dispatching;
 using HyperVManagerTray.Helpers;
@@ -243,7 +244,9 @@ internal sealed class AdapterRenameFlow
                     OriginalFriendlyName = capture.OriginalFriendlyName,
                     OriginalWasAbsent    = capture.OriginalWasAbsent,
                     Mac                  = adapter.Mac,
-                    RenamedOn            = DateTime.Now.ToString("yyyy-MM-dd"),
+                    // Invariant: this lands in config.json, so the calendar and the digits are the
+                    // app's, not the machine's — an ISO date must stay one on a non-Gregorian locale.
+                    RenamedOn            = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                     CurrentFriendlyName  = newName,
                 };
                 await Task.Run(() => _config.UpsertAdapterName(entry));

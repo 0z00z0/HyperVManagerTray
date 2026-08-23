@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -256,7 +257,9 @@ internal sealed class UpdateChecker(HttpClient http, ILogger<UpdateChecker> logg
         if (response.StatusCode == HttpStatusCode.TooManyRequests) return true;
         if (response.StatusCode != HttpStatusCode.Forbidden)       return false;
 
-        if (HeaderValue(response, "X-RateLimit-Remaining") is { } remaining && int.TryParse(remaining, out var left))
+        // Invariant: an HTTP header is a wire value, never locale-formatted text.
+        if (HeaderValue(response, "X-RateLimit-Remaining") is { } remaining
+            && int.TryParse(remaining, NumberStyles.Integer, CultureInfo.InvariantCulture, out var left))
             return left <= 0;
 
         return response.Headers.RetryAfter is not null;
@@ -268,7 +271,8 @@ internal sealed class UpdateChecker(HttpClient http, ILogger<UpdateChecker> logg
     /// </summary>
     private static DateTimeOffset? RateLimitReset(HttpResponseMessage response)
     {
-        if (HeaderValue(response, "X-RateLimit-Reset") is { } reset && long.TryParse(reset, out var unixSeconds))
+        if (HeaderValue(response, "X-RateLimit-Reset") is { } reset
+            && long.TryParse(reset, NumberStyles.Integer, CultureInfo.InvariantCulture, out var unixSeconds))
             return DateTimeOffset.FromUnixTimeSeconds(unixSeconds);
 
         var retryAfter = response.Headers.RetryAfter;
