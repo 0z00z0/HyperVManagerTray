@@ -44,6 +44,9 @@ internal static class AppInfo
     /// <summary>Full path of the dedicated UI-interaction log (issue #21). Beside <see cref="LogFile"/>.</summary>
     public static string UiLog => Path.Combine(DataDir, "ui.log");
 
+    /// <summary>Full path of the dedicated MQTT / Home Assistant log (issue #75). Beside <see cref="LogFile"/>.</summary>
+    public static string MqttLog => Path.Combine(DataDir, "mqtt.log");
+
     /// <summary>Full path of the crash log written by the global exception handlers.</summary>
     public static string CrashLog => Path.Combine(DataDir, "crash.log");
 

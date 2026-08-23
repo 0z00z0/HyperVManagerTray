@@ -24,6 +24,7 @@ public partial class App : Application
     private HyperVManager?  _hyperV;   // switch binding / host-vNIC repair (native WMI, issue #17)
     private VmService?      _vm;       // VM status/metrics/power/IPs via WMI
     private NetworkMonitor? _monitor;
+    private MqttService?    _mqtt;     // Home Assistant over MQTT (issue #75)
     private StartupManager  _startup = null!;
     private HttpClient?     _httpClient;
     private UpdateChecker?  _updateChecker;
@@ -128,11 +129,13 @@ public partial class App : Application
                 // _logLevelSwitch is the sole runtime gate for all three logs (issue #22).
                 b.SetMinimumLevel(LogLevel.Trace);
                 // Category-routing sink: "vm-power" → vm-power.log (issue #20), "ui" → ui.log
-                // (issue #21); everything else → switcher.log. All gated by the live switch.
+                // (issue #21), "mqtt" → mqtt.log (issue #75); everything else → switcher.log. All
+                // gated by the live switch.
                 b.AddSimpleFileLogger(AppInfo.LogFile, new Dictionary<string, string>
                 {
                     ["vm-power"] = AppInfo.VmPowerLog,
                     ["ui"]       = AppInfo.UiLog,
+                    ["mqtt"]     = AppInfo.MqttLog,
                 }, _logLevelSwitch);
             });
 
@@ -220,6 +223,8 @@ public partial class App : Application
             _vm.OperationProgress += OnVmOperationFailed;
             _vm.SubscribeStateWatcher();
 
+            StartMqtt(_loggerFactory.CreateLogger("mqtt"));
+
             // Show something immediately (caches may still be warming — PreWarmVmCacheAsync fills them).
             PostTooltipFromCaches();
 
@@ -251,6 +256,28 @@ public partial class App : Application
             NativeMethods.Error($"Failed to start Hyper-V Manager Tray:\n\n{ex}", AppInfo.Name);
             ExitIntentionally();   // startup failed — relaunching would just fail again
         }
+    }
+
+    /// <summary>
+    /// Brings up the Home Assistant integration (issue #75). Publishing is driven by the events wired
+    /// just above — no timer of its own — and the connection retries on its own loop, so a broker that
+    /// is down costs startup nothing.
+    ///
+    /// <para>Its two network commands run through the same <see cref="NetworkActions"/> the tray and
+    /// Settings use, so a remote re-check or repair is the identical operation. Their outcome is
+    /// reported to <c>mqtt.log</c> rather than to a tray balloon: the command was issued from Home
+    /// Assistant, and the desktop has nobody waiting on the answer.</para>
+    /// </summary>
+    private void StartMqtt(ILogger mqttLog)
+    {
+        var actions = new NetworkActions(_config!, _monitor!, _hyperV!,
+            (title, message, isError) => mqttLog.Log(isError ? LogLevel.Warning : LogLevel.Information,
+                                                     "{Title}: {Message}", title, message));
+
+        _mqtt = new MqttService(_config!, _monitor!, _vm!, mqttLog, AppInfo.Version,
+                                _ => actions.ReCheckNetworkAsync(),
+                                _ => actions.RepairHostNetworkingAsync());
+        _mqtt.Start();
     }
 
     /// <summary>
@@ -903,6 +930,8 @@ public partial class App : Application
         if (_dashboard is not null) _dashboard.AllowClose = true;
         _trayIcon?.Dispose();
         _iconImage?.Dispose();
+        // Before the services it subscribes to, so no event reaches a disposed VmService or monitor.
+        _mqtt?.Dispose();
         _monitor?.Dispose();
         _vm?.Dispose();
         _config?.Dispose();
