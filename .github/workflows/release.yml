@@ -26,9 +26,10 @@ jobs:
     env:
       CODE_SIGN_PFX: ${{ secrets.CODE_SIGN_PFX }}
       CODE_SIGN_PASSWORD: ${{ secrets.CODE_SIGN_PASSWORD }}
-      # ProjectReference to ZeroZero.Brand.WinUI defaults to the sibling ..\0z0-shared folder for
-      # local dev; CI only has this repo, so we check the 0z0-shared repo out below and point the
-      # csproj's $(ZeroZeroSharedDir) property at it via this env var (MSBuild reads env as a property).
+      # The ProjectReferences to ZeroZero.Brand.WinUI, ZeroZero.Mqtt and ZeroZero.Mqtt.HomeAssistant
+      # default to the sibling 0z0-shared folder for local dev; CI only has this repo, so we check the
+      # 0z0-shared repo out below and point both csprojs' $(ZeroZeroSharedDir) property at it via this
+      # env var (MSBuild reads env as a property). Job-scoped, so the test step gets it too.
       ZeroZeroSharedDir: ${{ github.workspace }}/0z0-shared
 
     outputs:
@@ -41,7 +42,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Check out the 0z0-shared sibling so the shared-About ProjectReference resolves (see the
+      # Check out the 0z0-shared sibling so the shared ProjectReferences resolve (see the
       # ZeroZeroSharedDir env var above). Placed in a workspace subfolder — not ..\ (outside workspace).
       - name: Checkout 0z0-shared (sibling dependency)
         uses: actions/checkout@v7
