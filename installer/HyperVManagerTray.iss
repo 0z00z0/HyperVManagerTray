@@ -435,7 +435,22 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
-    if WizardIsTaskSelected('runstartup') then RegisterStartupTask();
+    // Issue #76. The 'runas' inside RegisterStartupTask is a UAC prompt, and /SUPPRESSMSGBOXES does not
+    // suppress UAC — so a silent run (the winget background upgrade the 'autoupdate' task itself
+    // schedules) would raise an unexplained consent dialog on the desktop and block the installer
+    // waiting on it. Skipped for exactly the reason PrepareToInstall and LaunchApp skip their own
+    // elevations.
+    //
+    // A silent UPGRADE loses nothing: 'runstartup' is only selected there because an earlier
+    // interactive install selected it, so the task already exists, and the app's startup self-heal
+    // (StartupManager.TryRepairPowerSettings) keeps its battery settings correct. The one case this
+    // gives up is a silent FRESH install passing /MERGETASKS=runstartup, which now leaves the task
+    // uncreated — Settings → "Run on startup" registers it, from inside the already-elevated app and
+    // with no prompt. The task is deliberately not created behind the user's back: its existence IS
+    // the toggle's state (StartupManager.IsEnabled), so a self-heal that created one would turn
+    // auto-start on for someone who never asked for it.
+    if (not WizardSilent()) and WizardIsTaskSelected('runstartup') then RegisterStartupTask();
+    // Non-elevated (no /RL HIGHEST), so this one is safe to run silently.
     if WizardIsTaskSelected('autoupdate') then RegisterAutoUpdateTask();
     // Auto-launch only on an interactive install (not silent installs). Runs after task
     // creation so a freshly-created startup task is used for a prompt-free launch.
