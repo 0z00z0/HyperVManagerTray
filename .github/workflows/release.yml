@@ -160,7 +160,7 @@ jobs:
 
           $installerYaml = 'installer\winget\0z00z0.HyperVManagerTray.installer.yaml'
           $versionYaml   = 'installer\winget\0z00z0.HyperVManagerTray.yaml'
-          $localeYaml    = 'installer\winget\0z00z0.HyperVManagerTray.locale.en-US.yaml'
+          $localeYaml    = 'installer\winget\0z00z0.HyperVManagerTray.locale.en-GB.yaml'
 
           # Helper: replace a YAML scalar in-place
           function Set-YamlValue {
@@ -221,7 +221,7 @@ jobs:
             installer/Output/HyperVManagerTray-Setup-*.exe
             installer/winget/0z00z0.HyperVManagerTray.installer.yaml
             installer/winget/0z00z0.HyperVManagerTray.yaml
-            installer/winget/0z00z0.HyperVManagerTray.locale.en-US.yaml
+            installer/winget/0z00z0.HyperVManagerTray.locale.en-GB.yaml
             scripts/ZeroZeroSoftware.cer
           body: |
             ## Hyper-V Manager Tray v${{ steps.version.outputs.version }}
@@ -259,7 +259,7 @@ jobs:
           $assets = @(
             '0z00z0.HyperVManagerTray.installer.yaml',
             '0z00z0.HyperVManagerTray.yaml',
-            '0z00z0.HyperVManagerTray.locale.en-US.yaml'
+            '0z00z0.HyperVManagerTray.locale.en-GB.yaml'
           )
           foreach ($a in $assets) {
             gh release download $tag --repo ${{ github.repository }} --pattern $a --dir $outDir
