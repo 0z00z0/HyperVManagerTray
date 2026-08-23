@@ -37,7 +37,8 @@ wizard shows the app icon (`app.ico`) in the `[Setup]` `SetupIconFile` entry.
 - **Uninstall** stops the running app and deletes the startup task in one elevated step (at most
   one UAC prompt), then removes the files.
 
-User config (`config.json`) is preserved across upgrades (installed `onlyifdoesntexist`).
+User config (`config.json`) lives in `%APPDATA%\HyperVManagerTray\` and is not part of the install.
+The installer neither ships nor removes it, so upgrades and uninstalls leave it alone.
 
 ## Code signing
 

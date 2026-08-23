@@ -39,15 +39,15 @@ public class DefaultConfigTests : IDisposable
     // ── The sample is the default, and the default is inert ────────────────────
 
     /// <summary>
-    /// The config.json shipped in the repo (and installed with <c>Flags: onlyifdoesntexist</c>) must be
-    /// exactly what <see cref="ConfigManager.CreateDefaultIfMissing"/> writes. Two files that mean
+    /// The config.json in the repo must be exactly what
+    /// <see cref="ConfigManager.CreateDefaultIfMissing"/> writes. Two files that mean
     /// "blank slate" but say it differently is how the old sample kept a phantom <c>MyVM</c> in the box.
     /// </summary>
     [Fact]
     public void ShippedSampleMatchesTheDefault()
     {
         var shipped = Path.Combine(AppContext.BaseDirectory, "ShippedConfig", "config.json");
-        Assert.True(File.Exists(shipped), $"The shipped config.json was not copied to the test output ({shipped}).");
+        Assert.True(File.Exists(shipped), $"The repo's config.json was not copied to the test output ({shipped}).");
 
         Assert.Equal(Normalize(DefaultConfig.Json), Normalize(File.ReadAllText(shipped)));
     }
@@ -123,8 +123,7 @@ public class DefaultConfigTests : IDisposable
     }
 
     /// <summary>
-    /// An existing config is never touched — the same promise the installer's
-    /// <c>Flags: onlyifdoesntexist</c> makes. If this ever regressed, startup would silently wipe the
+    /// An existing config is never touched. If this ever regressed, startup would silently wipe the
     /// user's real rules.
     /// </summary>
     [Fact]

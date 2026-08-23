@@ -237,9 +237,9 @@ public static class AdapterNameRules
     ///
     /// <para><b>Why this exists.</b> The saved "original" adapter name used to be captured by reading
     /// whatever <c>FriendlyName</c> was on disk at first-rename time. That is correct on a true first
-    /// rename, but the two stores have different lifetimes: the rename lives in the registry (survives
-    /// an uninstall) while the config record lives next to the exe (does not). After an
-    /// uninstall/reinstall — or a wiped/hand-edited config — the flow sees no record while
+    /// rename, but the two stores have different lifetimes: the rename lives in the registry, which
+    /// nothing here ever clears, while the config record can be deleted or hand-edited away. With the
+    /// record gone and the rename still applied, the flow sees no record while
     /// <c>FriendlyName</c> already holds a PREVIOUS rename's output, and faithfully records that as
     /// "the original". Reset then restores the very name the user was escaping. <c>DeviceDesc</c> sits
     /// on the same Enum key, is never touched by the rename, and therefore is the actual ground truth.</para>

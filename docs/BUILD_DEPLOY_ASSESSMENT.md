@@ -34,7 +34,7 @@ manifests, and release automation. HyperVManagerTray is now **ahead** in these a
 | **Unit tests** | 77 tests across 6 files; **release is gated on them** in CI | **None** | Releases can't ship if logic regresses; Lenovo has no automated correctness check at all. |
 | **Installer signing integrity (CI)** | Re-compiles **and re-signs** the installer *after* the app exe is signed | Signs `publish\*.exe` *after* the installer is already built | Lenovo's released installer embeds an **unsigned** app exe; HyperV's never does. |
 | **Version management** | `build-installer.ps1` auto-bumps the patch from `<Version>` and writes it back | Requires explicit `-Version` | Frictionless local releases; one source of truth. |
-| **Config preservation** | `config.json` installed `onlyifdoesntexist`; user edits survive upgrades | n/a (no user config) | Real upgrade-safety concern handled correctly. |
+| **Config preservation** | `config.json` lives in `%APPDATA%\HyperVManagerTray\`; the installer never ships or removes it | n/a (no user config) | Real upgrade-safety concern handled correctly. |
 | **Uninstall hygiene** | `[UninstallDelete]` removes runtime-generated icons (incl. legacy v1 names) | Not needed | Leaves no orphaned files behind. |
 | **Solution hygiene** | Dedicated `Tests/` project linking only the source files under test | — | Test isolation without bloating the app build. |
 

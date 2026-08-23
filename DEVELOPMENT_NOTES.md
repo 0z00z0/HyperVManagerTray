@@ -202,8 +202,8 @@ Gotchas hit (and how they're handled):
   `NetworkMonitor.SwitchApplied` still fires on a background thread.
 - **No `MessageBox`** in WinUI — small `MessageBoxW` P/Invokes in `NativeMethods` cover errors/confirms.
 - **Publish is a folder, not a single file.** `PublishSingleFile`/`EnableCompressionInSingleFile`
-  don't apply; the per-user Inno Setup installer copies the folder (config.json installed
-  `onlyifdoesntexist` so user edits survive upgrades). `PublishTrimmed=false`
+  don't apply; the per-user Inno Setup installer copies the folder. `config.json` is not in it —
+  it lives in `%APPDATA%\HyperVManagerTray\`, which the installer never touches. `PublishTrimmed=false`
   (WinUI + reflection-y JSON trim poorly) — so reflection-based `System.Text.Json` is kept;
   `PublishReadyToRun=true` on Release for faster startup.
 - **Dashboard polling** (CPU/mem/VHD) originally ran on a `DispatcherTimer` polling `Get-VM` only

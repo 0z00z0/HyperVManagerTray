@@ -68,10 +68,10 @@ CloseApplications=yes
 RestartApplications=no
 
 [Files]
-; Everything except config.json is overwritten on upgrade…
+; config.json is not installed at all (issue #74): the app owns it, in %AppData%\HyperVManagerTray,
+; and writes its own blank slate there. The exclude stands so a stale publish folder can never drop a
+; blank config over the one an older build left in {app} — a rollback to that build still reads it.
 Source: "{#PublishDir}\*"; DestDir: "{app}"; Excludes: "config.json"; Flags: recursesubdirs createallsubdirs ignoreversion
-; …config.json is installed only if absent, so a user-edited config is never clobbered.
-Source: "{#PublishDir}\config.json"; DestDir: "{app}"; Flags: onlyifdoesntexist
 
 [Icons]
 ; Flat shortcut in Start Menu → Programs (no sub-folder) so the app is searchable by name.

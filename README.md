@@ -34,11 +34,11 @@ It also includes a **WinUI 3 dashboard** (left-click the tray icon) that shows t
 
 ## Setup
 
-1. Run or publish the application (see below). There is **nothing to edit first** — if no `config.json` sits next to the `.exe`, the app creates a blank-slate one and tells you it did.
+1. Run or publish the application (see below). There is **nothing to edit first** — the app creates a blank-slate `config.json` in `%APPDATA%\HyperVManagerTray\` and tells you it did.
 2. A tray icon appears. **Left-click** it for the status dashboard + VM controls; **right-click** for the quick-command menu (re-check the network, a temporary switch override, manage VMs) and the **Settings** window.
 3. Add your first VM from the tray's **Manage VMs** menu or from **Settings → Managed VMs**, and your rules from **Settings → Network**. Hand-editing `config.json` stays fully supported ([Configuration](#configuration) below) — the file is watched, so a saved edit applies without a restart. An edit that doesn't parse is rejected and announced with a tray balloon; the settings already loaded keep running until you fix it.
 
-> The shipped `config.json` is deliberately **empty** — no example rule, no example VM. A sample that looks configured but targets a VM you don't have is a trap, not a starting point: it matches nothing and only warns to a log file. The annotated, fully-populated example lives under [Configuration](#configuration).
+> The blank-slate `config.json` is deliberately **empty** — no example rule, no example VM. A sample that looks configured but targets a VM you don't have is a trap, not a starting point: it matches nothing and only warns to a log file. The annotated, fully-populated example lives under [Configuration](#configuration).
 
 ---
 
@@ -71,8 +71,8 @@ The setup offers two optional tasks:
 - **Auto update in background** — a non-elevated logon task that runs `winget upgrade` 5 minutes
   after each sign-in, so you stay on the latest published version automatically.
 
-It installs to `%LocalAppData%\Programs\HyperVManagerTray` and preserves any existing
-`config.json` on upgrade.
+It installs to `%LocalAppData%\Programs\HyperVManagerTray`. `config.json` lives in
+`%APPDATA%\HyperVManagerTray\`, outside the install folder, so an upgrade never touches it.
 
 > The app and installer are Authenticode-signed (SHA-256, timestamped) by
 > `CN=ZeroZero Software`. The certificate is self-signed, so first run may still show a
@@ -186,7 +186,7 @@ Right-click the tray icon → **Settings…**. Six sections in a sidebar; every 
 
 ## Configuration
 
-`config.json` is loaded from the same directory as the executable. Everything in it can be edited from the Settings window, so hand-editing is a choice, not a requirement. It is watched for changes — edits take effect immediately without a restart. If the file is missing the app writes the blank-slate default below and carries on; if an edit doesn't parse, the app keeps the last good config, says so in a tray balloon, and re-reads the file on your next save.
+`config.json` is loaded from `%APPDATA%\HyperVManagerTray\`, beside the log files. Upgrading from a build that kept it next to the `.exe` copies the old file across on first run and leaves the original where it was, so a rollback to that build still finds it. Everything in it can be edited from the Settings window, so hand-editing is a choice, not a requirement. It is watched for changes — edits take effect immediately without a restart. If the file is missing the app writes the blank-slate default below and carries on; if an edit doesn't parse, the app keeps the last good config, says so in a tray balloon, and re-reads the file on your next save.
 
 The default the app ships (and self-heals to) is just this — a fallback switch and nothing else:
 
@@ -276,7 +276,7 @@ HyperVManagerTray/
 │                           title-bar theming, UI text builders, WMI mapping, small shared utilities
 ├─ Tests/                   xUnit tests (links the pure Services/Models/Helpers sources)
 ├─ installer/              per-user Inno Setup installer (.iss + build script)
-└─ config.json             blank-slate default (shipped next to the exe; also written on first run if absent)
+└─ config.json             the blank-slate default, as the app writes it to %APPDATA%\HyperVManagerTray\
 ```
 
 ## Tests

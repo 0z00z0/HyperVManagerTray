@@ -123,7 +123,12 @@ public sealed class ConfigManager : IDisposable
         _levelSwitch = levelSwitch;
         _debounceTimer = new System.Threading.Timer(OnDebounceElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
-        _watcher = new FileSystemWatcher(Path.GetDirectoryName(configPath)!, Path.GetFileName(configPath))
+        // FileSystemWatcher throws on a directory that does not exist, and %AppData%\HyperVManagerTray
+        // is ours to create — unlike the app directory, which the installer always made.
+        var configDir = Path.GetDirectoryName(configPath)!;
+        Directory.CreateDirectory(configDir);
+
+        _watcher = new FileSystemWatcher(configDir, Path.GetFileName(configPath))
         {
             NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size,
             EnableRaisingEvents = true
@@ -730,9 +735,9 @@ public sealed class ConfigManager : IDisposable
             SettingsWindowHeight = settingsWindowRect?.Height ?? _config.SettingsWindowHeight,
         };
 
-    /// <summary>Returns the expected config.json path: next to the executable.</summary>
+    /// <summary>Returns the expected config.json path: in <see cref="AppInfo.DataDir"/> (issue #74).</summary>
     public static string GetConfigPath() =>
-        Path.Combine(AppContext.BaseDirectory, "config.json");
+        Path.Combine(AppInfo.DataDir, "config.json");
 
     /// <summary>
     /// Writes <see cref="DefaultConfig.Json"/> to <paramref name="configPath"/> if no file is there, and

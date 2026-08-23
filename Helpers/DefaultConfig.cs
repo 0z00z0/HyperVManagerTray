@@ -3,8 +3,8 @@ namespace HyperVManagerTray.Helpers;
 /// <summary>
 /// The canonical blank-slate <c>config.json</c> (issue #38). One string, two consumers:
 /// <list type="bullet">
-///   <item>the repo's shipped <c>config.json</c>, which the installer drops with
-///         <c>Flags: onlyifdoesntexist</c> — i.e. only onto a machine that has no config at all; and</item>
+///   <item>the repo's <c>config.json</c>, the reviewable shape of the blank slate (the installer ships
+///         no config at all — see issue #74); and</item>
 ///   <item><see cref="Services.ConfigManager.CreateDefaultIfMissing"/>, which writes it when the file
 ///         is absent at startup so the app self-heals instead of showing an error box and exiting.</item>
 /// </list>

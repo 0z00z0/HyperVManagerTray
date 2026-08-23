@@ -20,6 +20,9 @@
          WinUI, no file IO in ConfigLoadUi. -->
     <Compile Include="..\Helpers\DefaultConfig.cs"    Link="Linked\DefaultConfig.cs" />
     <Compile Include="..\Helpers\ConfigLoadUi.cs"     Link="Linked\ConfigLoadUi.cs" />
+    <!-- Issue #74: the one-time copy of config.json out of the app directory into %AppData%. File IO
+         over two paths handed in, so temp directories are all its tests need. -->
+    <Compile Include="..\Helpers\ConfigMigration.cs"  Link="Linked\ConfigMigration.cs" />
     <Compile Include="..\Helpers\UptimeFormatter.cs"  Link="Linked\UptimeFormatter.cs" />
     <!-- Issue #54: the log lines the tray/balloon/startup latency diagnosis will be read off. Pure
          numbers→text (the callers do the measuring and hand the figures in), which is exactly what makes
@@ -116,10 +119,9 @@
     <Compile Include="..\Models\VmStatus.cs"          Link="Linked\VmStatus.cs" />
   </ItemGroup>
 
-  <!-- The SHIPPED sample config (the one the installer drops with Flags: onlyifdoesntexist). Copied in
-       so DefaultConfigTests can assert it is byte-for-byte the same blank slate the app writes for
-       itself when the file is missing — the two would otherwise drift, and a drifting sample is how a
-       phantom "MyVM" survives in the box for months (issue #38). -->
+  <!-- The repo's sample config. Copied in so DefaultConfigTests can assert it is byte-for-byte the
+       same blank slate the app writes for itself when the file is missing — the two would otherwise
+       drift, and a drifting sample is how a phantom "MyVM" survives in the box for months (issue #38). -->
   <ItemGroup>
     <Content Include="..\config.json" Link="ShippedConfig\config.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

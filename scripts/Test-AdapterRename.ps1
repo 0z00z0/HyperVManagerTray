@@ -41,17 +41,18 @@ $classKeyPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11c
 $enumPrefix   = 'HKLM:\SYSTEM\CurrentControlSet\Enum\'
 $uiLogPath    = Join-Path $env:APPDATA 'HyperVManagerTray\ui.log'
 
-# config.json lives NEXT TO THE EXE (ConfigManager.GetConfigPath), not in %APPDATA% - the logs and
-# the config deliberately live in different places. Probe the install locations in order.
+# config.json lives beside the logs in %APPDATA% (ConfigManager.GetConfigPath). The install
+# locations are probed only as a fallback, for a machine still on a pre-2.6 build.
 $configPath = $null
 foreach ($candidate in @(
+    (Join-Path $env:APPDATA 'HyperVManagerTray\config.json'),
     (Join-Path $env:LOCALAPPDATA 'Programs\HyperVManagerTray\config.json'),
     (Join-Path ${env:ProgramFiles} 'HyperVManagerTray\config.json'),
     (Join-Path ${env:ProgramFiles(x86)} 'HyperVManagerTray\config.json'))) {
     if ($candidate -and (Test-Path $candidate)) { $configPath = $candidate; break }
 }
 if (-not $configPath) {
-    $configPath = Join-Path $env:LOCALAPPDATA 'Programs\HyperVManagerTray\config.json'
+    $configPath = Join-Path $env:APPDATA 'HyperVManagerTray\config.json'
 }
 
 function Write-Head([string] $text) {

@@ -110,6 +110,12 @@ public partial class App : Application
             var logDir = AppInfo.DataDir;
             Directory.CreateDirectory(logDir);
 
+            // Runs BEFORE the log-level read below, so an upgrade's first start already reads the
+            // user's own logLevel rather than the default. Reported once there is a logger to report to.
+            Exception? configMigrationError = null;
+            var configMigration = ConfigMigration.Run(
+                configPath, ConfigMigration.LegacyPath, ex => configMigrationError = ex);
+
             // Single live verbosity gate (issue #22): initialised from config.json's logLevel, then
             // consulted per write by the file logger so a Settings/config change applies with no
             // restart. Read directly here — the switch must exist before the full ConfigManager
@@ -161,11 +167,13 @@ public partial class App : Application
 
             _exeDir  = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
 
+            LogConfigMigration(uiLog, configMigration, configMigrationError, configPath);
+
             // A missing config.json is no longer fatal (issue #38): write the blank-slate default and
             // carry on into the app, whose Settings editor and tray flows are how the first VM and rule
             // get added anyway. Done here — before the ConfigManager and its watcher exist — so the
             // write can't raise ConfigReloaded and kick off a switch re-evaluation. Balloon'd (not
-            // error-boxed) once the tray icon is up, so the user knows a file appeared next to the exe.
+            // error-boxed) once the tray icon is up, so the user knows a file appeared.
             bool createdDefaultConfig = ConfigManager.CreateDefaultIfMissing(configPath, uiLog);
 
             _config  = new ConfigManager(configPath, uiLog, _logLevelSwitch);
@@ -260,7 +268,7 @@ public partial class App : Application
         if (createdDefault)
         {
             ShowBalloon(AppInfo.Name,
-                        "No config.json was found, so a default one was created next to the app. "
+                        $"No config.json was found, so a default one was created in {AppInfo.DataDir}. "
                         + "Add your VMs and network rules from Settings.",
                         isError: false, suppressWhenDashboardVisible: false);
             return;
@@ -269,6 +277,27 @@ public partial class App : Application
         if (ConfigLoadUi.BalloonMessage(_config!.LastLoad) is { } problem)
             ShowBalloon($"{AppInfo.Name} — config", problem,
                         isError: true, suppressWhenDashboardVisible: false);
+    }
+
+    /// <summary>
+    /// Writes the outcome of the startup config relocation (issue #74), which runs before the logger
+    /// exists. A failure is logged as an error: the app then starts on a blank slate while the user's
+    /// real settings sit unread beside the executable.
+    /// </summary>
+    private static void LogConfigMigration(
+        ILogger logger, ConfigMigrationOutcome outcome, Exception? error, string configPath)
+    {
+        switch (outcome)
+        {
+            case ConfigMigrationOutcome.Copied:
+                logger.LogInformation("Copied config.json from {Legacy} to {Path}; the original was left in place",
+                                      ConfigMigration.LegacyPath, configPath);
+                break;
+            case ConfigMigrationOutcome.Failed:
+                logger.LogError(error, "Could not copy config.json from {Legacy} to {Path}",
+                                ConfigMigration.LegacyPath, configPath);
+                break;
+        }
     }
 
     /// <summary>Exits after telling <see cref="SelfHealWatchdog"/> this teardown is deliberate, so it doesn't relaunch.</summary>
