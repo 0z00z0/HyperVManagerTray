@@ -19,6 +19,10 @@ public sealed class MqttStateCache
     private static readonly IReadOnlyDictionary<string, string> NoOperations =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+    // Serialises the read-modify-write in SetOperation only. Readers never take it: each slot is
+    // swapped whole and never mutated after publication.
+    private readonly object _operationLock = new();
+
     private volatile MatchResult? _network;
     private volatile IReadOnlyDictionary<string, VmStatus> _vms = NoVms;
     private volatile IReadOnlyDictionary<string, string> _operations = NoOperations;
@@ -43,13 +47,18 @@ public sealed class MqttStateCache
     public string? Operation(string vmName) =>
         _operations.TryGetValue(vmName ?? string.Empty, out var text) ? text : null;
 
+    /// <summary>Records one VM's latest operation. Locked, unlike the whole-slot writes above: this one
+    /// copies the live map and puts it back, and two VMs progressing at once (a rule's autostart runs a
+    /// power action per VM, each on its own thread) would otherwise lose one of the two entries.</summary>
     public void SetOperation(VmOperationProgress progress)
     {
-        var updated = new Dictionary<string, string>(_operations, StringComparer.OrdinalIgnoreCase)
+        lock (_operationLock)
         {
-            [progress.VmName ?? string.Empty] = DescribeOperation(progress),
-        };
-        _operations = updated;
+            _operations = new Dictionary<string, string>(_operations, StringComparer.OrdinalIgnoreCase)
+            {
+                [progress.VmName ?? string.Empty] = DescribeOperation(progress),
+            };
+        }
     }
 
     /// <summary>One VM operation as a sensor state: the verb, its phase, and whatever the job said.</summary>
