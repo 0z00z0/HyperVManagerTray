@@ -410,7 +410,10 @@ public partial class App : Application
         // The tray's manual network actions report through the same balloon channel a failed apply uses
         // (issue #37). Not suppressed by a visible dashboard: unlike an automatic apply, these are direct
         // answers to something the user just clicked, and must never be swallowed.
-        _menu = new TrayMenu(_config!, _monitor!, _hyperV!, _vm!, _startup, _updateChecker!, OnExit,
+        // MQTT is composed further down OnLaunched, after this menu — hence an accessor rather than the
+        // service. Settings reads it when the window is opened, by which time it exists.
+        _menu = new TrayMenu(_config!, _monitor!, _hyperV!, _vm!, _startup, _updateChecker!,
+                             () => _mqtt, OnExit,
                              (title, message, isError) =>
                                  ShowBalloon(title, message, isError, suppressWhenDashboardVisible: false));
         _trayIcon.ContextFlyout     = _menu.Flyout;

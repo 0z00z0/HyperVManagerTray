@@ -9,7 +9,8 @@
     </Window.SystemBackdrop>
 
     <!-- Issue #23: the flat single-scroll card list became an in-box NavigationView with left-nav
-         categories (General / Managed VMs / Network / Adapters / Maintenance / About). Zero new
+         categories (General / Managed VMs / Network / Adapters / Home Assistant / Maintenance /
+         About; the Home Assistant one arrived with issue #75). Zero new
          dependencies — the plain WinUI NavigationView plus the same code-built card idiom every other
          window in this app uses (BuildXxxSection in code-behind fills the per-category panels). The
          window stays a real titled, resizable, taskbar-visible window (NOT the borderless auto-dismiss
@@ -54,6 +55,9 @@
             <NavigationViewItem Content="Adapters" Tag="Adapters">
                 <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/adapters.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
             </NavigationViewItem>
+            <NavigationViewItem Content="Home Assistant" Tag="Mqtt">
+                <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/mqtt.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
+            </NavigationViewItem>
             <NavigationViewItem Content="Maintenance" Tag="Maintenance">
                 <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/maintenance.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
             </NavigationViewItem>
@@ -94,6 +98,7 @@
                 <StackPanel x:Name="VmsPanel"         Spacing="10" Visibility="Collapsed"/>
                 <StackPanel x:Name="NetworkPanel"     Spacing="10" Visibility="Collapsed"/>
                 <StackPanel x:Name="AdaptersPanel"    Spacing="10" Visibility="Collapsed"/>
+                <StackPanel x:Name="MqttPanel"        Spacing="10" Visibility="Collapsed"/>
                 <StackPanel x:Name="MaintenancePanel" Spacing="10" Visibility="Collapsed"/>
                 <StackPanel x:Name="AboutPanel"       Spacing="10" Visibility="Collapsed"/>
             </Grid>

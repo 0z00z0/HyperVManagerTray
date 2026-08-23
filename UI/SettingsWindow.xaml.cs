@@ -12,6 +12,8 @@ using HyperVManagerTray.Models;
 using HyperVManagerTray.Services;
 using ZeroZero.Brand.Core;
 using ZeroZero.Brand.WinUI;
+using ZeroZero.Mqtt;
+using ZeroZero.Mqtt.WinUI;
 
 namespace HyperVManagerTray.UI;
 
@@ -20,7 +22,8 @@ namespace HyperVManagerTray.UI;
 /// category per pane item: General (run-on-startup, log level), Managed VMs (per-VM on-bridge-lost
 /// action + delay), Network (the full rules editor + editable fallback switch/target-VMs — values that
 /// were previously reachable only by hand-editing config.json), Adapters (rename a physical NIC's
-/// description), Maintenance (open config/log, reload, check for updates), and About (embeds the shared
+/// description), Home Assistant (the shared <see cref="MqttSettingsPanel"/>, issue #75), Maintenance
+/// (open config/log, reload, check for updates), and About (embeds the shared
 /// <see cref="BrandAboutControl"/> content inline rather than opening a second window).
 ///
 /// <para>Everything persists through the existing <see cref="ConfigManager"/> (no parallel store).
@@ -72,6 +75,17 @@ internal sealed partial class SettingsWindow : Window
 
     private ComboBox?     _logLevelCombo;
     private ToggleSwitch? _startupToggle;
+
+    // The live Home Assistant integration, read at click time rather than held: it is composed AFTER
+    // the tray menu that owns this window, and it is null when its start-up failed — in which case the
+    // MQTT category still edits the settings, it just has no session to report on.
+    private readonly Func<MqttService?> _mqtt;
+
+    // The shared MQTT settings panel and the MqttActivity it is currently reporting on. The activity
+    // belongs to one connection, so a different instance is how a rebuilt connection is detected —
+    // see RefreshMqttStatus.
+    private MqttSettingsPanel? _mqttPanel;
+    private MqttActivity?      _mqttActivity;
 
     // Network rules editor (issue #23). _workingRules is the UI's authoritative copy while the window is
     // open (deep copies of config rules); edits mutate it in place and persist via _config.SaveRules, so
@@ -153,8 +167,14 @@ internal sealed partial class SettingsWindow : Window
     /// from, and inventing a second display vocabulary for the same events is what issue #37 spent its
     /// effort undoing.
     /// </param>
+    /// <param name="mqtt">
+    /// The live Home Assistant integration, as an accessor rather than an instance: it is composed
+    /// after the tray menu this window is opened from, so there is nothing to hand over at that point.
+    /// Null is a supported answer — the MQTT category then edits the settings with no session to
+    /// report on, which is exactly the state a broker that has never been configured is in.
+    /// </param>
     public SettingsWindow(ConfigManager config, StartupManager startup, UpdateChecker updateChecker,
-                          NetworkMonitor monitor, HyperVManager hyperV,
+                          NetworkMonitor monitor, HyperVManager hyperV, Func<MqttService?> mqtt,
                           Action<string, string, bool> notify)
     {
         _consumerSink  = _sectionConsumers;   // RebuildRuleCards swaps this while it builds
@@ -162,6 +182,7 @@ internal sealed partial class SettingsWindow : Window
         _startup       = startup;
         _updateChecker = updateChecker;
         _monitor       = monitor;
+        _mqtt          = mqtt;
 
         InitializeComponent();
         Title = $"{AppInfo.Name} — Settings";
@@ -252,6 +273,11 @@ internal sealed partial class SettingsWindow : Window
         if (_startupToggle is not null) _startupToggle.Toggled         -= OnStartupToggled;
         if (_logLevelCombo is not null) _logLevelCombo.SelectionChanged -= OnLogLevelChanged;
 
+        // The MQTT panel runs its own connection test and background endpoint search. Abandon them, or
+        // a continuation touches a control on a window that is going away.
+        try { _mqttPanel?.Cancel(); } catch (Exception ex) { AppInfo.AppendCrashLogLine("SettingsWindow", $"cancel MQTT panel: {ex}"); }
+        _mqttPanel = null;
+
         // NetworkChange is a static event: without this a closed window stays subscribed for the life of
         // the process, and every dock transition keeps ticking a generation nobody reads. Before the rect
         // save below, which has its own early return.
@@ -285,6 +311,10 @@ internal sealed partial class SettingsWindow : Window
 
         foreach (var (panelTag, panel) in _panels)
             panel.Visibility = panelTag == tag ? Visibility.Visible : Visibility.Collapsed;
+
+        // The MQTT panel's status lines report a live session. Re-read them on show rather than on a
+        // timer, which is the refresh the shared panel is built for.
+        if (tag == "Mqtt") RefreshMqttStatus();
     }
 
     // ── Window chrome / placement ────────────────────────────────────────────────
@@ -374,6 +404,7 @@ internal sealed partial class SettingsWindow : Window
             ["Vms"]         = VmsPanel,
             ["Network"]     = NetworkPanel,
             ["Adapters"]    = AdaptersPanel,
+            ["Mqtt"]        = MqttPanel,
             ["Maintenance"] = MaintenancePanel,
             ["About"]       = AboutPanel,
         };
@@ -389,6 +420,9 @@ internal sealed partial class SettingsWindow : Window
 
         AdaptersPanel.Children.Clear();
         AdaptersPanel.Children.Add(BuildAdaptersSection());
+
+        MqttPanel.Children.Clear();
+        MqttPanel.Children.Add(BuildMqttSection());
 
         MaintenancePanel.Children.Clear();
         MaintenancePanel.Children.Add(BuildMaintenanceSection());
@@ -1494,9 +1528,9 @@ internal sealed partial class SettingsWindow : Window
         var openConfig = new Button { Content = "Open config.json" };
         openConfig.Click += (_, _) => Shell.OpenOrReveal(ConfigManager.GetConfigPath());
 
-        // The app now writes three separate logs (switcher.log, vm-power.log, ui.log — issues #20/#21),
-        // so a single "Open log file" button no longer covers them. Expose each one, plus a reveal of
-        // the whole data folder (which also surfaces crash.log).
+        // The app now writes four separate logs (switcher.log, vm-power.log, ui.log — issues #20/#21 —
+        // and mqtt.log, issue #75), so a single "Open log file" button no longer covers them. Expose
+        // each one, plus a reveal of the whole data folder (which also surfaces crash.log).
         var openLog = new DropDownButton { Content = "Open log" };
         var logMenu = new MenuFlyout();
         void AddLogItem(string text, string path) =>
@@ -1508,6 +1542,7 @@ internal sealed partial class SettingsWindow : Window
         AddLogItem("Switcher log", AppInfo.LogFile);
         AddLogItem("VM power log", AppInfo.VmPowerLog);
         AddLogItem("UI log", AppInfo.UiLog);
+        AddLogItem("MQTT log", AppInfo.MqttLog);
         logMenu.Items.Add(new MenuFlyoutSeparator());
         logMenu.Items.Add(new MenuFlyoutItem
         {
@@ -1570,7 +1605,7 @@ internal sealed partial class SettingsWindow : Window
 
         panel.Children.Add(SettingRow(
             "Config & logs",
-            "Open the raw config.json, open any of the app's log files (switcher, VM power, UI) or the logs folder, "
+            "Open the raw config.json, open any of the app's log files (switcher, VM power, UI, MQTT) or the logs folder, "
             + "or re-read config.json from disk after an out-of-band edit. A reload that can't parse the file says "
             + "so and changes nothing — the settings already loaded stay active.",
             buttons));
@@ -1617,6 +1652,158 @@ internal sealed partial class SettingsWindow : Window
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
         try { await UpdatePrompt.RunAsync(_updateChecker, hwnd); }
         catch (Exception ex) { AppInfo.AppendCrashLogLine("SettingsWindow", $"CheckForUpdates: {ex}"); }
+    }
+
+    // ── Home Assistant over MQTT (issue #75) ───────────────────────────────────────
+
+    private UIElement BuildMqttSection()
+    {
+        var panel = Section("Home Assistant");
+        panel.Children.Add(Description(
+            "Publish the host network's state and each managed VM's state to a single Home Assistant "
+            + "device, and accept commands back. Every command is held to the same state rule the "
+            + "dashboard's own buttons are."));
+
+        // A rebuild detaches the previous panel; abandon its probe first, or a continuation resumes on
+        // a control nothing is showing any more. Same reason as the Cancel in OnClosed.
+        try { _mqttPanel?.Cancel(); } catch (Exception ex) { AppInfo.AppendCrashLogLine("SettingsWindow", $"cancel MQTT panel: {ex}"); }
+
+        // The shared panel, embedded exactly as BrandAboutControl is in BuildAboutSection: a hostable
+        // UserControl that renders the settings and reports edits, and owns no window chrome and no
+        // connection of its own. Every edit it reports lands in config.json through ConfigManager and
+        // comes back to MqttService as a reload — this window applies nothing itself.
+        var mqtt = new MqttSettingsPanel { HorizontalAlignment = HorizontalAlignment.Stretch };
+        _mqttPanel = mqtt;
+        ApplyMqttOptions(mqtt);
+        panel.Children.Add(Card(mqtt));
+
+        return panel;
+    }
+
+    /// <summary>
+    /// Hands the shared panel this app's settings, this app's publish categories and the live service.
+    ///
+    /// <para>Re-callable: the panel re-reads everything and discards any un-applied broker edit, which
+    /// is why <see cref="RefreshMqttStatus"/> only does it when the connection underneath has actually
+    /// been rebuilt.</para>
+    /// </summary>
+    private void ApplyMqttOptions(MqttSettingsPanel panel)
+    {
+        var service  = _mqtt();
+        var settings = (_config.Current.Mqtt ?? new MqttSettings()).Copy();
+
+        // Held so a rebuilt connection is detectable: MqttActivity belongs to one connection, so a
+        // different instance means the one the panel is reporting on has gone.
+        _mqttActivity = service?.Activity;
+
+        panel.SetOptions(new MqttPanelOptions
+        {
+            Snapshot = new MqttPanelSnapshot
+            {
+                Options         = settings.ToOptions(),
+                DeviceName      = settings.DeviceName,
+                // The effective prefix, not the stored blank: the field states where the discovery
+                // configs actually go, and blank would read as "nowhere".
+                DiscoveryPrefix = MqttNaming.EffectiveDiscoveryPrefix(settings),
+            },
+            TopicRoot         = MqttEntitySet.TopicRoot,
+            DefaultDeviceName = MqttNaming.DefaultDeviceName,
+            // The store the live connection authenticates from. Without a service (composition failed)
+            // the panel still edits the settings — it is handed the stored password directly, so the
+            // field is not silently blanked on the next Apply.
+            CredentialStore = service?.Credentials
+                ?? new PlainTextMqttCredentialStore(MqttSettings.CredentialReference, settings.Password),
+            Categories  = MqttCategories(settings),
+            Activity    = _mqttActivity,
+            IsConnected = () => _mqtt()?.IsConnected == true,
+
+            OnEnabledChanged  = on => SaveMqtt(s => MqttPanelSeam.WithEnabled(s, on),
+                                               "whether to publish to MQTT"),
+            OnCategoryChanged = (key, on) => SaveMqtt(s => MqttPanelSeam.WithCategory(s, key, on),
+                                                      "what to publish"),
+            OnBrokerApplied   = (snapshot, password) => SaveMqtt(
+                s => MqttPanelSeam.WithBroker(
+                    s, snapshot.Options, snapshot.DeviceName, snapshot.DiscoveryPrefix, password),
+                "the broker settings"),
+            OnNodeIdChanged   = nodeId => SaveMqtt(s => MqttPanelSeam.WithNodeId(s, nodeId),
+                                                   "the device ID"),
+
+            // Its own mutator: it writes back a fact the connection discovered, and ConfigManager
+            // reads-modifies-writes it under its own lock rather than over a snapshot taken here.
+            OnEndpointRemembered = endpoint => Task.Run(() =>
+            {
+                try { _config.RememberMqttEndpoint(endpoint); }
+                catch (Exception ex) { WarnOnUi($"Could not remember the broker endpoint:\n\n{ex.Message}"); }
+            }),
+
+            OnError = (where, ex) => AppInfo.AppendCrashLogLine("SettingsWindow", $"{where}: {ex}"),
+        });
+    }
+
+    /// <summary>This app's publish groups, as the panel lists them. The keys are
+    /// <see cref="MqttPanelSeam"/>'s — the only thing that comes back on a toggle.</summary>
+    private static IReadOnlyList<MqttPublishCategory> MqttCategories(MqttSettings settings) =>
+    [
+        new()
+        {
+            Key         = MqttPanelSeam.NetworkKey,
+            Label       = "Host network",
+            Description = "The active rule, virtual switch, host adapter, addresses, apply status and "
+                        + "bridge health, plus the re-check and repair buttons.",
+            IsOn        = MqttPanelSeam.IsOn(settings, MqttPanelSeam.NetworkKey),
+        },
+        new()
+        {
+            Key         = MqttPanelSeam.VmStateKey,
+            Label       = "VM state and controls",
+            Description = "Each managed VM's state and whether it is running, and the power, on/off "
+                        + "and switch-override controls.",
+            IsOn        = MqttPanelSeam.IsOn(settings, MqttPanelSeam.VmStateKey),
+        },
+        new()
+        {
+            Key         = MqttPanelSeam.VmDiagnosticsKey,
+            Label       = "VM diagnostics",
+            Description = "Each VM's switch, guest IP, uptime and last operation.",
+            IsOn        = MqttPanelSeam.IsOn(settings, MqttPanelSeam.VmDiagnosticsKey),
+        },
+        new()
+        {
+            Key         = MqttPanelSeam.VmMetricsKey,
+            Label       = "VM metrics",
+            // The one category that costs something, so the cost is on the row rather than in a doc.
+            Description = "Each VM's CPU, memory and VHD size. Holds a 2.5 s WMI poll for as long as "
+                        + "it is on and the broker session is live; the app runs none otherwise.",
+            IsOn        = MqttPanelSeam.IsOn(settings, MqttPanelSeam.VmMetricsKey),
+        },
+    ];
+
+    /// <summary>
+    /// Applies one facet of the MQTT settings and persists the whole section.
+    ///
+    /// <para>On the thread pool, like every other config write from this window: a save serialises,
+    /// rewrites and re-reads config.json and then raises a reload, none of which may happen on the UI
+    /// thread. The read-modify-write is over <see cref="ConfigManager.Current"/> at the moment of the
+    /// edit, so a facet committed while this window was open cannot be rolled back by a stale
+    /// snapshot.</para>
+    /// </summary>
+    private void SaveMqtt(Func<MqttSettings, MqttSettings> apply, string what) => Task.Run(() =>
+    {
+        try { _config.SaveMqttSettings(apply((_config.Current.Mqtt ?? new MqttSettings()).Copy())); }
+        catch (Exception ex) { WarnOnUi($"Could not save {what}:\n\n{ex.Message}"); }
+    });
+
+    /// <summary>Re-reads the live-connection facts when the category is shown. The whole options record
+    /// is rebuilt only when the connection has been replaced underneath — that is the one case a
+    /// refresh cannot fix, and rebuilding on every visit would throw away a half-typed broker edit.</summary>
+    private void RefreshMqttStatus()
+    {
+        if (_closed || _mqttPanel is not { } panel) return;
+
+        if (_mqtt() is { } service && !ReferenceEquals(_mqttActivity, service.Activity))
+            ApplyMqttOptions(panel);
+
+        panel.RefreshStatus();
     }
 
     // ── About ──────────────────────────────────────────────────────────────────────

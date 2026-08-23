@@ -171,7 +171,7 @@ Items from older versions didn't vanish — they moved to Settings: **Repair hos
 
 ## Settings window
 
-Right-click the tray icon → **Settings…**. Six sections in a sidebar; every change is saved to `config.json` as you make it. The window remembers its size and position between opens.
+Right-click the tray icon → **Settings…**. Seven sections in a sidebar; every change is saved to `config.json` as you make it. The window remembers its size and position between opens.
 
 | Section | What's there |
 |---|---|
@@ -179,7 +179,8 @@ Right-click the tray icon → **Settings…**. Six sections in a sidebar; every 
 | **Managed VMs** | The VMs this app looks after: add or remove one, the NIC name each is reconnected through, and an optional action (pause / save / shutdown, after a configurable delay) when the bridged network is lost |
 | **Network** | The rules editor — add, edit, remove and re-prioritise rules; **Add current network** captures the live adapter's MAC and subnet in one step; the fallback switch and target VMs; the transient per-VM switch override |
 | **Adapters** | Rename a physical adapter. Note this renames the adapter's **description** (what Device Manager, Hyper-V Manager and this app show) — not its Windows connection name/alias. Renaming briefly drops that adapter's connection; only real physical NICs are listed, and a rename can be reset to the factory name |
-| **Maintenance** | Open `config.json`, open any of the three log files or the logs folder, reload the config from disk (a reload that can't parse says so and changes nothing), re-check the network, repair host networking (for the "host offline but VM online" duplicate-vNIC state after a dock cycle), check for updates |
+| **Home Assistant** | The MQTT broker, its credentials and a connection test; the device name and device ID; and the four publish groups — host network, VM state and controls, VM diagnostics, VM metrics |
+| **Maintenance** | Open `config.json`, open any of the four log files or the logs folder, reload the config from disk (a reload that can't parse says so and changes nothing), re-check the network, repair host networking (for the "host offline but VM online" duplicate-vNIC state after a dock cycle), check for updates |
 | **About** | The same brand/about content as the About window, embedded |
 
 ---
@@ -244,7 +245,10 @@ Everything below is the annotated **reference** for the full format — copy fro
     "discoveryPrefix":  "homeassistant",   // blank uses Home Assistant's own default
     "deviceName":       "Hyper-V host",    // blank derives one from the machine name
     "nodeId":           "",                // blank derives one from the machine name
-    "publishVmMetrics": false              // CPU / memory / VHD; see the caveat below
+    "publishNetwork":       true,          // host network sensors + the re-check/repair buttons
+    "publishVmState":       true,          // per-VM state + the power / on-off / override controls
+    "publishVmDiagnostics": true,          // per-VM switch, IP, uptime, last operation
+    "publishVmMetrics":     false          // CPU / memory / VHD; see the caveat below
   }
 }
 ```
@@ -257,10 +261,17 @@ host networking, per-VM power, a per-VM on/off switch, and a per-VM switch overr
 the rules name. **Every command is held to the same state rule the dashboard's own buttons are** — a
 verb the VM's current state does not allow is refused and logged, never attempted.
 
-**`publishVmMetrics` is off by default, and turning it on has a cost.** CPU, memory and VHD only flow
-while the app holds a 2.5 s WMI polling loop, which it otherwise never runs while idle. The
-subscription is held only while the toggle is on and the broker session is live, and released the
-moment either stops being true; the three entities are removed from Home Assistant when it is off.
+**Everything is edited from Settings → Home Assistant** — the broker, the credentials, a connection
+test, the device ID and the four publish groups. Switching a group off empties its entities' retained
+discovery, so they leave Home Assistant rather than staying there permanently unavailable; the same
+applies to the whole integration when `enabled` is turned off. Changing the device ID or the discovery
+prefix clears the old identity's retained topics first, for the same reason.
+
+**`publishVmMetrics` is the one group that is off by default, and turning it on has a cost.** CPU,
+memory and VHD only flow while the app holds a 2.5 s WMI polling loop, which it otherwise never runs
+while idle. The subscription is held only while the toggle is on and the broker session is live, and
+released the moment either stops being true. The other three groups publish state the app already
+holds, so they cost nothing extra and default on.
 
 The password is stored in plain text. Everything MQTT-related is logged to `mqtt.log`.
 
@@ -375,7 +386,7 @@ additionally uses, at **test time only** (nothing ships in the app):
 
 ## Shared components
 
-Three projects come from [0z0-shared](https://github.com/0z00z0/0z0-shared), the shared components
+Four projects come from [0z0-shared](https://github.com/0z00z0/0z0-shared), the shared components
 library used across ZeroZero Software apps, referenced as sibling-folder `ProjectReference`s (no
 NuGet package yet):
 
@@ -384,6 +395,7 @@ NuGet package yet):
 | `ZeroZero.Brand.WinUI` | The **About** window (`BrandAboutWindow`) |
 | `ZeroZero.Mqtt` | The broker connection: transport sweep, backoff, publish channels, command targets, credential store |
 | `ZeroZero.Mqtt.HomeAssistant` | The Home Assistant binding: the entity model, discovery payloads, availability, retained-entity eviction |
+| `ZeroZero.Mqtt.WinUI` | The MQTT settings panel embedded in **Settings → Home Assistant** |
 
 This repo therefore carries the entity set and the wiring, and no protocol or discovery code of its
 own. Local builds resolve the library as the sibling `..\0z0-shared` folder (`..\..\0z0-shared` from
@@ -435,8 +447,8 @@ Logs are written to `%APPDATA%\HyperVManagerTray\`, split by concern:
 
 One setting governs all four: the log level in **Settings → General** (or `logLevel` in
 `config.json`); `None` silences them, and a change applies immediately — no restart. A crash
-additionally writes `crash.log` in the same folder. `switcher.log`, `vm-power.log` and `ui.log` are
-openable from **Settings → Maintenance**.
+additionally writes `crash.log` in the same folder. All four are openable from
+**Settings → Maintenance**.
 
 **Rotation** (issue #55). Each log rotates at **2 MB**, keeping **5** archives beside it
 (`switcher_00.log`, `switcher_01.log`, …), oldest discarded first. The live file always keeps its own

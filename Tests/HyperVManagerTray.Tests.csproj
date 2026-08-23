@@ -135,6 +135,9 @@
          retained-topic clearing turns on. Strings and flags only, and the reason the clearing rule is
          assertable at all: the service that acts on it holds the live broker and is NOT linked. -->
     <Compile Include="..\Helpers\MqttIdentity.cs"     Link="Linked\MqttIdentity.cs" />
+    <!-- The mapping between the config section and the shared settings panel's view of it. The panel
+         is WinUI and is deliberately NOT linked, which is exactly why the mapping lives outside it. -->
+    <Compile Include="..\Helpers\MqttPanelSeam.cs"    Link="Linked\MqttPanelSeam.cs" />
     <Compile Include="..\Helpers\MqttCommandGate.cs"  Link="Linked\MqttCommandGate.cs" />
     <Compile Include="..\Helpers\MqttMetricsHold.cs"  Link="Linked\MqttMetricsHold.cs" />
     <Compile Include="..\Services\MqttStateCache.cs"  Link="Linked\MqttStateCache.cs" />

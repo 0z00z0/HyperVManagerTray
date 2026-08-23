@@ -73,6 +73,12 @@
          UndefineProperties (verified by publishing with the property set). -->
     <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt\ZeroZero.Mqtt.csproj" />
     <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt.HomeAssistant\ZeroZero.Mqtt.HomeAssistant.csproj" />
+    <!-- The shared MQTT settings panel behind Settings → Home Assistant. A WinUI class library, so it
+         needs the same UndefineProperties as ZeroZero.Brand.WinUI above: WindowsAppSDKSelfContained
+         would propagate into it and error out ("should not be applied to a class library"). -->
+    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt.WinUI\ZeroZero.Mqtt.WinUI.csproj">
+      <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
+    </ProjectReference>
   </ItemGroup>
 
   <ItemGroup>

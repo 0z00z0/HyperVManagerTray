@@ -59,14 +59,18 @@ internal sealed class TrayMenu
     private readonly HyperVManager  _hyperV;
     private readonly Action<string, string, bool> _notify;
 
+    // An accessor, not the service: MQTT is composed after this menu (App.OnLaunched), so there is
+    // nothing to hold at construction. Read when Settings is opened.
+    private readonly Func<MqttService?> _mqtt;
+
     /// <summary>UI dispatcher — captured on the UI thread in the constructor.</summary>
     private readonly Microsoft.UI.Dispatching.DispatcherQueue _ui;
 
     public MenuFlyout Flyout { get; }
 
     public TrayMenu(ConfigManager config, NetworkMonitor monitor, HyperVManager hyperV, VmService vm,
-                    StartupManager startup, UpdateChecker updateChecker, Action onExit,
-                    Action<string, string, bool> notify)
+                    StartupManager startup, UpdateChecker updateChecker, Func<MqttService?> mqtt,
+                    Action onExit, Action<string, string, bool> notify)
     {
         _config        = config;
         _monitor       = monitor;
@@ -74,6 +78,7 @@ internal sealed class TrayMenu
         _vm            = vm;
         _startup       = startup;
         _updateChecker = updateChecker;
+        _mqtt          = mqtt;
         _notify        = notify;
         _network       = new NetworkActions(config, monitor, hyperV, notify);
         _managedVms    = new ManagedVmActions(config, notify);
@@ -279,7 +284,8 @@ internal sealed class TrayMenu
             }
 
             UiActivityLog.Logger.LogInformation("Window: Settings opened");
-            _settingsWindow = new SettingsWindow(_config, _startup, _updateChecker, _monitor, _hyperV, _notify);
+            _settingsWindow = new SettingsWindow(_config, _startup, _updateChecker, _monitor, _hyperV,
+                                                 _mqtt, _notify);
             _settingsWindow.Closed += (_, _) =>
             {
                 UiActivityLog.Logger.LogInformation("Window: Settings closed");
