@@ -131,6 +131,10 @@
          effect arrives as a delegate, so all of it links here with no broker, no WMI and no WinUI. The
          live wiring (Services\MqttService.cs) holds the real services and is deliberately NOT linked. -->
     <Compile Include="..\Models\MqttSettings.cs"      Link="Linked\MqttSettings.cs" />
+    <!-- The published address (node id + discovery prefix) and the "has it moved?" decision the
+         retained-topic clearing turns on. Strings and flags only, and the reason the clearing rule is
+         assertable at all: the service that acts on it holds the live broker and is NOT linked. -->
+    <Compile Include="..\Helpers\MqttIdentity.cs"     Link="Linked\MqttIdentity.cs" />
     <Compile Include="..\Helpers\MqttCommandGate.cs"  Link="Linked\MqttCommandGate.cs" />
     <Compile Include="..\Helpers\MqttMetricsHold.cs"  Link="Linked\MqttMetricsHold.cs" />
     <Compile Include="..\Services\MqttStateCache.cs"  Link="Linked\MqttStateCache.cs" />

@@ -60,7 +60,12 @@ public class MqttConfigTests : IDisposable
         DiscoveryPrefix  = "ha",
         DeviceName       = "Hyper-V host",
         NodeId           = "hypervmanagertray_lab",
-        PublishVmMetrics = true,
+        // Every publish category the opposite of its default, so a mutator that drops one is caught by
+        // the value it lands on rather than being indistinguishable from the fresh state.
+        PublishNetwork       = false,
+        PublishVmState       = false,
+        PublishVmDiagnostics = false,
+        PublishVmMetrics     = true,
         LastGoodEndpoint = new MqttEndpointMemory("broker.lan", "hvmt", 1884, MqttTransport.WebSocket),
     };
 
@@ -81,6 +86,9 @@ public class MqttConfigTests : IDisposable
         Assert.Equal(expected.DiscoveryPrefix, actual.DiscoveryPrefix);
         Assert.Equal(expected.DeviceName, actual.DeviceName);
         Assert.Equal(expected.NodeId, actual.NodeId);
+        Assert.False(actual.PublishNetwork);
+        Assert.False(actual.PublishVmState);
+        Assert.False(actual.PublishVmDiagnostics);
         Assert.True(actual.PublishVmMetrics);
         Assert.Equal(endpoint ?? expected.LastGoodEndpoint, actual.LastGoodEndpoint);
     }

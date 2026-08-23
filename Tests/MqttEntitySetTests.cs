@@ -23,6 +23,9 @@ public class MqttEntitySetTests
         public MqttStateCache State { get; } = new();
         public Dictionary<string, string> Ips { get; } = new(StringComparer.OrdinalIgnoreCase);
         public bool PublishMetrics { get; set; }
+        public bool PublishNetwork { get; set; } = true;
+        public bool PublishVmState { get; set; } = true;
+        public bool PublishVmDiagnostics { get; set; } = true;
         public List<(string Vm, VmOpKind Kind)> PowerCalls { get; } = [];
         public List<(string Vm, string Switch)> Overrides { get; } = [];
         public List<string> Refusals { get; } = [];
@@ -36,6 +39,9 @@ public class MqttEntitySetTests
             State          = State,
             VmIp           = name => Ips.TryGetValue(name, out var ip) ? ip : null,
             PublishMetrics = () => PublishMetrics,
+            PublishNetwork       = () => PublishNetwork,
+            PublishVmState       = () => PublishVmState,
+            PublishVmDiagnostics = () => PublishVmDiagnostics,
             ReCheckNetwork = _ => { ReChecks++; return Task.CompletedTask; },
             RepairHostNetworking = _ => { Repairs++; return Task.CompletedTask; },
             Power          = (vm, kind, _) => { PowerCalls.Add((vm, kind)); return Task.CompletedTask; },
@@ -266,6 +272,87 @@ public class MqttEntitySetTests
 
         Assert.NotNull(Entity(set, "vm_devbox_operation").Payload());
         Assert.Null(Entity(set, "vm_buildbox_operation").Payload());
+    }
+
+    // ── The publish categories ─────────────────────────────────────────────────
+
+    /// <summary>Settings → Home Assistant offers four publish groups, and each owns exactly the
+    /// entities listed here. Withheld, not absent: the retained config of an entity a switched-off
+    /// group owns is emptied, so it leaves Home Assistant rather than staying there unavailable.</summary>
+    [Fact]
+    public void TheHostNetworkGroupCoversTheNetworkEntitiesAndItsTwoButtons()
+    {
+        var set = new Harness { PublishNetwork = false, PublishMetrics = true }.Build();
+
+        Assert.Equal(
+            ["network_rule", "network_switch", "network_adapter", "network_host_ip", "network_gateway",
+             "network_apply_status", "network_bridge_healthy", "network_recheck", "network_repair"],
+            set.Withheld.Select(e => e.ObjectId));
+    }
+
+    [Fact]
+    public void TheVmStateGroupCoversEachVmsStateAndItsControls()
+    {
+        var set = new Harness { PublishVmState = false, PublishMetrics = true }.Build();
+
+        Assert.Equal(
+            ["vm_devbox_state", "vm_devbox_running", "vm_devbox", "vm_devbox_power",
+             "vm_devbox_switch_override"],
+            set.Withheld.Select(e => e.ObjectId));
+    }
+
+    [Fact]
+    public void TheVmDiagnosticsGroupCoversTheFourDiagnosticSensors()
+    {
+        var set = new Harness { PublishVmDiagnostics = false, PublishMetrics = true }.Build();
+
+        Assert.Equal(
+            ["vm_devbox_switch", "vm_devbox_ip", "vm_devbox_uptime", "vm_devbox_operation"],
+            set.Withheld.Select(e => e.ObjectId));
+    }
+
+    /// <summary>The four groups partition the set: every entity belongs to exactly one, so no entity
+    /// is unreachable from Settings and none is turned off twice.</summary>
+    [Fact]
+    public void TheFourGroupsCoverEveryEntityExactlyOnce()
+    {
+        var all = new Harness { PublishMetrics = true }.Build().All.Select(e => e.ObjectId).ToList();
+
+        var groups = new[]
+        {
+            new Harness { PublishNetwork = false,       PublishMetrics = true },
+            new Harness { PublishVmState = false,       PublishMetrics = true },
+            new Harness { PublishVmDiagnostics = false, PublishMetrics = true },
+            new Harness { PublishMetrics = false },
+        }.Select(h => h.Build().Withheld.Select(e => e.ObjectId).ToList()).ToList();
+
+        Assert.Equal(all.Count, groups.Sum(g => g.Count));
+        Assert.Equal(all.OrderBy(id => id, StringComparer.Ordinal),
+                     groups.SelectMany(g => g).OrderBy(id => id, StringComparer.Ordinal));
+    }
+
+    /// <summary>A switched-off group still leaves the command entities inert rather than merely hidden:
+    /// a target is only routed for an ANNOUNCED entity.</summary>
+    [Fact]
+    public void ASwitchedOffGroupRoutesNoCommands()
+    {
+        var set = new Harness { PublishVmState = false }.Build();
+
+        Assert.DoesNotContain(set.CommandTargets(),
+                              t => t.TopicSuffix.StartsWith("vm_devbox", StringComparison.Ordinal));
+    }
+
+    /// <summary>Read per pass, like the metrics toggle, so a category flipped in Settings takes effect
+    /// on the reload it raises without the set being rebuilt.</summary>
+    [Fact]
+    public void ACategoryIsReadPerPassRatherThanCapturedAtBuild()
+    {
+        var harness = new Harness { PublishNetwork = false };
+        var set = harness.Build();
+
+        harness.PublishNetwork = true;
+
+        Assert.DoesNotContain(set.Withheld, e => e.ObjectId.StartsWith("network_", StringComparison.Ordinal));
     }
 
     // ── The metrics toggle ─────────────────────────────────────────────────────

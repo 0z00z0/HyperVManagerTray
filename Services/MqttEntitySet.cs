@@ -28,6 +28,20 @@ public sealed record MqttEntitySpec
     /// toggle takes effect on a reload without the set being rebuilt.</summary>
     public required Func<bool> PublishMetrics { get; init; }
 
+    // The other three publish categories. Not required, unlike PublishMetrics: each names a group that
+    // costs nothing to publish — it is state the app already holds — so "on" is the correct answer for
+    // a spec that does not mention them. Read per discovery pass, as PublishMetrics is.
+
+    /// <summary>Whether the host-network entities and their two command buttons are announced.</summary>
+    public Func<bool> PublishNetwork { get; init; } = () => true;
+
+    /// <summary>Whether each VM's state and its power, on/off and switch-override controls are
+    /// announced.</summary>
+    public Func<bool> PublishVmState { get; init; } = () => true;
+
+    /// <summary>Whether each VM's switch, IP, uptime and last-operation sensors are announced.</summary>
+    public Func<bool> PublishVmDiagnostics { get; init; } = () => true;
+
     public required Func<CancellationToken, Task> ReCheckNetwork { get; init; }
 
     public required Func<CancellationToken, Task> RepairHostNetworking { get; init; }
@@ -87,6 +101,10 @@ public static class MqttObjectIds
 /// HyperVManagerTray's Home Assistant entities (issue #75), declared once. Everything published comes
 /// from the events the app already raises — the network monitor's applied result and VmService's
 /// status and operation pushes — so nothing here adds a poll.
+///
+/// <para>Each entity carries its publish category as its <c>Include</c> gate, so a category switched
+/// off in Settings has its retained config emptied rather than being left in Home Assistant as an
+/// entity that has stopped reporting.</para>
 /// </summary>
 public static class MqttEntitySet
 {
@@ -115,6 +133,7 @@ public static class MqttEntitySet
         yield return new HaSensor
         {
             ObjectId = "network_rule",
+            Include  = spec.PublishNetwork,
             Name     = "Active rule",
             Icon     = "mdi:lan",
             State    = () => Text(state.Network?.RuleName),
@@ -122,6 +141,7 @@ public static class MqttEntitySet
         yield return new HaSensor
         {
             ObjectId = "network_switch",
+            Include  = spec.PublishNetwork,
             Name     = "Virtual switch",
             Icon     = "mdi:switch",
             State    = () => Text(state.Network?.VirtualSwitch),
@@ -129,6 +149,7 @@ public static class MqttEntitySet
         yield return new HaSensor
         {
             ObjectId = "network_adapter",
+            Include  = spec.PublishNetwork,
             Name     = "Host adapter",
             Icon     = "mdi:ethernet",
             State    = () => Text(state.Network?.HostAdapterName),
@@ -136,6 +157,7 @@ public static class MqttEntitySet
         yield return new HaSensor
         {
             ObjectId = "network_host_ip",
+            Include  = spec.PublishNetwork,
             Name     = "Host IP",
             Role     = HaEntityRole.Diagnostic,
             Icon     = "mdi:ip-network",
@@ -144,6 +166,7 @@ public static class MqttEntitySet
         yield return new HaSensor
         {
             ObjectId = "network_gateway",
+            Include  = spec.PublishNetwork,
             Name     = "Gateway",
             Role     = HaEntityRole.Diagnostic,
             Icon     = "mdi:router-network",
@@ -152,6 +175,7 @@ public static class MqttEntitySet
         yield return new HaSensor
         {
             ObjectId = "network_apply_status",
+            Include  = spec.PublishNetwork,
             Name     = "Apply status",
             Icon     = "mdi:check-network",
             State    = () => state.Network is { } r ? r.ApplyStatus.ToString() : null,
@@ -159,6 +183,7 @@ public static class MqttEntitySet
         yield return new HaBinarySensor
         {
             ObjectId    = "network_bridge_healthy",
+            Include     = spec.PublishNetwork,
             Name        = "Bridge healthy",
             DeviceClass = "connectivity",
             // Inverted: IsFailure answers "is something wrong", and connectivity's ON means "fine".
@@ -167,6 +192,7 @@ public static class MqttEntitySet
         yield return new HaButton
         {
             ObjectId = "network_recheck",
+            Include  = spec.PublishNetwork,
             Name     = "Re-check network",
             Icon     = "mdi:refresh",
             Press    = spec.ReCheckNetwork,
@@ -174,6 +200,7 @@ public static class MqttEntitySet
         yield return new HaButton
         {
             ObjectId = "network_repair",
+            Include  = spec.PublishNetwork,
             Name     = "Repair host networking",
             Icon     = "mdi:wrench",
             Press    = spec.RepairHostNetworking,
@@ -189,6 +216,7 @@ public static class MqttEntitySet
         yield return new HaSensor
         {
             ObjectId = $"vm_{slug}_state",
+            Include  = spec.PublishVmState,
             Name     = $"{vmName} state",
             Icon     = "mdi:server",
             State    = () => Text(state.Vm(vmName)?.State),
@@ -196,6 +224,7 @@ public static class MqttEntitySet
         yield return new HaBinarySensor
         {
             ObjectId    = $"vm_{slug}_running",
+            Include     = spec.PublishVmState,
             Name        = $"{vmName} running",
             DeviceClass = "running",
             State       = () => state.Vm(vmName)?.IsRunning,
@@ -203,6 +232,7 @@ public static class MqttEntitySet
         yield return new HaSensor
         {
             ObjectId = $"vm_{slug}_switch",
+            Include  = spec.PublishVmDiagnostics,
             Name     = $"{vmName} switch",
             Role     = HaEntityRole.Diagnostic,
             Icon     = "mdi:switch",
@@ -211,6 +241,7 @@ public static class MqttEntitySet
         yield return new HaSensor
         {
             ObjectId = $"vm_{slug}_ip",
+            Include  = spec.PublishVmDiagnostics,
             Name     = $"{vmName} IP",
             Role     = HaEntityRole.Diagnostic,
             Icon     = "mdi:ip-network",
@@ -219,6 +250,7 @@ public static class MqttEntitySet
         yield return new HaSensor
         {
             ObjectId = $"vm_{slug}_uptime",
+            Include  = spec.PublishVmDiagnostics,
             Name     = $"{vmName} uptime",
             Role     = HaEntityRole.Diagnostic,
             Icon     = "mdi:timer-outline",
@@ -227,6 +259,7 @@ public static class MqttEntitySet
         yield return new HaSensor
         {
             ObjectId = $"vm_{slug}_operation",
+            Include  = spec.PublishVmDiagnostics,
             Name     = $"{vmName} last operation",
             Role     = HaEntityRole.Diagnostic,
             Icon     = "mdi:history",
@@ -272,6 +305,7 @@ public static class MqttEntitySet
         yield return new HaSwitch
         {
             ObjectId = $"vm_{slug}",
+            Include  = spec.PublishVmState,
             Name     = vmName,
             Icon     = "mdi:power",
             State    = () => state.Vm(vmName)?.IsRunning,
@@ -287,6 +321,7 @@ public static class MqttEntitySet
         yield return new HaSelect
         {
             ObjectId = $"vm_{slug}_power",
+            Include  = spec.PublishVmState,
             Name     = $"{vmName} power",
             Icon     = "mdi:power-settings",
             Options  = MqttCommandGate.PowerOptions,
@@ -309,6 +344,7 @@ public static class MqttEntitySet
         yield return new HaSelect
         {
             ObjectId = $"vm_{slug}_switch_override",
+            Include  = spec.PublishVmState,
             Name     = $"{vmName} switch override",
             Role     = HaEntityRole.Config,
             Icon     = "mdi:swap-horizontal",

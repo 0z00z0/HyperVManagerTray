@@ -608,6 +608,9 @@ public sealed class ConfigManager : IDisposable
         && a.Port == b.Port
         && a.Transport == b.Transport
         && a.UseTls == b.UseTls
+        && a.PublishNetwork == b.PublishNetwork
+        && a.PublishVmState == b.PublishVmState
+        && a.PublishVmDiagnostics == b.PublishVmDiagnostics
         && a.PublishVmMetrics == b.PublishVmMetrics
         && string.Equals(a.Host, b.Host, StringComparison.Ordinal)
         && string.Equals(a.Username, b.Username, StringComparison.Ordinal)

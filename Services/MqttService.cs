@@ -21,6 +21,11 @@ namespace HyperVManagerTray.Services;
 /// </summary>
 internal sealed class MqttService : IDisposable
 {
+    /// <summary>How long clearing an abandoned identity's retained topics may take before the reconcile
+    /// carries on without it. The broker may have gone away mid-edit, and the new settings' reconnect
+    /// must not wait on the old address answering.</summary>
+    private static readonly TimeSpan ClearBudget = TimeSpan.FromSeconds(10);
+
     private readonly ConfigManager  _config;
     private readonly NetworkMonitor _monitor;
     private readonly VmService      _vm;
@@ -38,10 +43,16 @@ internal sealed class MqttService : IDisposable
     private HaNode? _node;
     private MqttConnection? _connection;
     private string _identity = string.Empty;
+
+    // The node id and discovery prefix the retained topics on the broker are filed under. Null until
+    // the first reconcile: nothing has been published, so nothing can be stranded.
+    private MqttIdentity? _published;
+
     private MqttOptions? _applied;
     private string _appliedPassword = string.Empty;
     private IReadOnlyList<string> _vmNames = [];
     private IReadOnlyList<string> _ruleSwitches = [];
+    private PublishCategories _categories;
     private bool _disposed;
 
     // Read by the entity payload providers on the publish thread; swapped whole on a reconcile.
@@ -76,6 +87,28 @@ internal sealed class MqttService : IDisposable
         if (_monitor.LastApplied is { } applied) _state.SetNetwork(applied);
 
         Schedule(_config.Current);
+    }
+
+    // ── What the Settings panel reads ───────────────────────────────────────────
+    //
+    // The shared MqttSettingsPanel renders the live session's facts beside the stored settings. It is
+    // handed these three and nothing else: it never reaches a connection, and it applies nothing —
+    // every edit goes back through ConfigManager and returns here as a reload.
+
+    /// <summary>The broker password, behind the same store the connection authenticates from.</summary>
+    public IMqttCredentialStore Credentials => _credentials;
+
+    /// <summary>The live session's telemetry, or null when no connection has been built yet. A fresh
+    /// connection carries a fresh instance, so a held reference stops reporting when one is rebuilt.</summary>
+    public MqttActivity? Activity
+    {
+        get { lock (_lock) return _connection?.Activity; }
+    }
+
+    /// <summary>Whether the broker session is up right now.</summary>
+    public bool IsConnected
+    {
+        get { lock (_lock) return _connection?.IsConnected == true; }
     }
 
     // ── App events → published state ────────────────────────────────────────────
@@ -121,9 +154,9 @@ internal sealed class MqttService : IDisposable
 
     /// <summary>Runs the reconcile off whatever thread raised the reload — it can be the UI thread,
     /// and a reconcile may dispose a connection.</summary>
-    private void Schedule(AppConfig config) => _ = Task.Run(() => Reconcile(config));
+    private void Schedule(AppConfig config) => _ = Task.Run(() => ReconcileAsync(config));
 
-    private void Reconcile(AppConfig config)
+    private async Task ReconcileAsync(AppConfig config)
     {
         try
         {
@@ -131,6 +164,10 @@ internal sealed class MqttService : IDisposable
             var vmNames  = config.VirtualMachines.Select(v => v.Name).ToList();
             var switches = config.RuleSwitches.ToList();
             string identity = Identity(settings);
+
+            // Before anything republishes: whatever the old node id and discovery prefix own is
+            // unreachable the moment either moves.
+            await ClearAbandonedIdentityAsync(settings).ConfigureAwait(false);
 
             MqttConnection? connection;
             lock (_lock)
@@ -145,10 +182,15 @@ internal sealed class MqttService : IDisposable
                     Recreate(identity, settings, vmNames, switches);
                 }
                 else if (!vmNames.SequenceEqual(_vmNames, StringComparer.Ordinal)
-                         || !switches.SequenceEqual(_ruleSwitches, StringComparer.Ordinal))
+                         || !switches.SequenceEqual(_ruleSwitches, StringComparer.Ordinal)
+                         || PublishCategories.Of(settings) != _categories)
                 {
                     _vmNames      = vmNames;
                     _ruleSwitches = switches;
+                    _categories   = PublishCategories.Of(settings);
+                    // Republishes the announced configs and empties the withheld ones. A category is
+                    // otherwise only read on the next connect, so the entities a switched-off category
+                    // owns would sit in Home Assistant until then.
                     _node!.SetEntities(BuildEntities());
                 }
 
@@ -159,7 +201,8 @@ internal sealed class MqttService : IDisposable
                     _appliedPassword = settings.Password ?? string.Empty;
                     _connection!.Apply(options);
                 }
-                connection = _connection;
+                _published  = IdentityOf(settings);
+                connection  = _connection;
             }
 
             _metrics.Update(settings.PublishVmMetrics, connection?.IsConnected == true);
@@ -170,6 +213,57 @@ internal sealed class MqttService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Empties the retained topics of an identity the configuration has just moved away from, on the
+    /// connection that still addresses it.
+    ///
+    /// <para>Disabling MQTT already evicts the entities — <c>OnStoppingAsync</c> clears the identity as
+    /// the session stops. A node id or discovery prefix edited while publishing is ON has no such
+    /// moment: the connection is re-applied (or rebuilt) against the new address and the old one's
+    /// configs, availability and state stay retained on the broker for ever, as entities Home Assistant
+    /// shows as permanently unavailable.</para>
+    ///
+    /// <para>Best-effort by construction. It runs against a live session or not at all: with the broker
+    /// down there is nothing retained this process can reach, and blocking a reconcile on a broker that
+    /// is not answering would cost the reconnect the new settings are for.</para>
+    /// </summary>
+    private async Task ClearAbandonedIdentityAsync(MqttSettings settings)
+    {
+        HaNode?         node;
+        MqttConnection? connection;
+        MqttIdentity?   previous;
+        lock (_lock)
+        {
+            if (_disposed) return;
+            node       = _node;
+            connection = _connection;
+            previous   = _published;
+        }
+
+        if (node is null || connection is null) return;
+        if (!MqttIdentity.Abandons(previous, IdentityOf(settings))) return;
+        if (!connection.IsConnected || connection.Topics is not { } topics) return;
+
+        try
+        {
+            using var cts = new CancellationTokenSource(ClearBudget);
+            await node.ClearIdentityAsync(connection, topics, cts.Token).ConfigureAwait(false);
+            _log.LogInformation("MQTT: cleared the retained topics of the abandoned identity '{NodeId}'",
+                                topics.NodeId);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "MQTT: clearing the abandoned identity '{NodeId}' failed — its retained "
+                                + "topics are still on the broker", topics.NodeId);
+        }
+    }
+
+    /// <summary>The address these settings publish under. The machine name is the connection's own
+    /// default, which <see cref="Recreate"/> leaves unset on the setup — so both derive the same
+    /// node id from the same source.</summary>
+    private static MqttIdentity IdentityOf(MqttSettings settings) =>
+        MqttIdentity.For(settings, MqttEntitySet.TopicRoot, Environment.MachineName);
+
     /// <summary>Whether the connection has to be re-applied. A remembered endpoint moving is not a
     /// reason: <c>Apply</c> drops the live session to rebuild it, and the endpoint is written back
     /// BY that session, so re-applying for it would reconnect once per successful connect.</summary>
@@ -179,14 +273,11 @@ internal sealed class MqttService : IDisposable
         || !string.Equals(_appliedPassword, password ?? string.Empty, StringComparison.Ordinal);
 
     /// <summary>The identity a live node is built for. Both halves are fixed at construction, so a
-    /// change to either needs a fresh node and connection.</summary>
+    /// change to either needs a fresh node and connection. Compared as the node is actually built —
+    /// on the EFFECTIVE names — so writing a blank prefix out as Home Assistant's own default does not
+    /// read as a change and rebuild the connection for nothing.</summary>
     private static string Identity(MqttSettings settings) =>
-        $"{DeviceName(settings)} {settings.DiscoveryPrefix}";
-
-    private static string DeviceName(MqttSettings settings) =>
-        string.IsNullOrWhiteSpace(settings.DeviceName)
-            ? $"{AppInfo.Name} ({Environment.MachineName})"
-            : settings.DeviceName.Trim();
+        $"{MqttNaming.EffectiveDeviceName(settings)} {MqttNaming.EffectiveDiscoveryPrefix(settings)}";
 
     /// <summary>Builds a fresh node and connection. Caller holds <see cref="_lock"/>.</summary>
     private void Recreate(string identity, MqttSettings settings,
@@ -200,13 +291,14 @@ internal sealed class MqttService : IDisposable
         _identity     = identity;
         _vmNames      = vmNames;
         _ruleSwitches = ruleSwitches;
+        _categories   = PublishCategories.Of(settings);
 
         var nodeOptions = new HaNodeOptions
         {
             TopicRoot = MqttEntitySet.TopicRoot,
             Device    = new HaDevice
             {
-                Name             = DeviceName(settings),
+                Name             = MqttNaming.EffectiveDeviceName(settings),
                 Model            = AppInfo.Name,
                 SoftwareVersion  = _version,
                 ConfigurationUrl = "https://github.com/0z00z0/HyperVManagerTray",
@@ -219,8 +311,7 @@ internal sealed class MqttService : IDisposable
             },
             Logger = _log,
         };
-        if (!string.IsNullOrWhiteSpace(settings.DiscoveryPrefix))
-            nodeOptions = nodeOptions with { DiscoveryPrefix = settings.DiscoveryPrefix.Trim() };
+        nodeOptions = nodeOptions with { DiscoveryPrefix = MqttNaming.EffectiveDiscoveryPrefix(settings) };
 
         _node = new HaNode(nodeOptions, BuildEntities());
         _connection = _node.CreateConnection(new MqttConnectionSetup
@@ -242,7 +333,12 @@ internal sealed class MqttService : IDisposable
         RuleSwitches   = _ruleSwitches,
         State          = _state,
         VmIp           = _vm.GetCachedVmIp,
-        PublishMetrics = () => _settings.PublishVmMetrics,
+        // Read off the live settings per discovery pass, so a category toggled in Settings takes
+        // effect on the reload it raises without the entity set being rebuilt.
+        PublishNetwork       = () => _settings.PublishNetwork,
+        PublishVmState       = () => _settings.PublishVmState,
+        PublishVmDiagnostics = () => _settings.PublishVmDiagnostics,
+        PublishMetrics       = () => _settings.PublishVmMetrics,
         ReCheckNetwork = _reCheckNetwork,
         RepairHostNetworking = _repairHostNetworking,
         Power          = RunPowerAsync,
@@ -290,5 +386,15 @@ internal sealed class MqttService : IDisposable
 
         _metrics.Release();
         try { connection?.Dispose(); } catch { /* teardown is best-effort */ }
+    }
+
+    /// <summary>The four publish categories as one comparable value. Which entities are announced turns
+    /// on them, and the entity set is otherwise rebuilt only when the VM or switch lists move.</summary>
+    private readonly record struct PublishCategories(
+        bool Network, bool VmState, bool VmDiagnostics, bool Metrics)
+    {
+        public static PublishCategories Of(MqttSettings settings) => new(
+            settings.PublishNetwork, settings.PublishVmState,
+            settings.PublishVmDiagnostics, settings.PublishVmMetrics);
     }
 }
