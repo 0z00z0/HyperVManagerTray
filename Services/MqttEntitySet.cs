@@ -71,7 +71,9 @@ public static class MqttObjectIds
         var map  = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var used = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (string name in vmNames ?? [])
+        // A hand-edited "name": null would otherwise throw out of the dictionary and take the whole
+        // integration down with it, silently and until the file is fixed.
+        foreach (string name in (vmNames ?? []).Select(n => n ?? string.Empty))
         {
             if (map.ContainsKey(name)) continue;
             string root = Slug(name);

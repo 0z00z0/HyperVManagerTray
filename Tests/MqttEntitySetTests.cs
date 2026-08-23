@@ -603,6 +603,26 @@ public class MqttEntitySetTests
         Assert.Single(ids);
     }
 
+    /// <summary>The names come straight off config.json, where <c>"name": null</c> deserialises as a
+    /// null. A throw here would come out of MqttService's reconcile and leave the whole integration
+    /// down — silently, and until the file is fixed — so it degrades to the fallback slug instead.</summary>
+    [Fact]
+    public void ANullVmNameDoesNotThrowOutOfTheSet()
+    {
+        var ids = MqttObjectIds.ForVms([null!, "DevBox"]);
+
+        Assert.Equal(2, ids.Count);
+        Assert.Equal("vm", ids[string.Empty]);
+    }
+
+    [Fact]
+    public void ANullVmNameBuildsAnEntitySetRatherThanThrowing()
+    {
+        var set = new Harness().Build([null!]);
+
+        Assert.Contains(set.All, e => e.ObjectId == "vm_vm_state");
+    }
+
     // ── Discovery ──────────────────────────────────────────────────────────────
 
     private static HaDiscoveryContext Context() => new()

@@ -303,6 +303,46 @@ public class MqttConfigTests : IDisposable
         Assert.False(manager.Current.Mqtt.Enabled);
     }
 
+    /// <summary>A partial section — one field written by hand, the rest absent — fills in from the
+    /// defaults rather than from nulls the publish path would have to guard.</summary>
+    [Fact]
+    public void ConfigWithAPartialSection_FillsTheRestFromTheDefaults()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"hvmt_mqtt_{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, """{ "logLevel": "Debug", "mqtt": { "host": "broker.lan" } }""");
+        _tempFiles.Add(path);
+
+        using var manager = new ConfigManager(path, NullLogger<ConfigManager>.Instance);
+        var mqtt = manager.Current.Mqtt;
+
+        Assert.Equal("broker.lan", mqtt.Host);
+        Assert.False(mqtt.Enabled);                 // inert until the master toggle is set
+        Assert.Null(mqtt.Port);
+        Assert.Equal(string.Empty, mqtt.Username);
+        Assert.Equal(string.Empty, mqtt.Password);
+        Assert.Equal(string.Empty, mqtt.NodeId);
+        Assert.Null(mqtt.LastGoodEndpoint);
+        Assert.True(mqtt.PublishNetwork);
+        Assert.False(mqtt.PublishVmMetrics);        // the one category that costs a WMI poll
+    }
+
+    /// <summary>A section whose types do not parse fails the load like any other malformed field: the
+    /// previously loaded config stays live and the outcome says so. It must not throw out of
+    /// <c>Load</c> — a broken hand-edit may not take a tray app down.</summary>
+    [Fact]
+    public void ConfigWithAMalformedSection_KeepsThePreviousConfig()
+    {
+        using var manager = MakeManager();
+        manager.SaveMqttSettings(Sample());
+        var path = _tempFiles[^1];
+
+        File.WriteAllText(path, """{ "mqtt": { "port": "not-a-port" } }""");
+        var outcome = manager.Load();
+
+        Assert.False(outcome.Succeeded);
+        AssertSampleIntact(manager.Current.Mqtt);
+    }
+
     // ── Trap 2: an mqtt edit is not a network edit ────────────────────────────────────────────────
 
     /// <summary>"mqtt" must be named in the exclusion list, or every property under it lands in the
