@@ -139,6 +139,11 @@
          is WinUI and is deliberately NOT linked, which is exactly why the mapping lives outside it. -->
     <Compile Include="..\Helpers\MqttPanelSeam.cs"    Link="Linked\MqttPanelSeam.cs" />
     <Compile Include="..\Helpers\MqttCommandGate.cs"  Link="Linked\MqttCommandGate.cs" />
+    <!-- The call-site decisions MqttService takes: whether a queued reconcile has been superseded,
+         whether the abandoned identity can be cleared, and whether the connection, the entity set or
+         the applied options have to be rebuilt. Lifted out of the service precisely so they are
+         assertable — Services\MqttService.cs holds the live connection and is NOT linked. -->
+    <Compile Include="..\Helpers\MqttReconcile.cs"    Link="Linked\MqttReconcile.cs" />
     <Compile Include="..\Helpers\MqttMetricsHold.cs"  Link="Linked\MqttMetricsHold.cs" />
     <Compile Include="..\Services\MqttStateCache.cs"  Link="Linked\MqttStateCache.cs" />
     <Compile Include="..\Services\MqttEntitySet.cs"   Link="Linked\MqttEntitySet.cs" />

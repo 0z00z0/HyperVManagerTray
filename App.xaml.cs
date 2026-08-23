@@ -925,6 +925,10 @@ public partial class App : Application
 
     // ── Lifecycle ───────────────────────────────────────────────────────────────
 
+    /// <summary>Longest the exit waits for the broker teardown started at the top of it. Above the
+    /// connection's own ~3 s budget, so a healthy teardown is never truncated.</summary>
+    private static readonly TimeSpan MqttTeardownBudget = TimeSpan.FromSeconds(5);
+
     private void OnExit()
     {
         // User-initiated exit is legitimate — the self-heal watchdog must NOT relaunch it.
@@ -933,13 +937,17 @@ public partial class App : Application
         if (_dashboard is not null) _dashboard.AllowClose = true;
         _trayIcon?.Dispose();
         _iconImage?.Dispose();
-        // Before the services it subscribes to, so no event reaches a disposed VmService or monitor.
-        _mqtt?.Dispose();
+        // Detaching from VmService/NetworkMonitor happens here, synchronously, so no event reaches a
+        // disposed service below. The broker teardown it starts blocks for up to three seconds — on the
+        // pool, not on this thread, so the exit is not held up by it — and is joined before the logger
+        // factory goes, because it logs.
+        var mqttTeardown = _mqtt?.BeginDisposeAsync();
         _monitor?.Dispose();
         _vm?.Dispose();
         _config?.Dispose();
         _hyperV?.Dispose();
         _httpClient?.Dispose();
+        try { mqttTeardown?.Wait(MqttTeardownBudget); } catch { /* never hold the exit on it */ }
         _loggerFactory?.Dispose();
         Exit();
     }

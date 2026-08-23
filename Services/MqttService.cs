@@ -26,6 +26,10 @@ internal sealed class MqttService : IDisposable
     /// must not wait on the old address answering.</summary>
     private static readonly TimeSpan ClearBudget = TimeSpan.FromSeconds(10);
 
+    /// <summary>How long <see cref="Dispose"/> waits for the connection teardown it started. Above the
+    /// connection's own ~3 s budget, so a synchronous dispose never truncates a live one.</summary>
+    private static readonly TimeSpan DisposeBudget = TimeSpan.FromSeconds(5);
+
     private readonly ConfigManager  _config;
     private readonly NetworkMonitor _monitor;
     private readonly VmService      _vm;
@@ -39,7 +43,15 @@ internal sealed class MqttService : IDisposable
     private readonly string _version;
 
     // Guards the node/connection swap and the "has anything worth re-applying changed?" bookkeeping.
+    // Held only for field access: nothing that blocks may run under it, because the event pump takes
+    // it on WMI watcher threads and the Settings panel takes it on the UI thread.
     private readonly object _lock = new();
+
+    // One reconcile at a time. Each carries its own config snapshot, so two overlapping across the
+    // clear-abandoned-identity await could land in either order and leave the older settings applied.
+    private readonly SemaphoreSlim _reconcileGate = new(1, 1);
+    private long _scheduled;
+
     private HaNode? _node;
     private MqttConnection? _connection;
     private string _identity = string.Empty;
@@ -153,13 +165,23 @@ internal sealed class MqttService : IDisposable
     // ── Config → connection ─────────────────────────────────────────────────────
 
     /// <summary>Runs the reconcile off whatever thread raised the reload — it can be the UI thread,
-    /// and a reconcile may dispose a connection.</summary>
-    private void Schedule(AppConfig config) => _ = Task.Run(() => ReconcileAsync(config));
-
-    private async Task ReconcileAsync(AppConfig config)
+    /// and a reconcile may dispose a connection. Each run is ticketed so a later reload supersedes an
+    /// earlier one still queued behind the gate.</summary>
+    private void Schedule(AppConfig config)
     {
+        long ticket = Interlocked.Increment(ref _scheduled);
+        _ = Task.Run(() => ReconcileAsync(config, ticket));
+    }
+
+    private async Task ReconcileAsync(AppConfig config, long ticket)
+    {
+        await _reconcileGate.WaitAsync().ConfigureAwait(false);
         try
         {
+            // A newer reload has already been scheduled with a newer config; this one's snapshot is
+            // stale, and applying it would roll the newer settings back.
+            if (MqttReconcile.Superseded(ticket, Interlocked.Read(ref _scheduled))) return;
+
             var settings = config.Mqtt ?? new MqttSettings();
             var vmNames  = config.VirtualMachines.Select(v => v.Name).ToList();
             var switches = config.RuleSwitches.ToList();
@@ -169,6 +191,11 @@ internal sealed class MqttService : IDisposable
             // unreachable the moment either moves.
             await ClearAbandonedIdentityAsync(settings).ConfigureAwait(false);
 
+            // Off the lock, because the teardown blocks for up to three seconds. Before the rebuild
+            // rather than after: the retiring session publishes a retained "offline" on an availability
+            // topic its replacement usually shares, and that must not land on top of its "online".
+            Retire(TakeRetired(identity));
+
             MqttConnection? connection;
             lock (_lock)
             {
@@ -177,13 +204,12 @@ internal sealed class MqttService : IDisposable
                 _settings = settings;
                 _credentials.SetPassword(MqttSettings.CredentialReference, settings.Password);
 
-                if (_connection is null || !string.Equals(identity, _identity, StringComparison.Ordinal))
+                if (MqttReconcile.NeedsRecreate(_connection is not null, _identity, identity))
                 {
                     Recreate(identity, settings, vmNames, switches);
                 }
-                else if (!vmNames.SequenceEqual(_vmNames, StringComparer.Ordinal)
-                         || !switches.SequenceEqual(_ruleSwitches, StringComparer.Ordinal)
-                         || PublishCategories.Of(settings) != _categories)
+                else if (MqttReconcile.NeedsEntityRebuild(_vmNames, vmNames, _ruleSwitches, switches,
+                                                          _categories, PublishCategories.Of(settings)))
                 {
                     _vmNames      = vmNames;
                     _ruleSwitches = switches;
@@ -195,7 +221,7 @@ internal sealed class MqttService : IDisposable
                 }
 
                 var options = settings.ToOptions();
-                if (NeedsApply(options, settings.Password))
+                if (MqttReconcile.NeedsApply(_applied, _appliedPassword, options, settings.Password))
                 {
                     _applied         = options;
                     _appliedPassword = settings.Password ?? string.Empty;
@@ -211,6 +237,33 @@ internal sealed class MqttService : IDisposable
         {
             _log.LogError(ex, "MQTT: applying the configuration failed");
         }
+        finally
+        {
+            _reconcileGate.Release();
+        }
+    }
+
+    /// <summary>Detaches the connection a move to <paramref name="identity"/> retires, so it can be torn
+    /// down off <see cref="_lock"/>. Null when the live one still addresses the same identity.</summary>
+    private MqttConnection? TakeRetired(string identity)
+    {
+        lock (_lock)
+        {
+            if (_disposed || _connection is null) return null;
+            if (!MqttReconcile.NeedsRecreate(hasConnection: true, _identity, identity)) return null;
+
+            var retired = _connection;
+            _connection = null;
+            _applied    = null;
+            return retired;
+        }
+    }
+
+    private void Retire(MqttConnection? connection)
+    {
+        if (connection is null) return;
+        try { connection.Dispose(); }
+        catch (Exception ex) { _log.LogWarning(ex, "MQTT: disposing the previous connection failed"); }
     }
 
     /// <summary>
@@ -240,21 +293,23 @@ internal sealed class MqttService : IDisposable
             previous   = _published;
         }
 
-        if (node is null || connection is null) return;
-        if (!MqttIdentity.Abandons(previous, IdentityOf(settings))) return;
-        if (!connection.IsConnected || connection.Topics is not { } topics) return;
+        var topics = connection?.Topics;
+        if (!MqttReconcile.CanClear(node is not null, connection is not null,
+                                    connection?.IsConnected == true, topics is not null,
+                                    previous, IdentityOf(settings)))
+            return;
 
         try
         {
             using var cts = new CancellationTokenSource(ClearBudget);
-            await node.ClearIdentityAsync(connection, topics, cts.Token).ConfigureAwait(false);
+            await node!.ClearIdentityAsync(connection!, topics!, cts.Token).ConfigureAwait(false);
             _log.LogInformation("MQTT: cleared the retained topics of the abandoned identity '{NodeId}'",
-                                topics.NodeId);
+                                topics!.NodeId);
         }
         catch (Exception ex)
         {
             _log.LogWarning(ex, "MQTT: clearing the abandoned identity '{NodeId}' failed — its retained "
-                                + "topics are still on the broker", topics.NodeId);
+                                + "topics are still on the broker", topics!.NodeId);
         }
     }
 
@@ -264,14 +319,6 @@ internal sealed class MqttService : IDisposable
     private static MqttIdentity IdentityOf(MqttSettings settings) =>
         MqttIdentity.For(settings, MqttEntitySet.TopicRoot, Environment.MachineName);
 
-    /// <summary>Whether the connection has to be re-applied. A remembered endpoint moving is not a
-    /// reason: <c>Apply</c> drops the live session to rebuild it, and the endpoint is written back
-    /// BY that session, so re-applying for it would reconnect once per successful connect.</summary>
-    private bool NeedsApply(MqttOptions options, string? password) =>
-        _applied is not { } previous
-        || previous with { LastGoodEndpoint = null } != options with { LastGoodEndpoint = null }
-        || !string.Equals(_appliedPassword, password ?? string.Empty, StringComparison.Ordinal);
-
     /// <summary>The identity a live node is built for. Both halves are fixed at construction, so a
     /// change to either needs a fresh node and connection. Compared as the node is actually built —
     /// on the EFFECTIVE names — so writing a blank prefix out as Home Assistant's own default does not
@@ -279,15 +326,13 @@ internal sealed class MqttService : IDisposable
     private static string Identity(MqttSettings settings) =>
         $"{MqttNaming.EffectiveDeviceName(settings)} {MqttNaming.EffectiveDiscoveryPrefix(settings)}";
 
-    /// <summary>Builds a fresh node and connection. Caller holds <see cref="_lock"/>.</summary>
+    /// <summary>Builds a fresh node and connection. Caller holds <see cref="_lock"/>; whatever this
+    /// replaces has already been retired by <see cref="TakeRetired"/> and torn down off the lock.</summary>
     private void Recreate(string identity, MqttSettings settings,
                           IReadOnlyList<string> vmNames, IReadOnlyList<string> ruleSwitches)
     {
-        var previous = _connection;
-        _connection = null;
-        _applied    = null;
-        try { previous?.Dispose(); } catch (Exception ex) { _log.LogWarning(ex, "MQTT: disposing the previous connection failed"); }
-
+        _connection   = null;
+        _applied      = null;
         _identity     = identity;
         _vmNames      = vmNames;
         _ruleSwitches = ruleSwitches;
@@ -368,14 +413,22 @@ internal sealed class MqttService : IDisposable
         catch (Exception ex) { _log.LogWarning(ex, "MQTT: could not remember the broker endpoint"); }
     }
 
-    public void Dispose()
+    /// <summary>
+    /// Detaches from the app's events and starts the connection's teardown on the thread pool.
+    ///
+    /// <para>Detaching is synchronous, so the services this subscribes to may be disposed the moment
+    /// this returns. The connection's own <c>Dispose</c> blocks for up to three seconds publishing the
+    /// retained offline state — which is worth waiting for, but not on the UI thread — so the caller is
+    /// handed a task to overlap with the rest of its teardown and join before it exits.</para>
+    /// </summary>
+    public Task BeginDisposeAsync()
     {
         MqttConnection? connection;
         lock (_lock)
         {
-            if (_disposed) return;
-            _disposed  = true;
-            connection = _connection;
+            if (_disposed) return Task.CompletedTask;
+            _disposed   = true;
+            connection  = _connection;
             _connection = null;
         }
 
@@ -385,16 +438,13 @@ internal sealed class MqttService : IDisposable
         _config.ConfigReloaded -= OnConfigReloaded;
 
         _metrics.Release();
-        try { connection?.Dispose(); } catch { /* teardown is best-effort */ }
+        if (connection is null) return Task.CompletedTask;
+
+        return Task.Run(() =>
+        {
+            try { connection.Dispose(); } catch { /* teardown is best-effort */ }
+        });
     }
 
-    /// <summary>The four publish categories as one comparable value. Which entities are announced turns
-    /// on them, and the entity set is otherwise rebuilt only when the VM or switch lists move.</summary>
-    private readonly record struct PublishCategories(
-        bool Network, bool VmState, bool VmDiagnostics, bool Metrics)
-    {
-        public static PublishCategories Of(MqttSettings settings) => new(
-            settings.PublishNetwork, settings.PublishVmState,
-            settings.PublishVmDiagnostics, settings.PublishVmMetrics);
-    }
+    public void Dispose() => BeginDisposeAsync().Wait(DisposeBudget);
 }
