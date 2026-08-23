@@ -79,6 +79,8 @@ Every open issue carries **one `type`**, **one or more `area:`**, and optionally
   (`Services/ConfigManager.cs`, `Services/FileLogger.cs`, `Services/StartupManager.cs`,
   `Services/UpdateChecker.cs`, `Helpers/SelfHealWatchdog.cs`).
 - `area:installer` — installer / winget / release packaging (`installer/`).
+- `area:mqtt` — MQTT / Home Assistant integration: the broker connection, the topics published and
+  subscribed, and the settings behind them.
 - `area:brand` — shared ZeroZero brand integration: the About box and the `0z0-shared` sibling
   dependency it pulls in.
 

@@ -154,6 +154,85 @@ public class ConfigMigrationTests : IDisposable
         Assert.Equal(LegacyJson, File.ReadAllText(legacy));
     }
 
+    // ── A failed copy keeps its retry, and says so ────────────────────────────
+
+    /// <summary>
+    /// The blank slate must not be written after a failed copy. It would occupy the target, so every
+    /// later start would see a config there, report NotNeeded, and never try again — the user's real
+    /// rules stranded beside the executable for good, on one transient file lock.
+    /// </summary>
+    [Fact]
+    public void AFailedCopyDoesNotAllowTheBlankSlate()
+    {
+        Assert.False(ConfigMigration.MayCreateDefault(ConfigMigrationOutcome.Failed));
+    }
+
+    /// <summary>Nothing else blocks it: a clean install and a completed copy both leave startup free.</summary>
+    [Fact]
+    public void EveryOtherOutcomeAllowsTheBlankSlate()
+    {
+        Assert.True(ConfigMigration.MayCreateDefault(ConfigMigrationOutcome.NotNeeded));
+        Assert.True(ConfigMigration.MayCreateDefault(ConfigMigrationOutcome.Copied));
+    }
+
+    /// <summary>
+    /// The whole point of withholding the blank slate: the next start copies the config this one could
+    /// not. Drives the real startup sequence — Run, then the blank-slate write only if
+    /// <see cref="ConfigMigration.MayCreateDefault"/> allows it — against the realistic failure, an
+    /// upgrade whose legacy file is momentarily locked by a scanner or an editor. The target directory
+    /// is perfectly writable throughout, so nothing but the guard keeps the blank slate out of it.
+    /// </summary>
+    [Fact]
+    public void TheCopyIsRetriedAtTheNextStart()
+    {
+        var legacy  = Path.Combine(TempDir(), "config.json");
+        var current = Path.Combine(TempDir(), "config.json");
+        File.WriteAllText(legacy, LegacyJson);
+
+        ConfigMigrationOutcome first;
+        using (File.Open(legacy, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            first = ConfigMigration.Run(current, legacy);
+            Assert.Equal(ConfigMigrationOutcome.Failed, first);
+            if (ConfigMigration.MayCreateDefault(first))
+                ConfigManager.CreateDefaultIfMissing(current, NullLogger.Instance);
+        }
+
+        // Nothing may occupy the target, or the retry below reports NotNeeded and the config is stranded.
+        Assert.False(File.Exists(current));
+
+        var second = ConfigMigration.Run(current, legacy);
+        Assert.Equal(ConfigMigrationOutcome.Copied, second);
+        Assert.Equal(LegacyJson, File.ReadAllText(current));
+    }
+
+    /// <summary>
+    /// A failed copy is announced, and names the file that was left behind. Without this the user gets
+    /// the blank-slate balloon instead — "a default was created", i.e. told a fresh install happened
+    /// while their real settings sit unread.
+    /// </summary>
+    [Fact]
+    public void AFailedCopyIsAnnouncedAndNamesTheOriginal()
+    {
+        const string legacy = @"C:\Users\someone\AppData\Local\Programs\HyperVManagerTray\config.json";
+
+        var message = ConfigMigration.FailureBalloon(ConfigMigrationOutcome.Failed, legacy);
+
+        Assert.NotNull(message);
+        Assert.Contains(legacy, message);
+        Assert.Contains("retried", message);
+        // Win32 truncates balloon text at 255 characters, so a message that names a path must fit.
+        Assert.True(message.Length < 255, $"Balloon text is {message.Length} characters.");
+    }
+
+    /// <summary>There is no failure to announce when the copy landed, or was not needed at all.</summary>
+    [Fact]
+    public void NothingIsAnnouncedWhenTheCopyDidNotFail()
+    {
+        Assert.Null(ConfigMigration.FailureBalloon(ConfigMigrationOutcome.NotNeeded, @"C:\somewhere\config.json"));
+        Assert.Null(ConfigMigration.FailureBalloon(ConfigMigrationOutcome.Copied,    @"C:\somewhere\config.json"));
+    }
+
     public void Dispose()
     {
         foreach (var d in _tempDirs)

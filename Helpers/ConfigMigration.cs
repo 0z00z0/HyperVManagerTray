@@ -10,8 +10,8 @@ internal enum ConfigMigrationOutcome
 }
 
 /// <summary>
-/// Moves config.json from the legacy location beside the executable to <see cref="AppInfo.DataDir"/>
-/// (issue #74).
+/// Copies config.json from the legacy location beside the executable to <see cref="AppInfo.DataDir"/>
+/// (issue #74). Never a move — see <see cref="Run"/>.
 /// </summary>
 internal static class ConfigMigration
 {
@@ -36,9 +36,29 @@ internal static class ConfigMigration
         }
         catch (Exception ex)
         {
-            // Best-effort: a failed copy leaves the legacy file intact and startup writes a blank slate.
+            // Best-effort: a failed copy leaves the legacy file intact, and the retry is preserved by
+            // MayCreateDefault keeping the blank slate out of the target.
             onError?.Invoke(ex);
             return ConfigMigrationOutcome.Failed;
         }
     }
+
+    /// <summary>
+    /// Whether startup may write the blank-slate default after this outcome. False for
+    /// <see cref="ConfigMigrationOutcome.Failed"/>: the blank slate would occupy the target, so
+    /// <see cref="Run"/> would report <see cref="ConfigMigrationOutcome.NotNeeded"/> on every later
+    /// start and the user's real config would stay beside the executable, unread, for good.
+    /// </summary>
+    internal static bool MayCreateDefault(ConfigMigrationOutcome outcome) =>
+        outcome != ConfigMigrationOutcome.Failed;
+
+    /// <summary>
+    /// The tray balloon for a failed copy; null when there is nothing to report. Says the settings were
+    /// not lost and that the copy runs again, because the alternative reading — the app came up empty —
+    /// is the one the user will otherwise reach. Kept short: Win32 caps balloon text.
+    /// </summary>
+    internal static string? FailureBalloon(ConfigMigrationOutcome outcome, string legacyPath) =>
+        outcome != ConfigMigrationOutcome.Failed ? null
+        : $"config.json could not be copied from {legacyPath} — no settings are loaded. "
+          + "The original is untouched and the copy is retried at the next start.";
 }

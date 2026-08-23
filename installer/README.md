@@ -40,6 +40,10 @@ wizard shows the app icon (`app.ico`) in the `[Setup]` `SetupIconFile` entry.
 User config (`config.json`) lives in `%APPDATA%\HyperVManagerTray\` and is not part of the install.
 The installer neither ships nor removes it, so upgrades and uninstalls leave it alone.
 
+A machine upgraded from a pre-2.6 build also keeps the old `{app}\config.json` — the app copies it
+across rather than moving it, and it is no longer an installed file, so uninstall leaves both it and
+`{app}` behind. That leftover is what a rollback to such a build reads.
+
 ## Code signing
 
 The Release build is automatically code-signed via the `SignOutput` MSBuild target in

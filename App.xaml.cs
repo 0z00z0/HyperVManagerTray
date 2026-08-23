@@ -174,7 +174,9 @@ public partial class App : Application
             // get added anyway. Done here — before the ConfigManager and its watcher exist — so the
             // write can't raise ConfigReloaded and kick off a switch re-evaluation. Balloon'd (not
             // error-boxed) once the tray icon is up, so the user knows a file appeared.
-            bool createdDefaultConfig = ConfigManager.CreateDefaultIfMissing(configPath, uiLog);
+            // Skipped after a FAILED copy: the blank slate would take the retry away (MayCreateDefault).
+            bool createdDefaultConfig = ConfigMigration.MayCreateDefault(configMigration)
+                                        && ConfigManager.CreateDefaultIfMissing(configPath, uiLog);
 
             _config  = new ConfigManager(configPath, uiLog, _logLevelSwitch);
             _hyperV  = new HyperVManager(_loggerFactory.CreateLogger<HyperVManager>());
@@ -184,7 +186,7 @@ public partial class App : Application
             InitTrayIcon();
 
             // Config feedback needs the tray icon, so it lands here rather than at the load itself.
-            AnnounceConfigState(createdDefaultConfig);
+            AnnounceConfigState(createdDefaultConfig, configMigration);
 
             // A later hand-edit that doesn't parse is announced once per broken save (issue #39) — the
             // app keeps running on the previous settings, and staying quiet about that is how a user
@@ -260,11 +262,21 @@ public partial class App : Application
     ///   <item><b>Corrupt</b> (issue #39): a file exists but doesn't parse. The app would otherwise
     ///         start silently on an empty in-memory default — every rule the user wrote quietly absent,
     ///         with no signal beyond a log line. Say so.</item>
+    ///   <item><b>Not carried across</b> (issue #74): an upgrade's config exists but could not be copied
+    ///         to the new location. Reported FIRST and instead of the other two — the app is empty for a
+    ///         reason the "a default was created" line would misstate as a fresh install.</item>
     /// </list>
-    /// Not suppressed by a visible dashboard: neither fact is shown anywhere else.
+    /// Not suppressed by a visible dashboard: none of these is shown anywhere else.
     /// </summary>
-    private void AnnounceConfigState(bool createdDefault)
+    private void AnnounceConfigState(bool createdDefault, ConfigMigrationOutcome migration)
     {
+        if (ConfigMigration.FailureBalloon(migration, ConfigMigration.LegacyPath) is { } notCopied)
+        {
+            ShowBalloon($"{AppInfo.Name} — config", notCopied,
+                        isError: true, suppressWhenDashboardVisible: false);
+            return;
+        }
+
         if (createdDefault)
         {
             ShowBalloon(AppInfo.Name,
@@ -281,8 +293,8 @@ public partial class App : Application
 
     /// <summary>
     /// Writes the outcome of the startup config relocation (issue #74), which runs before the logger
-    /// exists. A failure is logged as an error: the app then starts on a blank slate while the user's
-    /// real settings sit unread beside the executable.
+    /// exists. A failure is logged as an error: the app then starts with no config at all, and the copy
+    /// is attempted again at the next start.
     /// </summary>
     private static void LogConfigMigration(
         ILogger logger, ConfigMigrationOutcome outcome, Exception? error, string configPath)
