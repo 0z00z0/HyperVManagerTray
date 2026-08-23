@@ -4,11 +4,9 @@ using Xunit;
 
 namespace HyperVManagerTray.Tests;
 
-/// <summary>
-/// The picture the MQTT channels publish from (issue #75). Its writers are the app's own events, and
-/// they arrive on three unrelated threads at once — the WMI watcher, the debounce timer and whichever
-/// pool thread a power action landed on — so the concurrency is the point, not a caveat.
-/// </summary>
+/// <summary>The picture the MQTT channels publish from. Its writers arrive on three unrelated threads
+/// at once — the WMI watcher, the debounce timer and whichever pool thread a power action landed on —
+/// so the concurrency is the point, not a caveat.</summary>
 public class MqttStateCacheTests
 {
     private static VmOperationProgress Progress(string vm, VmOpPhase phase = VmOpPhase.Running,
@@ -90,12 +88,9 @@ public class MqttStateCacheTests
 
     // ── Concurrent delivery ────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Unlike the other two slots, the operation map is copied and put back — a read-modify-write, and
-    /// a rule's autostart runs one power action per VM, each raising progress from its own thread. Two
-    /// landing together used to copy the same base map and one overwrote the other, leaving the losing
-    /// VM's "last operation" sensor stuck on whatever it said before.
-    /// </summary>
+    /// <summary>Unlike the other two slots, the operation map is a read-modify-write, and a rule's
+    /// autostart runs one power action per VM, each raising progress from its own thread. Unlocked, two
+    /// landing together copy the same base map and one overwrites the other.</summary>
     [Fact]
     public void Concurrent_operations_all_survive()
     {

@@ -32,19 +32,8 @@
     <RepositoryUrl>https://github.com/0z00z0/HyperVManagerTray</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
 
-    <!-- InvariantGlobalization stays OFF, deliberately (issue #61).
-         Two reasons, both load-bearing:
-         1. Microsoft.Win32.TaskScheduler.Trigger's static initialiser calls
-            CultureInfo.CreateSpecificCulture("en"), which throws CultureNotFoundException in
-            globalization-invariant mode. It is reached from TaskRegistrationInfo.get_Date() inside
-            TaskFolder.RegisterTaskDefinition, so EVERY Task Scheduler write throws — the "run at
-            logon" toggle (StartupManager.Enable) and the battery-flag self-heal alike.
-         2. Invariant mode pins CultureInfo.CurrentCulture to the invariant culture, so every number
-            and date the UI shows is formatted invariantly instead of in the user's locale.
-         Machine-readable text — config.json, MQTT topics and payloads, log lines, the crash-stamp
-         file — pins CultureInfo.InvariantCulture at each call site instead; see CultureBoundaryTests.
-         The app is framework-dependent win-x64, so ICU comes from the shared runtime and no ICU
-         payload is published. -->
+    <!-- Must stay OFF: invariant mode makes EVERY Task Scheduler write throw, and pins the UI's
+         formatting to the invariant culture. See docs/mqtt-integration.md. -->
     <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
 
@@ -80,24 +69,21 @@
     <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Brand.WinUI\ZeroZero.Brand.WinUI.csproj">
       <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
     </ProjectReference>
-    <!-- Issue #75: the broker connection and the Home Assistant binding. Both are plain net10.0 with
-         no Windows App SDK targets, so WindowsAppSDKSelfContained propagates harmlessly and needs no
-         UndefineProperties (verified by publishing with the property set). -->
+    <!-- Plain net10.0, no Windows App SDK targets, so WindowsAppSDKSelfContained propagates
+         harmlessly and needs no UndefineProperties. -->
     <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt\ZeroZero.Mqtt.csproj" />
     <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt.HomeAssistant\ZeroZero.Mqtt.HomeAssistant.csproj" />
-    <!-- The shared MQTT settings panel behind Settings → Home Assistant. A WinUI class library, so it
-         needs the same UndefineProperties as ZeroZero.Brand.WinUI above: WindowsAppSDKSelfContained
-         would propagate into it and error out ("should not be applied to a class library"). -->
+    <!-- A WinUI class library, so it needs the same UndefineProperties as ZeroZero.Brand.WinUI:
+         WindowsAppSDKSelfContained errors out ("should not be applied to a class library"). -->
     <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt.WinUI\ZeroZero.Mqtt.WinUI.csproj">
       <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
     </ProjectReference>
   </ItemGroup>
 
   <ItemGroup>
-    <!-- config.json is deliberately NOT a Content item (issue #74): the app writes its blank slate to
-         %AppData%\HyperVManagerTray itself, and a copy in the publish folder would be installed over
-         the file a rolled-back build still reads. The repo's config.json stays as the reviewable
-         blank slate Tests\DefaultConfigTests byte-compares against Helpers\DefaultConfig.Json. -->
+    <!-- config.json is NOT a Content item: the app writes its blank slate to %AppData%, and a copy in
+         the publish folder would be installed over the file a rolled-back build still reads. The
+         repo's config.json is the blank slate Tests\DefaultConfigTests byte-compares against. -->
     <!-- AppIcon.ico: HyperVManagerTray's OWN product icon (0z0-guideline product-icon set, #26) —
          a plated, high-contrast VM-monitor glyph in the app's own muted palette (blue plate, white
          glyph, green connection dot); NOT the studio [Ø] mark, NOT borrowed from any sibling app.

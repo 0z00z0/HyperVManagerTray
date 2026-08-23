@@ -12,15 +12,13 @@ internal readonly record struct PublishCategories(
         settings.PublishVmDiagnostics, settings.PublishVmMetrics);
 }
 
-/// <summary>
-/// The decisions <c>MqttService</c> takes at its call sites (issue #75). Lifted out because that
-/// service holds the live broker connection and is deliberately not linked into the test assembly —
-/// which left every guard below unasserted while it lived inline.
-/// </summary>
+/// <summary>The decisions <c>MqttService</c> takes at its call sites. Kept here because that service
+/// holds the live broker connection and is not linked into the test assembly: a guard added inline
+/// there is a guard nothing asserts.</summary>
 internal static class MqttReconcile
 {
     /// <summary>Whether a scheduled reconcile has been overtaken by a later one and must stand down.
-    /// Each carries its own config snapshot, so an older one landing last would apply stale settings.</summary>
+    /// Each carries its own config snapshot, so an older one landing last applies stale settings.</summary>
     public static bool Superseded(long ticket, long latest) => ticket != latest;
 
     /// <summary>Whether the abandoned identity's retained topics can be cleared right now. Each term is
@@ -31,7 +29,7 @@ internal static class MqttReconcile
         && MqttIdentity.Abandons(published, next);
 
     /// <summary>Whether the node and connection must be rebuilt. Both halves of the identity are fixed
-    /// at construction, so a move to either needs a fresh pair.</summary>
+    /// at construction.</summary>
     public static bool NeedsRecreate(bool hasConnection, string appliedIdentity, string nextIdentity) =>
         !hasConnection || !string.Equals(appliedIdentity, nextIdentity, StringComparison.Ordinal);
 

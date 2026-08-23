@@ -6,15 +6,9 @@ using ZeroZero.Mqtt.HomeAssistant;
 
 namespace HyperVManagerTray.Tests;
 
-/// <summary>
-/// The seam between this app's <c>mqtt</c> config section and the shared WinUI settings panel (issue
-/// #75). The panel edits a snapshot and reports each edit back as one facet; these are the mappings
-/// that land those facets on the stored settings.
-///
-/// <para>Assertable here precisely because the arithmetic is not in the panel: the panel is WinUI and
-/// this test assembly hosts no Windows App SDK runtime, so anything decided inside the control would
-/// be untestable by construction.</para>
-/// </summary>
+/// <summary>The seam between this app's <c>mqtt</c> config section and the shared WinUI settings panel.
+/// Assertable here because the arithmetic is not in the panel: this assembly hosts no Windows App SDK
+/// runtime, so anything decided inside the control is untestable by construction.</summary>
 public class MqttPanelSeamTests
 {
     /// <summary>Settings whose every field differs from its default, so a mapping that drops a field
@@ -120,13 +114,9 @@ public class MqttPanelSeamTests
             MqttPanelSeam.Keys);
     }
 
-    /// <summary>
-    /// An unrecognised key changes nothing. A dead toggle is visible; a key that fell through to some
-    /// other flag would not be.
-    ///
-    /// <para>Both values, and from settings where the four flags are not all alike: a fall-through
-    /// that happened to write the value a flag already held would otherwise pass unnoticed.</para>
-    /// </summary>
+    /// <summary>An unrecognised key changes nothing. Driven with both values, from settings where the
+    /// four flags differ: a fall-through writing a value a flag already held would otherwise
+    /// pass.</summary>
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

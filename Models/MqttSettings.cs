@@ -2,19 +2,12 @@ using ZeroZero.Mqtt;
 
 namespace HyperVManagerTray.Models;
 
-/// <summary>
-/// The <c>mqtt</c> section of config.json (issue #75): where the broker is, how to authenticate, what
-/// this host is called in Home Assistant, and whether the per-VM metrics are published.
-///
-/// <para>Persisted here rather than as a <see cref="MqttOptions"/> so the file keeps this repo's shape
-/// (mutable properties, camelCase, nulls omitted) and so the broker password has somewhere to live —
-/// <see cref="MqttOptions"/> carries a credential reference, not a secret. <see cref="ToOptions"/> is
-/// the one place the two are mapped.</para>
-/// </summary>
+/// <summary>The <c>mqtt</c> section of config.json: where the broker is, how to authenticate, what this
+/// host is called in Home Assistant, and what is published. <see cref="ToOptions"/> is the one place it
+/// is mapped to <see cref="MqttOptions"/>.</summary>
 public sealed class MqttSettings
 {
-    /// <summary>The credential-store key the broker password is filed under. One connection per
-    /// process, so one key.</summary>
+    /// <summary>The credential-store key the broker password is filed under.</summary>
     public const string CredentialReference = "broker";
 
     public bool Enabled { get; set; }
@@ -32,8 +25,7 @@ public sealed class MqttSettings
     public string Username { get; set; } = string.Empty;
 
     /// <summary>The broker password, in plain text beside the rest of the configuration. Held behind
-    /// <see cref="IMqttCredentialStore"/> at runtime, so an encrypted store is an implementation swap
-    /// rather than a config change.</summary>
+    /// <see cref="IMqttCredentialStore"/> at runtime.</summary>
     public string Password { get; set; } = string.Empty;
 
     /// <summary>Home Assistant's discovery prefix; blank uses its default.</summary>
@@ -56,13 +48,9 @@ public sealed class MqttSettings
     /// <summary>Whether each managed VM's switch, guest IP, uptime and last operation are published.</summary>
     public bool PublishVmDiagnostics { get; set; } = true;
 
-    /// <summary>
-    /// Whether per-VM CPU, memory and VHD are published. <b>Off by default, and that default is the
-    /// point</b> (issue #75): those figures only flow while something holds
-    /// <c>VmService.SubscribeMetrics()</c>, a 2.5 s WMI loop, and the app otherwise does no in-process
-    /// WMI work while idle. The other three categories cost nothing extra — they publish what the app
-    /// already knows — which is why only this one defaults off.
-    /// </summary>
+    /// <summary>Whether per-VM CPU, memory and VHD are published. Off by default: these figures only
+    /// flow while something holds <c>VmService.SubscribeMetrics()</c>, a 2.5 s WMI loop, and an idle
+    /// app otherwise runs none.</summary>
     public bool PublishVmMetrics { get; set; }
 
     /// <summary>Where the broker last answered — state the connection writes back, not a setting.</summary>

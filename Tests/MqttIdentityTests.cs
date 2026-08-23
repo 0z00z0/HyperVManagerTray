@@ -5,17 +5,8 @@ using ZeroZero.Mqtt.HomeAssistant;
 
 namespace HyperVManagerTray.Tests;
 
-/// <summary>
-/// The address the retained topics are filed under, and the decision that keeps a changed one from
-/// stranding them (issue #75).
-///
-/// <para><b>What this exists to stop.</b> Disabling MQTT evicts the entities — the connection's stop
-/// hook clears the identity as the session ends. Editing the node id or the discovery prefix while
-/// publishing is ON has no such moment: the connection is re-applied against the new address, and the
-/// old one's discovery configs, availability and state stay RETAINED on the broker with nothing left
-/// that will ever overwrite them. Home Assistant keeps showing that set for ever, permanently
-/// unavailable. So the pair is compared before every reconcile, and a move clears the old one first.</para>
-/// </summary>
+/// <summary>The address the retained topics are filed under, and the decision that keeps a changed one
+/// from stranding them. What stranding costs: <c>docs/mqtt-integration.md</c>.</summary>
 public class MqttIdentityTests
 {
     private const string Root = "hypervmanagertray";
@@ -84,9 +75,8 @@ public class MqttIdentityTests
 
     // ── When a move strands nothing ────────────────────────────────────────────
 
-    /// <summary>Writing the default prefix out explicitly is not a move. The panel's Apply does exactly
-    /// this — a blank box commits as Home Assistant's default — and clearing the live identity's own
-    /// topics would evict every entity for an edit that changed nothing.</summary>
+    /// <summary>Writing the default prefix out explicitly is not a move: the panel's Apply commits a
+    /// blank box as Home Assistant's default, and clearing there evicts every entity for nothing.</summary>
     [Fact]
     public void Spelling_out_the_default_prefix_abandons_nothing()
     {
@@ -123,9 +113,8 @@ public class MqttIdentityTests
         Assert.False(MqttIdentity.Abandons(before, after));
     }
 
-    /// <summary>Turning publishing off is not a move either — the connection's stop hook clears the
-    /// identity as the session ends, and it is the SAME identity, so a second clear here would be a
-    /// publish to a broker the reconcile is about to disconnect from.</summary>
+    /// <summary>Turning publishing off is not a move either: the stop hook clears the SAME identity as
+    /// the session ends, so a second clear here publishes to a broker about to be dropped.</summary>
     [Fact]
     public void Disabling_publishing_abandons_nothing()
     {

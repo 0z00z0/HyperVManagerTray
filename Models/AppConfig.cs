@@ -85,11 +85,9 @@ public sealed class AppConfig
     /// </summary>
     public LogLevel LogLevel { get; set; } = LogLevel.Debug;
 
-    /// <summary>
-    /// The MQTT / Home Assistant integration (issue #75). Never null in a loaded config —
-    /// <c>ConfigManager.Load</c> replaces a missing or hand-blanked section with defaults, which are
-    /// inert (<see cref="MqttSettings.Enabled"/> false).
-    /// </summary>
+    /// <summary>The MQTT / Home Assistant integration. Never null in a loaded config —
+    /// <c>ConfigManager.Load</c> replaces a missing or hand-blanked section with inert
+    /// defaults.</summary>
     public MqttSettings Mqtt { get; set; } = new();
 
     #region Settings window placement (issue #31)

@@ -24,7 +24,7 @@ public partial class App : Application
     private HyperVManager?  _hyperV;   // switch binding / host-vNIC repair (native WMI, issue #17)
     private VmService?      _vm;       // VM status/metrics/power/IPs via WMI
     private NetworkMonitor? _monitor;
-    private MqttService?    _mqtt;     // Home Assistant over MQTT (issue #75)
+    private MqttService?    _mqtt;     // Home Assistant over MQTT
     private StartupManager  _startup = null!;
     private HttpClient?     _httpClient;
     private UpdateChecker?  _updateChecker;
@@ -112,7 +112,7 @@ public partial class App : Application
             Directory.CreateDirectory(logDir);
 
             // Runs BEFORE the log-level read below, so an upgrade's first start already reads the
-            // user's own logLevel rather than the default. Reported once there is a logger to report to.
+            // user's own logLevel. Reported once there is a logger to report to.
             Exception? configMigrationError = null;
             var configMigration = ConfigMigration.Run(
                 configPath, ConfigMigration.LegacyPath, ex => configMigrationError = ex);
@@ -177,7 +177,7 @@ public partial class App : Application
             // get added anyway. Done here — before the ConfigManager and its watcher exist — so the
             // write can't raise ConfigReloaded and kick off a switch re-evaluation. Balloon'd (not
             // error-boxed) once the tray icon is up, so the user knows a file appeared.
-            // Skipped after a FAILED copy: the blank slate would take the retry away (MayCreateDefault).
+            // Skipped after a FAILED copy: the blank slate would take the retry away.
             bool createdDefaultConfig = ConfigMigration.MayCreateDefault(configMigration)
                                         && ConfigManager.CreateDefaultIfMissing(configPath, uiLog);
 
@@ -258,16 +258,9 @@ public partial class App : Application
         }
     }
 
-    /// <summary>
-    /// Brings up the Home Assistant integration (issue #75). Publishing is driven by the events wired
-    /// just above — no timer of its own — and the connection retries on its own loop, so a broker that
-    /// is down costs startup nothing.
-    ///
-    /// <para>Its two network commands run through the same <see cref="NetworkActions"/> the tray and
-    /// Settings use, so a remote re-check or repair is the identical operation. Their outcome is
-    /// reported to <c>mqtt.log</c> rather than to a tray balloon: the command was issued from Home
-    /// Assistant, and the desktop has nobody waiting on the answer.</para>
-    /// </summary>
+    /// <summary>Brings up the Home Assistant integration. The connection retries on its own loop, so a
+    /// broker that is down costs startup nothing. Its two network commands report to <c>mqtt.log</c>
+    /// rather than to a tray balloon — the desktop has nobody waiting on the answer.</summary>
     private void StartMqtt(ILogger mqttLog)
     {
         var actions = new NetworkActions(_config!, _monitor!, _hyperV!,
@@ -289,9 +282,9 @@ public partial class App : Application
     ///   <item><b>Corrupt</b> (issue #39): a file exists but doesn't parse. The app would otherwise
     ///         start silently on an empty in-memory default — every rule the user wrote quietly absent,
     ///         with no signal beyond a log line. Say so.</item>
-    ///   <item><b>Not carried across</b> (issue #74): an upgrade's config exists but could not be copied
-    ///         to the new location. Reported FIRST and instead of the other two — the app is empty for a
-    ///         reason the "a default was created" line would misstate as a fresh install.</item>
+    ///   <item><b>Not carried across</b>: an upgrade's config exists but could not be copied to the new
+    ///         location. Reported FIRST and instead of the other two — "a default was created" would
+    ///         misstate it as a fresh install.</item>
     /// </list>
     /// Not suppressed by a visible dashboard: none of these is shown anywhere else.
     /// </summary>
@@ -318,11 +311,8 @@ public partial class App : Application
                         isError: true, suppressWhenDashboardVisible: false);
     }
 
-    /// <summary>
-    /// Writes the outcome of the startup config relocation (issue #74), which runs before the logger
-    /// exists. A failure is logged as an error: the app then starts with no config at all, and the copy
-    /// is attempted again at the next start.
-    /// </summary>
+    /// <summary>Writes the outcome of the startup config relocation, which runs before the logger
+    /// exists. A failure is an error: the app starts with no config at all.</summary>
     private static void LogConfigMigration(
         ILogger logger, ConfigMigrationOutcome outcome, Exception? error, string configPath)
     {
@@ -410,8 +400,8 @@ public partial class App : Application
         // The tray's manual network actions report through the same balloon channel a failed apply uses
         // (issue #37). Not suppressed by a visible dashboard: unlike an automatic apply, these are direct
         // answers to something the user just clicked, and must never be swallowed.
-        // MQTT is composed further down OnLaunched, after this menu — hence an accessor rather than the
-        // service. Settings reads it when the window is opened, by which time it exists.
+        // MQTT is composed further down OnLaunched, after this menu — hence an accessor rather than
+        // the service.
         _menu = new TrayMenu(_config!, _monitor!, _hyperV!, _vm!, _startup, _updateChecker!,
                              () => _mqtt, OnExit,
                              (title, message, isError) =>
@@ -925,8 +915,8 @@ public partial class App : Application
 
     // ── Lifecycle ───────────────────────────────────────────────────────────────
 
-    /// <summary>Longest the exit waits for the broker teardown started at the top of it. Above the
-    /// connection's own ~3 s budget, so a healthy teardown is never truncated.</summary>
+    /// <summary>Longest the exit waits for the broker teardown. Above the connection's own ~3 s
+    /// budget, so a healthy teardown is never truncated.</summary>
     private static readonly TimeSpan MqttTeardownBudget = TimeSpan.FromSeconds(5);
 
     private void OnExit()
@@ -937,10 +927,8 @@ public partial class App : Application
         if (_dashboard is not null) _dashboard.AllowClose = true;
         _trayIcon?.Dispose();
         _iconImage?.Dispose();
-        // Detaching from VmService/NetworkMonitor happens here, synchronously, so no event reaches a
-        // disposed service below. The broker teardown it starts blocks for up to three seconds — on the
-        // pool, not on this thread, so the exit is not held up by it — and is joined before the logger
-        // factory goes, because it logs.
+        // Detaching is synchronous here, so no event reaches a disposed service below. The teardown it
+        // starts runs on the pool and is joined before the logger factory goes, because it logs.
         var mqttTeardown = _mqtt?.BeginDisposeAsync();
         _monitor?.Dispose();
         _vm?.Dispose();

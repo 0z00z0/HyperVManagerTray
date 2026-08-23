@@ -6,27 +6,16 @@ using ZeroZero.Mqtt.HomeAssistant;
 
 namespace HyperVManagerTray.Services;
 
-/// <summary>
-/// The live MQTT / Home Assistant integration (issue #75): it owns the broker connection, keeps the
-/// entity set in step with the config, and feeds the published state from the five events the app
-/// already raises.
-///
-/// <para><b>Push-driven, never polled.</b> <c>NetworkMonitor.SwitchApplied</c>,
-/// <c>VmService.StatusesChanged</c> and <c>VmService.OperationProgress</c> update
-/// <see cref="MqttStateCache"/> and signal the connection; nothing here runs a timer.</para>
-///
-/// <para><b>Never on the UI thread.</b> The three status events already arrive on background threads;
-/// <c>ConfigReloaded</c> can arrive on the UI thread, so the reconcile it triggers is dispatched to
-/// the thread pool. No method of this class touches WinUI.</para>
-/// </summary>
+/// <summary>The live MQTT / Home Assistant integration: it owns the broker connection, keeps the entity
+/// set in step with the config, and publishes from the app's own events. Never touches WinUI.
+/// See <c>docs/mqtt-integration.md</c>.</summary>
 internal sealed class MqttService : IDisposable
 {
     /// <summary>How long clearing an abandoned identity's retained topics may take before the reconcile
-    /// carries on without it. The broker may have gone away mid-edit, and the new settings' reconnect
-    /// must not wait on the old address answering.</summary>
+    /// carries on without it.</summary>
     private static readonly TimeSpan ClearBudget = TimeSpan.FromSeconds(10);
 
-    /// <summary>How long <see cref="Dispose"/> waits for the connection teardown it started. Above the
+    /// <summary>How long <see cref="Dispose"/> waits for the teardown it started. Above the
     /// connection's own ~3 s budget, so a synchronous dispose never truncates a live one.</summary>
     private static readonly TimeSpan DisposeBudget = TimeSpan.FromSeconds(5);
 
@@ -42,9 +31,8 @@ internal sealed class MqttService : IDisposable
     private readonly MqttMetricsHold _metrics;
     private readonly string _version;
 
-    // Guards the node/connection swap and the "has anything worth re-applying changed?" bookkeeping.
-    // Held only for field access: nothing that blocks may run under it, because the event pump takes
-    // it on WMI watcher threads and the Settings panel takes it on the UI thread.
+    // Field access only: nothing that blocks may run under it. The event pump takes it on WMI watcher
+    // threads and the Settings panel takes it on the UI thread.
     private readonly object _lock = new();
 
     // One reconcile at a time. Each carries its own config snapshot, so two overlapping across the
@@ -56,8 +44,8 @@ internal sealed class MqttService : IDisposable
     private MqttConnection? _connection;
     private string _identity = string.Empty;
 
-    // The node id and discovery prefix the retained topics on the broker are filed under. Null until
-    // the first reconcile: nothing has been published, so nothing can be stranded.
+    // The node id and discovery prefix the broker's retained topics are filed under. Null until the
+    // first reconcile: nothing published, so nothing to strand.
     private MqttIdentity? _published;
 
     private MqttOptions? _applied;
@@ -94,18 +82,13 @@ internal sealed class MqttService : IDisposable
         _vm.OperationProgress   += OnOperationProgress;
         _config.ConfigReloaded  += OnConfigReloaded;
 
-        // Seed from what the app already knows, so a broker that is up at start-up gets the current
-        // picture rather than waiting for the next event.
+        // Seed from what the app already knows, so a broker up at start-up need not wait for an event.
         if (_monitor.LastApplied is { } applied) _state.SetNetwork(applied);
 
         Schedule(_config.Current);
     }
 
     // ── What the Settings panel reads ───────────────────────────────────────────
-    //
-    // The shared MqttSettingsPanel renders the live session's facts beside the stored settings. It is
-    // handed these three and nothing else: it never reaches a connection, and it applies nothing —
-    // every edit goes back through ConfigManager and returns here as a reload.
 
     /// <summary>The broker password, behind the same store the connection authenticates from.</summary>
     public IMqttCredentialStore Credentials => _credentials;
@@ -146,12 +129,8 @@ internal sealed class MqttService : IDisposable
     private void OnConfigReloaded(object? sender, ConfigReloadedEventArgs e) => Schedule(e.Config);
 
     /// <summary>Tells the connection there is new state to publish, and re-checks whether the metrics
-    /// subscription is still wanted. Cheap: the connection coalesces signals, and the hold is a compare.
-    ///
-    /// <para>The connection raises no "connected" event, so the session's liveness is sampled here
-    /// rather than pushed. <c>VmService.StatusesChanged</c> fires at least once a minute (App's
-    /// safety-net refresh), so the hold follows a connect or a drop within that — and errs towards not
-    /// holding, which is the safe direction for a subscription that costs a WMI poll.</para></summary>
+    /// subscription is still wanted. The connection raises no "connected" event, so liveness is
+    /// sampled here rather than pushed.</summary>
     private void Pump()
     {
         MqttConnection? connection;
@@ -164,9 +143,9 @@ internal sealed class MqttService : IDisposable
 
     // ── Config → connection ─────────────────────────────────────────────────────
 
-    /// <summary>Runs the reconcile off whatever thread raised the reload — it can be the UI thread,
-    /// and a reconcile may dispose a connection. Each run is ticketed so a later reload supersedes an
-    /// earlier one still queued behind the gate.</summary>
+    /// <summary>Runs the reconcile off whatever thread raised the reload — it can be the UI thread, and
+    /// a reconcile may dispose a connection. Ticketed, so a later reload supersedes an earlier
+    /// one.</summary>
     private void Schedule(AppConfig config)
     {
         long ticket = Interlocked.Increment(ref _scheduled);
@@ -178,8 +157,7 @@ internal sealed class MqttService : IDisposable
         await _reconcileGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            // A newer reload has already been scheduled with a newer config; this one's snapshot is
-            // stale, and applying it would roll the newer settings back.
+            // A stale snapshot applied now would roll the newer settings back.
             if (MqttReconcile.Superseded(ticket, Interlocked.Read(ref _scheduled))) return;
 
             var settings = config.Mqtt ?? new MqttSettings();
@@ -191,9 +169,9 @@ internal sealed class MqttService : IDisposable
             // unreachable the moment either moves.
             await ClearAbandonedIdentityAsync(settings).ConfigureAwait(false);
 
-            // Off the lock, because the teardown blocks for up to three seconds. Before the rebuild
-            // rather than after: the retiring session publishes a retained "offline" on an availability
-            // topic its replacement usually shares, and that must not land on top of its "online".
+            // Off the lock, because the teardown blocks for up to three seconds. Before the rebuild,
+            // not after: the retiring session's retained "offline" shares an availability topic with
+            // its replacement and must not land on top of that session's "online".
             Retire(TakeRetired(identity));
 
             MqttConnection? connection;
@@ -214,9 +192,8 @@ internal sealed class MqttService : IDisposable
                     _vmNames      = vmNames;
                     _ruleSwitches = switches;
                     _categories   = PublishCategories.Of(settings);
-                    // Republishes the announced configs and empties the withheld ones. A category is
-                    // otherwise only read on the next connect, so the entities a switched-off category
-                    // owns would sit in Home Assistant until then.
+                    // A category is otherwise only read on the next connect, so the entities a
+                    // switched-off one owns would sit in Home Assistant until then.
                     _node!.SetEntities(BuildEntities());
                 }
 
@@ -243,8 +220,8 @@ internal sealed class MqttService : IDisposable
         }
     }
 
-    /// <summary>Detaches the connection a move to <paramref name="identity"/> retires, so it can be torn
-    /// down off <see cref="_lock"/>. Null when the live one still addresses the same identity.</summary>
+    /// <summary>Detaches the connection a move to <paramref name="identity"/> retires, so it can be
+    /// torn down off <see cref="_lock"/>. Null when the live one addresses the same identity.</summary>
     private MqttConnection? TakeRetired(string identity)
     {
         lock (_lock)
@@ -266,20 +243,9 @@ internal sealed class MqttService : IDisposable
         catch (Exception ex) { _log.LogWarning(ex, "MQTT: disposing the previous connection failed"); }
     }
 
-    /// <summary>
-    /// Empties the retained topics of an identity the configuration has just moved away from, on the
-    /// connection that still addresses it.
-    ///
-    /// <para>Disabling MQTT already evicts the entities — <c>OnStoppingAsync</c> clears the identity as
-    /// the session stops. A node id or discovery prefix edited while publishing is ON has no such
-    /// moment: the connection is re-applied (or rebuilt) against the new address and the old one's
-    /// configs, availability and state stay retained on the broker for ever, as entities Home Assistant
-    /// shows as permanently unavailable.</para>
-    ///
-    /// <para>Best-effort by construction. It runs against a live session or not at all: with the broker
-    /// down there is nothing retained this process can reach, and blocking a reconcile on a broker that
-    /// is not answering would cost the reconnect the new settings are for.</para>
-    /// </summary>
+    /// <summary>Empties the retained topics of an identity the configuration has just moved away from,
+    /// on the connection that still addresses it. Best-effort: it runs against a live session or not at
+    /// all. See <c>docs/mqtt-integration.md</c>.</summary>
     private async Task ClearAbandonedIdentityAsync(MqttSettings settings)
     {
         HaNode?         node;
@@ -313,16 +279,13 @@ internal sealed class MqttService : IDisposable
         }
     }
 
-    /// <summary>The address these settings publish under. The machine name is the connection's own
-    /// default, which <see cref="Recreate"/> leaves unset on the setup — so both derive the same
-    /// node id from the same source.</summary>
+    /// <summary>The address these settings publish under. <see cref="Recreate"/> leaves the setup's
+    /// machine name unset, so both derive the same node id from the same source.</summary>
     private static MqttIdentity IdentityOf(MqttSettings settings) =>
         MqttIdentity.For(settings, MqttEntitySet.TopicRoot, Environment.MachineName);
 
-    /// <summary>The identity a live node is built for. Both halves are fixed at construction, so a
-    /// change to either needs a fresh node and connection. Compared as the node is actually built —
-    /// on the EFFECTIVE names — so writing a blank prefix out as Home Assistant's own default does not
-    /// read as a change and rebuild the connection for nothing.</summary>
+    /// <summary>The identity a live node is built for. Compared on the EFFECTIVE names, so writing a
+    /// blank prefix out as Home Assistant's default does not read as a change.</summary>
     private static string Identity(MqttSettings settings) =>
         $"{MqttNaming.EffectiveDeviceName(settings)} {MqttNaming.EffectiveDiscoveryPrefix(settings)}";
 
@@ -364,9 +327,8 @@ internal sealed class MqttService : IDisposable
             TopicRoot        = MqttEntitySet.TopicRoot,
             CredentialStore  = _credentials,
             RememberEndpoint = RememberEndpoint,
-            // A disable — or a config that stops naming a broker — empties the retained discovery, so
-            // the entities disappear from Home Assistant instead of lingering as unavailable. Process
-            // exit runs no stop hook, so a restart finds its device where it left it.
+            // A disable empties the retained discovery, so the entities disappear rather than linger as
+            // unavailable. Process exit runs no stop hook, so a restart finds its device where it was.
             OnStoppingAsync  = (publisher, topics, ct) => _node!.ClearIdentityAsync(publisher, topics, ct),
             Logger           = _log,
         });
@@ -378,8 +340,7 @@ internal sealed class MqttService : IDisposable
         RuleSwitches   = _ruleSwitches,
         State          = _state,
         VmIp           = _vm.GetCachedVmIp,
-        // Read off the live settings per discovery pass, so a category toggled in Settings takes
-        // effect on the reload it raises without the entity set being rebuilt.
+        // Read per discovery pass, so a toggled category takes effect without rebuilding the set.
         PublishNetwork       = () => _settings.PublishNetwork,
         PublishVmState       = () => _settings.PublishVmState,
         PublishVmDiagnostics = () => _settings.PublishVmDiagnostics,
@@ -413,14 +374,10 @@ internal sealed class MqttService : IDisposable
         catch (Exception ex) { _log.LogWarning(ex, "MQTT: could not remember the broker endpoint"); }
     }
 
-    /// <summary>
-    /// Detaches from the app's events and starts the connection's teardown on the thread pool.
-    ///
-    /// <para>Detaching is synchronous, so the services this subscribes to may be disposed the moment
-    /// this returns. The connection's own <c>Dispose</c> blocks for up to three seconds publishing the
-    /// retained offline state — which is worth waiting for, but not on the UI thread — so the caller is
-    /// handed a task to overlap with the rest of its teardown and join before it exits.</para>
-    /// </summary>
+    /// <summary>Detaches from the app's events synchronously — so the services this subscribes to may
+    /// be disposed the moment it returns — and hands back the connection teardown as a task. That
+    /// teardown blocks for up to three seconds, which is worth waiting for but not on the UI
+    /// thread.</summary>
     public Task BeginDisposeAsync()
     {
         MqttConnection? connection;

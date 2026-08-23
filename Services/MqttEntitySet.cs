@@ -6,11 +6,9 @@ using ZeroZero.Mqtt.HomeAssistant;
 
 namespace HyperVManagerTray.Services;
 
-/// <summary>
-/// Everything the entity set needs from the app: what to publish about, where to read it, and what an
-/// inbound command runs. Side effects arrive as delegates, so the set composes with no WMI, no broker
-/// and no WinUI (issue #75).
-/// </summary>
+/// <summary>Everything the entity set needs from the app: what to publish about, where to read it, and
+/// what an inbound command runs. Side effects arrive as delegates, so the set composes with no WMI, no
+/// broker and no WinUI.</summary>
 public sealed record MqttEntitySpec
 {
     /// <summary>The managed VMs, in config order.</summary>
@@ -28,9 +26,8 @@ public sealed record MqttEntitySpec
     /// toggle takes effect on a reload without the set being rebuilt.</summary>
     public required Func<bool> PublishMetrics { get; init; }
 
-    // The other three publish categories. Not required, unlike PublishMetrics: each names a group that
-    // costs nothing to publish — it is state the app already holds — so "on" is the correct answer for
-    // a spec that does not mention them. Read per discovery pass, as PublishMetrics is.
+    // The other three cost nothing to publish, so "on" is the correct answer for a spec that does not
+    // mention them — hence not required. Read per discovery pass, as PublishMetrics is.
 
     /// <summary>Whether the host-network entities and their two command buttons are announced.</summary>
     public Func<bool> PublishNetwork { get; init; } = () => true;
@@ -63,16 +60,16 @@ public static class MqttObjectIds
     /// <summary>Longest slug taken from a VM name — long enough to stay recognisable inside a topic.</summary>
     public const int MaxLength = 32;
 
-    /// <summary>VM name → topic-safe slug, in input order. Two names that reduce to the same slug are
-    /// separated by a numeric suffix: the slug is the state and command topic, so a collision would
-    /// route one VM's commands to another.</summary>
+    /// <summary>VM name → topic-safe slug, in input order. Two names reducing to the same slug are
+    /// separated by a numeric suffix: the slug is the state and command topic, so a collision routes
+    /// one VM's commands to another.</summary>
     public static IReadOnlyDictionary<string, string> ForVms(IEnumerable<string> vmNames)
     {
         var map  = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var used = new HashSet<string>(StringComparer.Ordinal);
 
-        // A hand-edited "name": null would otherwise throw out of the dictionary and take the whole
-        // integration down with it, silently and until the file is fixed.
+        // A hand-edited "name": null otherwise throws out of the dictionary and takes the whole
+        // integration down, silently, until the file is fixed.
         foreach (string name in (vmNames ?? []).Select(n => n ?? string.Empty))
         {
             if (map.ContainsKey(name)) continue;
@@ -99,15 +96,9 @@ public static class MqttObjectIds
     }
 }
 
-/// <summary>
-/// HyperVManagerTray's Home Assistant entities (issue #75), declared once. Everything published comes
-/// from the events the app already raises — the network monitor's applied result and VmService's
-/// status and operation pushes — so nothing here adds a poll.
-///
-/// <para>Each entity carries its publish category as its <c>Include</c> gate, so a category switched
-/// off in Settings has its retained config emptied rather than being left in Home Assistant as an
-/// entity that has stopped reporting.</para>
-/// </summary>
+/// <summary>HyperVManagerTray's Home Assistant entities, declared once. Each carries its publish
+/// category as its <c>Include</c> gate, so a category switched off has its retained configs emptied
+/// rather than leaving entities that have stopped reporting.</summary>
 public static class MqttEntitySet
 {
     /// <summary>The topic root every entity of this app publishes under.</summary>
@@ -268,8 +259,7 @@ public static class MqttEntitySet
             State    = () => Text(state.Operation(vmName)),
         };
 
-        // CPU, memory and VHD only flow while VmService.SubscribeMetrics() is held, so they are
-        // announced only while the toggle asks for them and evicted when it stops.
+        // CPU, memory and VHD only flow while VmService.SubscribeMetrics() is held.
         yield return new HaSensor
         {
             ObjectId          = $"vm_{slug}_cpu",
@@ -339,8 +329,8 @@ public static class MqttEntitySet
             },
         };
 
-        // Home Assistant rejects a select with no options, so with no rule switches configured there
-        // is nothing to announce and the override is withheld rather than published empty.
+        // Home Assistant rejects a select with no options, so the override is withheld rather than
+        // published empty.
         if (spec.RuleSwitches.Count == 0) yield break;
 
         yield return new HaSelect
@@ -367,8 +357,8 @@ public static class MqttEntitySet
         return Task.CompletedTask;
     }
 
-    /// <summary>A blank reads as unknown in Home Assistant rather than as an empty value, so nothing
-    /// is published until there is something to say.</summary>
+    /// <summary>Null publishes nothing, so the entity reads as unknown rather than as an empty
+    /// value.</summary>
     private static string? Text(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
     /// <summary>A machine-readable number: the payload is a protocol value, never display text.</summary>

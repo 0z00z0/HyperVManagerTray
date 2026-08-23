@@ -10,17 +10,14 @@ using ZeroZero.Mqtt;
 namespace HyperVManagerTray.Tests;
 
 /// <summary>
-/// The two config traps issue #75 names, both of which are properties of ConfigManager rather than of
-/// the MQTT code that has to survive them:
+/// The two config traps the MQTT section has to survive, both properties of <see cref="ConfigManager"/>:
 ///
 /// <list type="bullet">
-///   <item><see cref="ConfigManager"/>'s <c>With(...)</c> replaces the WHOLE config, so a field its
-///   signature omits is written back as null and permanently lost. Every mutator is exercised below
-///   after MQTT settings have been saved, one test per call site, because a missed one does not fail
-///   to compile — it silently wipes the section the next time that mutator runs.</item>
-///   <item><c>AffectsNetwork</c> is an EXCLUSION list, so an <c>mqtt</c> property not named in
-///   <c>NonNetworkProperties</c> would make every MQTT settings change re-evaluate the network — and a
-///   full re-evaluation can move a VM's switch. Editing a broker port must not.</item>
+///   <item><c>With(...)</c> replaces the WHOLE config, so a field its signature omits is written back
+///   as null and permanently lost. One test per mutator, because a missed one compiles.</item>
+///   <item><c>AffectsNetwork</c> is an EXCLUSION list, so an <c>mqtt</c> property not covered by
+///   <c>NonNetworkProperties</c> makes every MQTT change re-evaluate the network — which can move a
+///   VM's switch.</item>
 /// </list>
 /// </summary>
 public class MqttConfigTests : IDisposable
@@ -69,9 +66,8 @@ public class MqttConfigTests : IDisposable
         LastGoodEndpoint = new MqttEndpointMemory("broker.lan", "hvmt", 1884, MqttTransport.WebSocket),
     };
 
-    /// <summary>Every field of <see cref="Sample"/> still on the settings, with the remembered endpoint
-    /// taken as an argument — it is the one field a mutator (the endpoint write-back) legitimately
-    /// moves.</summary>
+    /// <summary>Every field of <see cref="Sample"/> still on the settings. The remembered endpoint is
+    /// an argument — the one field a mutator legitimately moves.</summary>
     private static void AssertSampleIntact(MqttSettings? actual, MqttEndpointMemory? endpoint = null)
     {
         var expected = Sample();
@@ -133,10 +129,8 @@ public class MqttConfigTests : IDisposable
         AssertSampleIntact(manager.Current.Mqtt);
     }
 
-    /// <summary>
-    /// One case per <c>With(...)</c> call site. Each mutator is a whole-file write built from a
-    /// snapshot, so any of them omitting the section erases it — and the erasure is silent.
-    /// </summary>
+    /// <summary>One case per <c>With(...)</c> call site. Each mutator is a whole-file write built from
+    /// a snapshot, so any of them omitting the section erases it, silently.</summary>
     private static readonly string[] MutatorNames =
     [
         "AddBridgedRule", "AddVmToConfig", "RemoveVmFromConfig", "UpdateLogLevel",
@@ -178,9 +172,9 @@ public class MqttConfigTests : IDisposable
         AssertSampleIntact(ReadFile(path).Mqtt, endpoint);
     }
 
-    /// <summary>Runs one mutator with arguments that are guaranteed to change something, so its
-    /// unchanged-value guard cannot turn the test into a no-op. Returns the endpoint the settings
-    /// should carry afterwards — the same one for every mutator but the endpoint write-back.</summary>
+    /// <summary>Runs one mutator with arguments guaranteed to change something, so its unchanged-value
+    /// guard cannot turn the test into a no-op. Returns the endpoint the settings should then
+    /// carry.</summary>
     private static MqttEndpointMemory? Run(ConfigManager manager, string mutator)
     {
         switch (mutator)
@@ -230,11 +224,8 @@ public class MqttConfigTests : IDisposable
         return null;
     }
 
-    /// <summary>
-    /// <see cref="Mutators"/> has to name EVERY public mutator, or the trap is only half-covered. This
-    /// asserts the list against the class itself, so a mutator added later fails here rather than
-    /// silently going untested.
-    /// </summary>
+    /// <summary><see cref="Mutators"/> has to name EVERY public mutator. Asserted against the class
+    /// itself, so one added later fails here rather than going untested.</summary>
     [Fact]
     public void MutatorList_NamesEveryPublicConfigMutator()
     {

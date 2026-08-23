@@ -1,14 +1,8 @@
 namespace HyperVManagerTray.Helpers;
 
-/// <summary>
-/// Decides whether the app holds <c>VmService.SubscribeMetrics()</c> for the MQTT integration
-/// (issue #75). The subscription runs a 2.5 s WMI loop, and an idle app runs none — so it is held
-/// only while the publish toggle is on <b>and</b> the broker session is live, and released the moment
-/// either stops being true.
-///
-/// <para>Subscribe and unsubscribe arrive as delegates, so the arithmetic is testable without a live
-/// host — the same shape <see cref="StartupTaskRepair"/> uses.</para>
-/// </summary>
+/// <summary>Decides whether the app holds <c>VmService.SubscribeMetrics()</c> for the MQTT
+/// integration. The subscription runs a 2.5 s WMI loop, so it is held only while the publish toggle is
+/// on <b>and</b> the broker session is live.</summary>
 public sealed class MqttMetricsHold
 {
     private readonly Action _subscribe;

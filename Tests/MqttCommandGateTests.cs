@@ -4,12 +4,9 @@ using Xunit;
 
 namespace HyperVManagerTray.Tests;
 
-/// <summary>
-/// The gate every inbound Home Assistant command passes (issue #75). It asks
-/// <see cref="VmStateUi.AllowedVerbs"/> — the same rule the dashboard's buttons use — so a remote
-/// write can reach nothing the dashboard cannot, and a verb the current state does not allow is
-/// refused rather than attempted.
-/// </summary>
+/// <summary>The gate every inbound Home Assistant command passes. It asks
+/// <see cref="VmStateUi.AllowedVerbs"/> — the same rule the dashboard's buttons use — so a remote write
+/// reaches nothing the dashboard cannot.</summary>
 public class MqttCommandGateTests
 {
     // ── The announced options ──────────────────────────────────────────────────

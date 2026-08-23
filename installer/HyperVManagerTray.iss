@@ -68,9 +68,9 @@ CloseApplications=yes
 RestartApplications=no
 
 [Files]
-; config.json is not installed at all (issue #74): the app owns it, in %AppData%\HyperVManagerTray,
-; and writes its own blank slate there. The exclude stands so a stale publish folder can never drop a
-; blank config over the one an older build left in {app} — a rollback to that build still reads it.
+; config.json is not installed at all: the app owns it, in %AppData%\HyperVManagerTray. The exclude
+; stands so a stale publish folder cannot drop a blank config over the one in {app} that a rolled-back
+; build still reads.
 Source: "{#PublishDir}\*"; DestDir: "{app}"; Excludes: "config.json"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
@@ -435,20 +435,9 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
-    // Issue #76. The 'runas' inside RegisterStartupTask is a UAC prompt, and /SUPPRESSMSGBOXES does not
-    // suppress UAC — so a silent run (the winget background upgrade the 'autoupdate' task itself
-    // schedules) would raise an unexplained consent dialog on the desktop and block the installer
-    // waiting on it. Skipped for exactly the reason PrepareToInstall and LaunchApp skip their own
-    // elevations.
-    //
-    // A silent UPGRADE loses nothing: 'runstartup' is only selected there because an earlier
-    // interactive install selected it, so the task already exists, and the app's startup self-heal
-    // (StartupManager.TryRepairPowerSettings) keeps its battery settings correct. The one case this
-    // gives up is a silent FRESH install passing /MERGETASKS=runstartup, which now leaves the task
-    // uncreated — Settings → "Run on startup" registers it, from inside the already-elevated app and
-    // with no prompt. The task is deliberately not created behind the user's back: its existence IS
-    // the toggle's state (StartupManager.IsEnabled), so a self-heal that created one would turn
-    // auto-start on for someone who never asked for it.
+    // The 'runas' inside RegisterStartupTask is a UAC prompt, and /SUPPRESSMSGBOXES does not suppress
+    // UAC — so a silent run raises an unexplained consent dialogue and blocks the installer waiting on
+    // it. See docs/mqtt-integration.md for what a silent fresh install gives up.
     if (not WizardSilent()) and WizardIsTaskSelected('runstartup') then RegisterStartupTask();
     // Non-elevated (no /RL HIGHEST), so this one is safe to run silently.
     if WizardIsTaskSelected('autoupdate') then RegisterAutoUpdateTask();

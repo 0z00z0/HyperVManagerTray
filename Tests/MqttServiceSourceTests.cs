@@ -4,17 +4,10 @@ using Xunit;
 
 namespace HyperVManagerTray.Tests;
 
-/// <summary>
-/// Guards three wiring facts about the live MQTT service that no other test can reach, in the same
-/// coarse way and for the same reason as <see cref="VmConnectFlowSourceTests"/>:
-/// <c>Services\MqttService.cs</c> holds the broker connection and the app's services, so it is
-/// deliberately not linked into this assembly. <see cref="MqttReconcileTests"/> proves the decisions it
-/// takes are right; nothing there notices if the call site stops honouring them.
-///
-/// <para>All three are threading facts — where a blocking teardown runs, and what serialises a
-/// reconcile — which a unit test could not observe even with the service linked. They read text, so
-/// they cannot see semantics; they are aimed at the realistic regression during an unrelated edit.</para>
-/// </summary>
+/// <summary>Guards three threading facts about the live MQTT service, in the same coarse way as
+/// <see cref="VmConnectFlowSourceTests"/>: <c>Services\MqttService.cs</c> is not linked into this
+/// assembly, and none of the three is observable from a unit test even if it were. They read text, so
+/// they cannot see semantics.</summary>
 public class MqttServiceSourceTests
 {
     private static string RepoRoot([CallerFilePath] string thisFile = "") =>
@@ -48,14 +41,9 @@ public class MqttServiceSourceTests
         return string.Empty;
     }
 
-    /// <summary>
-    /// <c>MqttConnection.Dispose</c> blocks for up to three seconds (it publishes the retained offline
-    /// state and waits for its command worker). <c>_lock</c> is taken by the event pump on WMI watcher
-    /// threads and by <c>IsConnected</c>/<c>Activity</c> on the UI thread, so tearing a connection down
-    /// under it freezes the Settings window for that long — reliably, when the retiring connection is
-    /// running a command that itself calls back into the pump. The retired connection is taken out
-    /// under the lock and disposed outside it.
-    /// </summary>
+    /// <summary><c>MqttConnection.Dispose</c> blocks for up to three seconds, and <c>_lock</c> is taken
+    /// on WMI watcher threads and on the UI thread — so a teardown under it freezes the Settings
+    /// window. The retired connection is taken out under the lock and disposed outside it.</summary>
     [Fact]
     public void ARetiredConnectionIsDisposedOffTheLock()
     {
@@ -67,11 +55,8 @@ public class MqttServiceSourceTests
         Assert.Contains("Retire(TakeRetired(", src, StringComparison.Ordinal);
     }
 
-    /// <summary>
-    /// Two reloads in quick succession each schedule a reconcile carrying its own config snapshot, and
-    /// a reconcile awaits the abandoned-identity clear before it applies anything. Without the gate and
-    /// the ticket the older one can land last and write the user's newer settings back out.
-    /// </summary>
+    /// <summary>A reconcile awaits the abandoned-identity clear before it applies anything, so without
+    /// the gate and the ticket an older snapshot can land last and roll newer settings back.</summary>
     [Fact]
     public void ReconcilesAreSerialisedAndTheStaleOneStandsDown()
     {
@@ -82,13 +67,9 @@ public class MqttServiceSourceTests
         Assert.Contains("MqttReconcile.Superseded(", body, StringComparison.Ordinal);
     }
 
-    /// <summary>
-    /// The exit runs on the UI thread. Detaching from VmService/NetworkMonitor must stay synchronous —
-    /// those are disposed immediately after — but the connection teardown behind it must not, or a
-    /// user-initiated exit freezes for up to three seconds. It is still joined, and before the logger
-    /// factory goes, because it logs: a lost teardown leaves the device "available" in Home Assistant
-    /// until the broker's keep-alive expires.
-    /// </summary>
+    /// <summary>The exit runs on the UI thread. Detaching must stay synchronous — the services are
+    /// disposed immediately after — but the teardown behind it must not, or the exit freezes for three
+    /// seconds. It is still joined, and before the logger factory goes, because it logs.</summary>
     [Fact]
     public void TheExitStartsTheBrokerTeardownWithoutBlockingOnIt()
     {

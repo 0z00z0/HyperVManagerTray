@@ -5,11 +5,9 @@ using Xunit;
 
 namespace HyperVManagerTray.Tests;
 
-/// <summary>
-/// Tests for the config relocation (issue #74): where config.json now lives, and the one-time copy out
-/// of the app directory. The copy must never become a move — an install rolled back to an earlier build
-/// still reads the file beside the executable.
-/// </summary>
+/// <summary>The config relocation: where config.json lives, and the one-time copy out of the app
+/// directory. The copy must never become a move — an install rolled back to an earlier build still
+/// reads the file beside the executable.</summary>
 public class ConfigMigrationTests : IDisposable
 {
     private readonly List<string> _tempDirs = [];
@@ -78,11 +76,8 @@ public class ConfigMigrationTests : IDisposable
         Assert.Equal(written, File.GetLastWriteTimeUtc(legacy));
     }
 
-    /// <summary>
-    /// Every start after the first. The copy must never run twice: the legacy file is frozen at the
-    /// version the last pre-relocation build wrote, so copying it again would silently roll every
-    /// setting made since back to that state.
-    /// </summary>
+    /// <summary>Every start after the first. The copy must never run twice: the legacy file is frozen,
+    /// so copying it again rolls every setting made since back to that state.</summary>
     [Fact]
     public void NeverOverwritesAnExistingConfigAtTheCurrentPath()
     {
@@ -121,10 +116,8 @@ public class ConfigMigrationTests : IDisposable
         Assert.Equal(LegacyJson, File.ReadAllText(current));
     }
 
-    /// <summary>
-    /// The data directory is the app's to create, unlike the app directory the installer always made.
-    /// A FileSystemWatcher on a directory that does not exist throws, which would be fatal at startup.
-    /// </summary>
+    /// <summary>The data directory is the app's to create, and a FileSystemWatcher on a directory that
+    /// does not exist throws — fatal at startup.</summary>
     [Fact]
     public void ConfigManagerCreatesTheConfigDirectoryBeforeWatchingIt()
     {
@@ -156,11 +149,8 @@ public class ConfigMigrationTests : IDisposable
 
     // ── A failed copy keeps its retry, and says so ────────────────────────────
 
-    /// <summary>
-    /// The blank slate must not be written after a failed copy. It would occupy the target, so every
-    /// later start would see a config there, report NotNeeded, and never try again — the user's real
-    /// rules stranded beside the executable for good, on one transient file lock.
-    /// </summary>
+    /// <summary>The blank slate must not be written after a failed copy: it would occupy the target,
+    /// so every later start reports NotNeeded and the real rules stay stranded.</summary>
     [Fact]
     public void AFailedCopyDoesNotAllowTheBlankSlate()
     {
@@ -175,13 +165,9 @@ public class ConfigMigrationTests : IDisposable
         Assert.True(ConfigMigration.MayCreateDefault(ConfigMigrationOutcome.Copied));
     }
 
-    /// <summary>
-    /// The whole point of withholding the blank slate: the next start copies the config this one could
-    /// not. Drives the real startup sequence — Run, then the blank-slate write only if
-    /// <see cref="ConfigMigration.MayCreateDefault"/> allows it — against the realistic failure, an
-    /// upgrade whose legacy file is momentarily locked by a scanner or an editor. The target directory
-    /// is perfectly writable throughout, so nothing but the guard keeps the blank slate out of it.
-    /// </summary>
+    /// <summary>The next start copies the config this one could not. Drives the real startup sequence
+    /// against a momentarily locked legacy file; the target directory stays writable throughout, so
+    /// nothing but the guard keeps the blank slate out of it.</summary>
     [Fact]
     public void TheCopyIsRetriedAtTheNextStart()
     {
@@ -206,11 +192,8 @@ public class ConfigMigrationTests : IDisposable
         Assert.Equal(LegacyJson, File.ReadAllText(current));
     }
 
-    /// <summary>
-    /// A failed copy is announced, and names the file that was left behind. Without this the user gets
-    /// the blank-slate balloon instead — "a default was created", i.e. told a fresh install happened
-    /// while their real settings sit unread.
-    /// </summary>
+    /// <summary>A failed copy is announced, and names the file left behind. Otherwise the user gets the
+    /// blank-slate balloon — a fresh install — while their real settings sit unread.</summary>
     [Fact]
     public void AFailedCopyIsAnnouncedAndNamesTheOriginal()
     {

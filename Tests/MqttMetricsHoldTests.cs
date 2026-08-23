@@ -3,11 +3,8 @@ using Xunit;
 
 namespace HyperVManagerTray.Tests;
 
-/// <summary>
-/// When the app holds <c>VmService.SubscribeMetrics()</c> for the MQTT integration (issue #75). The
-/// subscription runs a 2.5 s WMI loop and the app otherwise does no in-process WMI work while idle,
-/// so the toggle being off has to mean the loop never starts — not that its output is discarded.
-/// </summary>
+/// <summary>When the app holds <c>VmService.SubscribeMetrics()</c> for the MQTT integration. The toggle
+/// being off means the 2.5 s WMI loop never starts, not that its output is discarded.</summary>
 public class MqttMetricsHoldTests
 {
     private sealed class Counter

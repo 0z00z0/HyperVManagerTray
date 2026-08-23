@@ -3,21 +3,14 @@ using ZeroZero.Mqtt;
 
 namespace HyperVManagerTray.Helpers;
 
-/// <summary>
-/// The mapping between this app's <c>mqtt</c> config section and the shared settings panel's view of
-/// it (issue #75). The panel edits a <c>MqttPanelSnapshot</c> and reports each edit back as a facet —
-/// the master toggle, one publish category, the broker batch, the node id — and each facet lands on a
-/// copy of the stored settings here.
-///
-/// <para>Pure, and deliberately so: the panel is WinUI, so an edit's effect on the stored settings is
-/// only assertable if the arithmetic lives outside it. The window destructures the snapshot and calls
-/// in; nothing here knows a control exists.</para>
-/// </summary>
+/// <summary>The mapping between this app's <c>mqtt</c> config section and the shared settings panel's
+/// view of it. The panel reports each edit back as a facet — the master toggle, one publish category,
+/// the broker batch, the node id — and each lands on a copy of the stored settings here. Pure: nothing
+/// here knows a control exists.</summary>
 internal static class MqttPanelSeam
 {
-    /// <summary>The publish-category keys, as the panel reports them back. Every key the window offers
-    /// is one of these — <see cref="WithCategory"/> and <see cref="IsOn"/> answer for exactly this set,
-    /// so a key that is not in it toggles nothing rather than silently writing some other field.</summary>
+    /// <summary>The publish-category keys, as the panel reports them back. <see cref="WithCategory"/>
+    /// and <see cref="IsOn"/> answer for exactly this set; anything else toggles nothing.</summary>
     public const string NetworkKey        = "network";
     public const string VmStateKey        = "vm-state";
     public const string VmDiagnosticsKey  = "vm-diagnostics";
@@ -37,7 +30,7 @@ internal static class MqttPanelSeam
     };
 
     /// <summary>One publish category toggled. An unrecognised key changes nothing — a dead toggle is
-    /// visible, whereas a key typo that fell through to some other field would not be.</summary>
+    /// visible, a key typo falling through to another field would not be.</summary>
     public static MqttSettings WithCategory(MqttSettings settings, string key, bool isOn)
     {
         var next = settings.Copy();
@@ -67,12 +60,9 @@ internal static class MqttPanelSeam
         return next;
     }
 
-    /// <summary>
-    /// The broker batch, committed as one. Only the fields the batch owns are written: the master
-    /// toggle, the node id and the remembered endpoint each have their own commit path, and taking
-    /// them from a snapshot the panel has been holding since it opened would roll back whichever of
-    /// them changed meanwhile.
-    /// </summary>
+    /// <summary>The broker batch, committed as one. Only the fields the batch owns are written: the
+    /// master toggle, the node id and the remembered endpoint each have their own commit path, and
+    /// taking them from the panel's held snapshot would roll back whichever changed meanwhile.</summary>
     public static MqttSettings WithBroker(
         MqttSettings settings, MqttOptions options, string? deviceName, string? discoveryPrefix,
         string? password)

@@ -6,19 +6,17 @@ using ZeroZero.Mqtt;
 namespace HyperVManagerTray.Tests;
 
 /// <summary>
-/// The decisions <c>MqttService</c> takes at its call sites (issue #75). They lived inline in
-/// <c>Services\MqttService.cs</c>, which holds the live broker connection and is deliberately not
-/// linked into this assembly — so every guard below was unasserted. Each one has a cost for being
-/// wrong that a broker cannot demonstrate on demand:
+/// The decisions <c>MqttService</c> takes at its call sites. Each has a cost for being wrong that a
+/// broker cannot demonstrate on demand:
 ///
 /// <list type="bullet">
 ///   <item><see cref="MqttReconcile.Superseded"/>: two reloads in quick succession each schedule a
-///   reconcile carrying its own config snapshot. Without this, the older one landing last writes the
-///   user's newer settings back out.</item>
-///   <item><see cref="MqttReconcile.CanClear"/>: an attempt to clear an abandoned identity with no
-///   live session reaches nothing and costs the reconnect the new settings are for.</item>
+///   reconcile carrying its own config snapshot; the older one landing last writes the user's newer
+///   settings back out.</item>
+///   <item><see cref="MqttReconcile.CanClear"/>: clearing an abandoned identity with no live session
+///   reaches nothing and costs the reconnect the new settings are for.</item>
 ///   <item><see cref="MqttReconcile.NeedsApply"/>: a remembered endpoint is written back BY the
-///   session it describes, so re-applying for it would reconnect once per successful connect.</item>
+///   session it describes, so re-applying for it reconnects once per successful connect.</item>
 /// </list>
 /// </summary>
 public class MqttReconcileTests

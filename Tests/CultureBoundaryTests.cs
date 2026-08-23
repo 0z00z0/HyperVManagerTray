@@ -10,35 +10,13 @@ using ZeroZero.Mqtt.HomeAssistant;
 
 namespace HyperVManagerTray.Tests;
 
-/// <summary>
-/// The boundary between text the app shows a person and text it hands to a machine (issue #61).
-///
-/// <para>The app no longer runs in globalization-invariant mode, so <see cref="CultureInfo.CurrentCulture"/>
-/// is the machine's and every unqualified <c>ToString</c>/<c>Parse</c> follows it. That is what the UI
-/// wants and what config.json, MQTT topics and payloads, log lines and the crash-stamp file must never
-/// do: a number written with a decimal comma into a JSON config or an MQTT payload is a corrupt value,
-/// not a localised one. Every test below drives real production code under <c>nb-NO</c> — a locale with
-/// a comma decimal separator and a U+2212 negative sign — and asserts the machine-readable form did not
-/// move.</para>
-///
-/// <para><b>Why these cannot be assumed.</b> Invariant mode used to make all of this true by accident:
-/// there was no other culture for a call site to pick up. Removing it makes each pin load-bearing, and
-/// none of them is visible in a run under the developer's own locale. <see cref="TheHarnessItselfIsHonest"/>
-/// exists so a failure to enter <c>nb-NO</c> at all cannot let the rest pass vacuously.</para>
-///
-/// <para><b>What these tests do NOT prove.</b> Only the FORMATTING pins are provable here. Deleting the
-/// pinned culture from <c>MqttEntitySet.Number</c>, <c>LatencyLog</c> or the topic slug fails a test
-/// below; deleting it from an integer, long or <c>TimeSpan</c> PARSE does not, because — measured over
-/// all 889 cultures this runtime carries — none of those three parses is culture-sensitive for the
-/// inputs the app hands them. Those pins are stated intent at a boundary, not a fix for observable
-/// behaviour, and the tests over them are ordinary regression pins on the parse rather than proof the
-/// pin is honoured. The one genuine divergence found was the negative sign (57 Arabic-script cultures
-/// reject an ASCII "-1"), which no value the app parses can reach.</para>
-/// </summary>
+/// <summary>The boundary between text the app shows a person and text it hands to a machine. Every test
+/// drives real production code under <c>nb-NO</c> and asserts the machine-readable form did not move.
+/// What this can and cannot prove: <c>docs/mqtt-integration.md</c>.</summary>
 public class CultureBoundaryTests
 {
-    /// <summary>A locale with a comma decimal separator — the realistic one on this app's machines,
-    /// and the one that turns "3.5" into "3,5" the moment a call site forgets to pin a culture.</summary>
+    /// <summary>A locale with a comma decimal separator, which turns "3.5" into "3,5" the moment a
+    /// call site forgets to pin a culture.</summary>
     private const string CommaDecimalLocale = "nb-NO";
 
     /// <summary>Runs <paramref name="body"/> with the thread's culture switched, and always puts it
@@ -63,11 +41,8 @@ public class CultureBoundaryTests
 
     // ── The harness ─────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Proves the switch actually bites before anything else relies on it. If the process were ever
-    /// put back into globalization-invariant mode, or <c>nb-NO</c> silently resolved to the invariant
-    /// culture, every assertion below would pass while testing nothing at all.
-    /// </summary>
+    /// <summary>Proves the switch bites. In globalization-invariant mode, or with <c>nb-NO</c> silently
+    /// resolving to the invariant culture, every assertion below passes while testing nothing.</summary>
     [Fact]
     public void TheHarnessItselfIsHonest() => InCulture(CommaDecimalLocale, () =>
     {
@@ -87,11 +62,9 @@ public class CultureBoundaryTests
         Converters             = { new JsonStringEnumConverter() },
     };
 
-    /// <summary>
-    /// The persisted form of a config carrying a hand-edited CIDR and an ISO rename stamp. System.Text.Json
-    /// is invariant by construction, but the values reaching it are composed by the app, so the assertion
-    /// is on the bytes on disk rather than on the serialiser's reputation.
-    /// </summary>
+    /// <summary>The persisted form of a config carrying a hand-edited CIDR and an ISO rename stamp.
+    /// Asserted on the bytes on disk: the values reaching the serialiser are composed by the
+    /// app.</summary>
     [Fact]
     public void AConfigWrittenUnderACommaLocale_KeepsItsIsoDatesAndDottedNumbers() =>
         InCulture(CommaDecimalLocale, () =>
@@ -154,9 +127,8 @@ public class CultureBoundaryTests
 
     // ── MQTT topics and payloads ────────────────────────────────────────────────
 
-    /// <summary>A topic segment is an identity: the same VM must own the same topic on every machine,
-    /// so the slug may not acquire a locale's casing rules. <c>tr-TR</c> is the classic breaker — its
-    /// lower-case of 'I' is 'ı', which is not an ASCII letter and would be dropped.</summary>
+    /// <summary>A topic segment is an identity, so the slug may not acquire a locale's casing rules.
+    /// <c>tr-TR</c> lower-cases 'I' to 'ı', which is not an ASCII letter and would be dropped.</summary>
     [Theory]
     [InlineData("DevBox",        "devbox")]
     [InlineData("VM-01 (Test)",  "vm_01_test")]
@@ -168,11 +140,8 @@ public class CultureBoundaryTests
         InCulture("tr-TR",            () => Assert.Equal(expected, MqttObjectIds.Slug(vmName)));
     }
 
-    /// <summary>
-    /// THE payload test. Home Assistant parses a numeric sensor state as a JSON number; "1536,5" is
-    /// not one, and the entity goes unavailable. Both fractional metrics are asserted, because a
-    /// rounding call site is exactly where a forgotten culture hides.
-    /// </summary>
+    /// <summary>Home Assistant parses a numeric sensor state as a JSON number; "1536,5" is not one, and
+    /// the entity goes unavailable.</summary>
     [Fact]
     public void NumericMqttPayloads_UseADotUnderACommaLocale() => InCulture(CommaDecimalLocale, () =>
     {
@@ -207,8 +176,7 @@ public class CultureBoundaryTests
     }
 
     /// <summary>The full round trip: WMI milliseconds → the stored string → the published text. The
-    /// write is <c>TimeSpan.ToString()</c>, whose form is culture-independent, and the read must match
-    /// it rather than the machine's time separators.</summary>
+    /// read must match <c>TimeSpan.ToString()</c>'s form, not the machine's time separators.</summary>
     [Fact]
     public void UptimeSurvivesTheRoundTripUnderACommaLocale() => InCulture(CommaDecimalLocale, () =>
     {
@@ -239,13 +207,8 @@ public class CultureBoundaryTests
 
     // ── Call sites no test can reach ────────────────────────────────────────────
 
-    /// <summary>
-    /// The setting whose removal this whole file guards. Invariant mode makes every Task Scheduler
-    /// write throw (<c>Trigger</c>'s static initialiser calls <c>CreateSpecificCulture("en")</c>, and
-    /// <c>TaskFolder.RegisterTaskDefinition</c> reaches it), and it pins displayed numbers to the
-    /// invariant culture. It cannot be observed from inside the test process — the test assembly has
-    /// its own globalization mode — so the app's build file is read instead.
-    /// </summary>
+    /// <summary>The setting whose removal this file guards. Not observable from inside the test process
+    /// — the test assembly has its own globalization mode — so the app's build file is read.</summary>
     [Fact]
     public void TheAppIsNotBuiltInGlobalizationInvariantMode()
     {
@@ -255,11 +218,8 @@ public class CultureBoundaryTests
         Assert.Contains("<InvariantGlobalization>false</InvariantGlobalization>", csproj);
     }
 
-    /// <summary>
-    /// <c>UI\AdapterRenameFlow.cs</c> stamps the rename date straight into config.json. It is WinUI
-    /// code and is deliberately not linked into this assembly, so the pin is read as text — coarse,
-    /// but aimed at the realistic regression: the format argument being dropped during an edit.
-    /// </summary>
+    /// <summary><c>UI\AdapterRenameFlow.cs</c> stamps the rename date into config.json. WinUI code, not
+    /// linked into this assembly, so the pin is read as text.</summary>
     [Fact]
     public void TheRenameStampIsWrittenWithAPinnedCulture()
     {

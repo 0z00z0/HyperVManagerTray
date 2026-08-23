@@ -7,13 +7,9 @@ using ZeroZero.Mqtt.HomeAssistant;
 
 namespace HyperVManagerTray.Tests;
 
-/// <summary>
-/// HyperVManagerTray's Home Assistant entity set (issue #75): what it declares, what each entity
-/// publishes from the app's own events, and what an inbound command is allowed to do.
-///
-/// <para>Every side effect is a delegate, so the whole set composes here with no broker, no WMI and
-/// no WinUI — which is what makes the gate on the command path assertable rather than trusted.</para>
-/// </summary>
+/// <summary>The Home Assistant entity set: what it declares, what each entity publishes from the app's
+/// own events, and what an inbound command is allowed to do. Every side effect is a delegate, so the
+/// whole set composes here with no broker, no WMI and no WinUI.</summary>
 public class MqttEntitySetTests
 {
     /// <summary>A spec wired to recorders, so a test can drive the app's events in and read the
@@ -276,9 +272,8 @@ public class MqttEntitySetTests
 
     // ── The publish categories ─────────────────────────────────────────────────
 
-    /// <summary>Settings → Home Assistant offers four publish groups, and each owns exactly the
-    /// entities listed here. Withheld, not absent: the retained config of an entity a switched-off
-    /// group owns is emptied, so it leaves Home Assistant rather than staying there unavailable.</summary>
+    /// <summary>Four publish groups, each owning exactly the entities listed here. Withheld, not
+    /// absent: a switched-off group's retained configs are emptied.</summary>
     [Fact]
     public void TheHostNetworkGroupCoversTheNetworkEntitiesAndItsTwoButtons()
     {
@@ -604,8 +599,8 @@ public class MqttEntitySetTests
     }
 
     /// <summary>The names come straight off config.json, where <c>"name": null</c> deserialises as a
-    /// null. A throw here would come out of MqttService's reconcile and leave the whole integration
-    /// down — silently, and until the file is fixed — so it degrades to the fallback slug instead.</summary>
+    /// null. A throw here comes out of MqttService's reconcile and takes the whole integration down,
+    /// so it degrades to the fallback slug instead.</summary>
     [Fact]
     public void ANullVmNameDoesNotThrowOutOfTheSet()
     {

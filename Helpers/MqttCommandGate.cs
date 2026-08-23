@@ -2,16 +2,9 @@ using HyperVManagerTray.Models;
 
 namespace HyperVManagerTray.Helpers;
 
-/// <summary>
-/// What an inbound Home Assistant command is allowed to do (issue #75). Pure, so the rule a remote
-/// write is held to is testable without a broker or a live host.
-///
-/// <para>Every VM verb passes through <see cref="Power"/>, which asks
-/// <see cref="VmStateUi.AllowedVerbs"/> — the same gate the dashboard's buttons use. A remote write
-/// therefore reaches nothing the dashboard cannot, and a verb the current state does not allow is
-/// refused outright rather than queued or attempted: Hyper-V would answer it with 0x8007 anyway, and
-/// an attempt would leave a failure in the log that looks like a fault rather than a refusal.</para>
-/// </summary>
+/// <summary>What an inbound Home Assistant command is allowed to do. Every VM verb passes through
+/// <see cref="Power"/> and <see cref="VmStateUi.AllowedVerbs"/> — the same gate the dashboard's buttons
+/// use — and a disallowed verb is refused, never attempted.</summary>
 public static class MqttCommandGate
 {
     /// <summary>The power verbs announced as select options, in the order Home Assistant shows them.</summary>
@@ -54,8 +47,8 @@ public static class MqttCommandGate
         return Power(state, kind);
     }
 
-    /// <summary>Whether a switch-override may run: the name has to be one this host actually
-    /// announced, so a stale option in Home Assistant cannot bind a switch that no rule names.</summary>
+    /// <summary>Whether a switch-override may run: the name has to be one this host announced, so a
+    /// stale option in Home Assistant cannot bind a switch no rule names.</summary>
     public static Verdict Override(IReadOnlyList<string> ruleSwitches, string? switchName)
     {
         string trimmed = (switchName ?? string.Empty).Trim();

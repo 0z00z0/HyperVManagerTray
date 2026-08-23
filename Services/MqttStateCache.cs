@@ -2,15 +2,9 @@ using HyperVManagerTray.Models;
 
 namespace HyperVManagerTray.Services;
 
-/// <summary>
-/// The picture the MQTT channels publish from (issue #75): the last <see cref="MatchResult"/> the
-/// network monitor applied, the last per-VM status snapshot, and each VM's most recent power
-/// operation. Written from the app's existing events, read by the entity payload providers.
-///
-/// <para>Nothing here polls. Each slot is swapped whole (copy-on-write dictionaries, volatile
-/// references) so a reader on the publish thread always sees a consistent snapshot rather than a
-/// half-updated one.</para>
-/// </summary>
+/// <summary>The picture the MQTT channels publish from: the last applied <see cref="MatchResult"/>, the
+/// last per-VM status snapshot, and each VM's most recent power operation. Each slot is swapped whole,
+/// so a reader on the publish thread always sees a consistent snapshot.</summary>
 public sealed class MqttStateCache
 {
     private static readonly IReadOnlyDictionary<string, VmStatus> NoVms =
@@ -19,8 +13,7 @@ public sealed class MqttStateCache
     private static readonly IReadOnlyDictionary<string, string> NoOperations =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-    // Serialises the read-modify-write in SetOperation only. Readers never take it: each slot is
-    // swapped whole and never mutated after publication.
+    // Serialises the read-modify-write in SetOperation only. Readers never take it.
     private readonly object _operationLock = new();
 
     private volatile MatchResult? _network;
@@ -47,9 +40,9 @@ public sealed class MqttStateCache
     public string? Operation(string vmName) =>
         _operations.TryGetValue(vmName ?? string.Empty, out var text) ? text : null;
 
-    /// <summary>Records one VM's latest operation. Locked, unlike the whole-slot writes above: this one
-    /// copies the live map and puts it back, and two VMs progressing at once (a rule's autostart runs a
-    /// power action per VM, each on its own thread) would otherwise lose one of the two entries.</summary>
+    /// <summary>Records one VM's latest operation. Locked, unlike the whole-slot writes above: it
+    /// copies the live map and puts it back, and two VMs progressing at once — a rule's autostart runs
+    /// a power action per VM, each on its own thread — would otherwise lose an entry.</summary>
     public void SetOperation(VmOperationProgress progress)
     {
         lock (_operationLock)

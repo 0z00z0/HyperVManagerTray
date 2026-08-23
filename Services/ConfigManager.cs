@@ -154,8 +154,8 @@ public sealed class ConfigManager : IDisposable
             var json = File.ReadAllText(_configPath);
             var loaded = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? new AppConfig();
             loaded.Rules = [.. loaded.Rules.OrderBy(r => r.Priority)];
-            // A config written before the section existed — or one hand-edited to "mqtt": null — must
-            // still read as "configured, disabled" rather than crashing every consumer (issue #75).
+            // A missing or hand-blanked section reads as "configured, disabled" rather than crashing
+            // every consumer.
             loaded.Mqtt ??= new MqttSettings();
             _config = loaded;
             // The file parsed, so the next failure is news again. This is the ONE place every successful
@@ -551,12 +551,9 @@ public sealed class ConfigManager : IDisposable
         },
         "Failed to save the Settings window rect");
 
-    /// <summary>
-    /// Persists the whole <c>mqtt</c> section (issue #75). A no-op when nothing changed, so a
-    /// re-save of unchanged settings doesn't rewrite the file. The reload it raises reports
-    /// <see cref="ConfigReloadedEventArgs.AffectsNetwork"/> false — see <see cref="NonNetworkProperties"/> —
-    /// so editing a broker port cannot move a VM's switch.
-    /// </summary>
+    /// <summary>Persists the whole <c>mqtt</c> section; a no-op when nothing changed. The reload it
+    /// raises reports <see cref="ConfigReloadedEventArgs.AffectsNetwork"/> false — see
+    /// <see cref="NonNetworkProperties"/> — so a broker edit cannot move a VM's switch.</summary>
     public void SaveMqttSettings(MqttSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
@@ -578,10 +575,8 @@ public sealed class ConfigManager : IDisposable
             "Failed to save the MQTT settings");
     }
 
-    /// <summary>
-    /// Records the transport and port the broker last answered on, so the next start reaches it
-    /// without a sweep. State the connection writes back, not something the user set.
-    /// </summary>
+    /// <summary>Records the transport and port the broker last answered on, so the next start reaches
+    /// it without a sweep. State the connection writes back, not something the user set.</summary>
     public void RememberMqttEndpoint(MqttEndpointMemory endpoint)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
@@ -653,7 +648,7 @@ public sealed class ConfigManager : IDisposable
         "settingsWindowY",
         "settingsWindowWidth",
         "settingsWindowHeight",
-        "mqtt",                // the broker/entity settings (issue #75) — read by MqttService only
+        "mqtt",                // the broker/entity settings — read by MqttService only
     ];
 
     /// <summary>
@@ -800,8 +795,8 @@ public sealed class ConfigManager : IDisposable
             AdapterNames    = adapterNames ?? _config.AdapterNames,
             LogLevel        = logLevel     ?? _config.LogLevel,
 
-            // Same rule as the window rect below, and the same cost for getting it wrong: omit this and
-            // every unrelated mutator writes the whole MQTT section back as null (issue #75).
+            // Same rule as the window rect below, and the same cost for getting it wrong: omit this
+            // and every unrelated mutator writes the whole MQTT section back as null.
             Mqtt            = mqtt         ?? _config.Mqtt ?? new MqttSettings(),
 
             // The Settings window rect (issue #31) MUST be carried through here like every other field:
@@ -814,7 +809,7 @@ public sealed class ConfigManager : IDisposable
             SettingsWindowHeight = settingsWindowRect?.Height ?? _config.SettingsWindowHeight,
         };
 
-    /// <summary>Returns the expected config.json path: in <see cref="AppInfo.DataDir"/> (issue #74).</summary>
+    /// <summary>Returns the expected config.json path: in <see cref="AppInfo.DataDir"/>.</summary>
     public static string GetConfigPath() =>
         Path.Combine(AppInfo.DataDir, "config.json");
 
