@@ -453,8 +453,9 @@ begin
   // aren't locked, otherwise the uninstall leaves the exe behind and the app keeps running.
   if CurUninstallStep = usUninstall then
   begin
-    // Elevate once only if there's something elevated to do (app running or HIGHEST task).
-    if AppIsRunning() or ScheduledTaskExists() then
+    // The 'runas' inside StopAppAndRemoveStartupTask is a UAC prompt; a silent uninstall
+    // (scripted removal, MDM, /VERYSILENT) must not raise one it cannot answer.
+    if (not UninstallSilent()) and (AppIsRunning() or ScheduledTaskExists()) then
       StopAppAndRemoveStartupTask();
 
     RemoveAutoUpdateTask();   // non-elevated, no prompt

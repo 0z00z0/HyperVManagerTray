@@ -56,6 +56,7 @@ public class InstallerSilentInstallTests
     [Theory]
     [InlineData("if (not WizardSilent()) and AppIsRunning() then")]
     [InlineData("if not WizardSilent() then LaunchApp();")]
+    [InlineData("if (not UninstallSilent()) and (AppIsRunning() or ScheduledTaskExists()) then")]
     public void TheOtherElevatingStepsStayGuardedToo(string guarded) =>
         Assert.Contains(guarded, Code());
 
