@@ -24,7 +24,6 @@ public partial class App : Application
     private HyperVManager?  _hyperV;   // switch binding / host-vNIC repair (native WMI, issue #17)
     private VmService?      _vm;       // VM status/metrics/power/IPs via WMI
     private NetworkMonitor? _monitor;
-    private MqttService?    _mqtt;     // Home Assistant over MQTT
     private StartupManager  _startup = null!;
     private HttpClient?     _httpClient;
     private UpdateChecker?  _updateChecker;
@@ -129,13 +128,11 @@ public partial class App : Application
                 // _logLevelSwitch is the sole runtime gate for all three logs (issue #22).
                 b.SetMinimumLevel(LogLevel.Trace);
                 // Category-routing sink: "vm-power" → vm-power.log (issue #20), "ui" → ui.log
-                // (issue #21), "mqtt" → mqtt.log (issue #75); everything else → switcher.log. All
-                // gated by the live switch.
+                // (issue #21); everything else → switcher.log. All gated by the live switch.
                 b.AddSimpleFileLogger(AppInfo.LogFile, new Dictionary<string, string>
                 {
                     ["vm-power"] = AppInfo.VmPowerLog,
                     ["ui"]       = AppInfo.UiLog,
-                    ["mqtt"]     = AppInfo.MqttLog,
                 }, _logLevelSwitch);
             });
 
@@ -223,8 +220,6 @@ public partial class App : Application
             _vm.OperationProgress += OnVmOperationFailed;
             _vm.SubscribeStateWatcher();
 
-            StartMqtt(_loggerFactory.CreateLogger("mqtt"));
-
             // Show something immediately (caches may still be warming — PreWarmVmCacheAsync fills them).
             PostTooltipFromCaches();
 
@@ -256,21 +251,6 @@ public partial class App : Application
             NativeMethods.Error($"Failed to start Hyper-V Manager Tray:\n\n{ex}", AppInfo.Name);
             ExitIntentionally();   // startup failed — relaunching would just fail again
         }
-    }
-
-    /// <summary>Brings up the Home Assistant integration. The connection retries on its own loop, so a
-    /// broker that is down costs startup nothing. Its two network commands report to <c>mqtt.log</c>
-    /// rather than to a tray balloon — the desktop has nobody waiting on the answer.</summary>
-    private void StartMqtt(ILogger mqttLog)
-    {
-        var actions = new NetworkActions(_config!, _monitor!, _hyperV!,
-            (title, message, isError) => mqttLog.Log(isError ? LogLevel.Warning : LogLevel.Information,
-                                                     "{Title}: {Message}", title, message));
-
-        _mqtt = new MqttService(_config!, _monitor!, _vm!, mqttLog, AppInfo.Version,
-                                _ => actions.ReCheckNetworkAsync(),
-                                _ => actions.RepairHostNetworkingAsync());
-        _mqtt.Start();
     }
 
     /// <summary>
@@ -400,10 +380,7 @@ public partial class App : Application
         // The tray's manual network actions report through the same balloon channel a failed apply uses
         // (issue #37). Not suppressed by a visible dashboard: unlike an automatic apply, these are direct
         // answers to something the user just clicked, and must never be swallowed.
-        // MQTT is composed further down OnLaunched, after this menu — hence an accessor rather than
-        // the service.
-        _menu = new TrayMenu(_config!, _monitor!, _hyperV!, _vm!, _startup, _updateChecker!,
-                             () => _mqtt, OnExit,
+        _menu = new TrayMenu(_config!, _monitor!, _hyperV!, _vm!, _startup, _updateChecker!, OnExit,
                              (title, message, isError) =>
                                  ShowBalloon(title, message, isError, suppressWhenDashboardVisible: false));
         _trayIcon.ContextFlyout     = _menu.Flyout;
@@ -916,10 +893,6 @@ public partial class App : Application
 
     // ── Lifecycle ───────────────────────────────────────────────────────────────
 
-    /// <summary>Longest the exit waits for the broker teardown. Above the connection's own ~3 s
-    /// budget, so a healthy teardown is never truncated.</summary>
-    private static readonly TimeSpan MqttTeardownBudget = TimeSpan.FromSeconds(5);
-
     private void OnExit()
     {
         // User-initiated exit is legitimate — the self-heal watchdog must NOT relaunch it.
@@ -928,15 +901,11 @@ public partial class App : Application
         if (_dashboard is not null) _dashboard.AllowClose = true;
         _trayIcon?.Dispose();
         _iconImage?.Dispose();
-        // Detaching is synchronous here, so no event reaches a disposed service below. The teardown it
-        // starts runs on the pool and is joined before the logger factory goes, because it logs.
-        var mqttTeardown = _mqtt?.BeginDisposeAsync();
         _monitor?.Dispose();
         _vm?.Dispose();
         _config?.Dispose();
         _hyperV?.Dispose();
         _httpClient?.Dispose();
-        try { mqttTeardown?.Wait(MqttTeardownBudget); } catch { /* never hold the exit on it */ }
         _loggerFactory?.Dispose();
         Exit();
     }

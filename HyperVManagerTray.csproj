@@ -33,7 +33,8 @@
     <RepositoryType>git</RepositoryType>
 
     <!-- Must stay OFF: invariant mode makes EVERY Task Scheduler write throw, and pins the UI's
-         formatting to the invariant culture. See docs/mqtt-integration.md. -->
+         formatting to the invariant culture. Machine-readable text pins InvariantCulture at each
+         call site instead — see Tests\CultureBoundaryTests.cs. -->
     <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
 
@@ -67,15 +68,6 @@
          class library"). Strip it for this reference only — the app aggregates the self-contained
          Windows App SDK; the library just builds framework-dependent as normal. -->
     <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Brand.WinUI\ZeroZero.Brand.WinUI.csproj">
-      <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
-    </ProjectReference>
-    <!-- Plain net10.0, no Windows App SDK targets, so WindowsAppSDKSelfContained propagates
-         harmlessly and needs no UndefineProperties. -->
-    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt\ZeroZero.Mqtt.csproj" />
-    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt.HomeAssistant\ZeroZero.Mqtt.HomeAssistant.csproj" />
-    <!-- A WinUI class library, so it needs the same UndefineProperties as ZeroZero.Brand.WinUI:
-         WindowsAppSDKSelfContained errors out ("should not be applied to a class library"). -->
-    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt.WinUI\ZeroZero.Mqtt.WinUI.csproj">
       <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
     </ProjectReference>
   </ItemGroup>

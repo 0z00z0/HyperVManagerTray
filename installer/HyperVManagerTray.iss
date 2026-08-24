@@ -437,7 +437,9 @@ begin
   begin
     // The 'runas' inside RegisterStartupTask is a UAC prompt, and /SUPPRESSMSGBOXES does not suppress
     // UAC — so a silent run raises an unexplained consent dialogue and blocks the installer waiting on
-    // it. See docs/mqtt-integration.md for what a silent fresh install gives up.
+    // it. A silent UPGRADE loses nothing (the task already exists); a silent FRESH install passing
+    // /MERGETASKS=runstartup leaves it uncreated, and Settings → "Run on startup" registers it with no
+    // prompt. Never created behind the user's back: its existence IS the toggle's state.
     if (not WizardSilent()) and WizardIsTaskSelected('runstartup') then RegisterStartupTask();
     // Non-elevated (no /RL HIGHEST), so this one is safe to run silently.
     if WizardIsTaskSelected('autoupdate') then RegisterAutoUpdateTask();

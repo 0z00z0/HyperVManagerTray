@@ -8,19 +8,6 @@
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
 
-  <!-- Same seam as the app's csproj: the shared repo is the sibling ..\..\0z0-shared for local dev,
-       and CI overrides ZeroZeroSharedDir (an env var, which MSBuild surfaces as a property) to point
-       at its own checkout. This project is one folder deeper than the app's, hence the extra level. -->
-  <PropertyGroup>
-    <ZeroZeroSharedDir Condition="'$(ZeroZeroSharedDir)' == ''">..\..\0z0-shared</ZeroZeroSharedDir>
-  </PropertyGroup>
-  <ItemGroup>
-    <!-- Issue #75. Both are plain net10.0 with no Windows App SDK coupling, so referencing them keeps
-         this assembly runtime-free in the way the linked-source pattern depends on. -->
-    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt\ZeroZero.Mqtt.csproj" />
-    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt.HomeAssistant\ZeroZero.Mqtt.HomeAssistant.csproj" />
-  </ItemGroup>
-
   <!-- Link the pure, WinUI-free source files directly into the test assembly.  This keeps the
        tests isolated from the WinUI app (no ProjectReference, so 'dotnet test' needs no Windows
        App SDK runtime) while still exercising the real production code. -->
@@ -126,27 +113,6 @@
          is deliberately NOT linked. -->
     <Compile Include="..\Helpers\StartupTaskDefinition.cs" Link="Linked\StartupTaskDefinition.cs" />
     <Compile Include="..\Helpers\StartupTaskRepair.cs"     Link="Linked\StartupTaskRepair.cs" />
-    <!-- Issue #75: the MQTT / Home Assistant layer's pure half — the config section, the command gate,
-         the metrics-subscription arithmetic, the published-state cache and the entity set. Every side
-         effect arrives as a delegate, so all of it links here with no broker, no WMI and no WinUI. The
-         live wiring (Services\MqttService.cs) holds the real services and is deliberately NOT linked. -->
-    <Compile Include="..\Models\MqttSettings.cs"      Link="Linked\MqttSettings.cs" />
-    <!-- The published address (node id + discovery prefix) and the "has it moved?" decision the
-         retained-topic clearing turns on. Strings and flags only, and the reason the clearing rule is
-         assertable at all: the service that acts on it holds the live broker and is NOT linked. -->
-    <Compile Include="..\Helpers\MqttIdentity.cs"     Link="Linked\MqttIdentity.cs" />
-    <!-- The mapping between the config section and the shared settings panel's view of it. The panel
-         is WinUI and is deliberately NOT linked, which is exactly why the mapping lives outside it. -->
-    <Compile Include="..\Helpers\MqttPanelSeam.cs"    Link="Linked\MqttPanelSeam.cs" />
-    <Compile Include="..\Helpers\MqttCommandGate.cs"  Link="Linked\MqttCommandGate.cs" />
-    <!-- The call-site decisions MqttService takes: whether a queued reconcile has been superseded,
-         whether the abandoned identity can be cleared, and whether the connection, the entity set or
-         the applied options have to be rebuilt. Lifted out of the service precisely so they are
-         assertable — Services\MqttService.cs holds the live connection and is NOT linked. -->
-    <Compile Include="..\Helpers\MqttReconcile.cs"    Link="Linked\MqttReconcile.cs" />
-    <Compile Include="..\Helpers\MqttMetricsHold.cs"  Link="Linked\MqttMetricsHold.cs" />
-    <Compile Include="..\Services\MqttStateCache.cs"  Link="Linked\MqttStateCache.cs" />
-    <Compile Include="..\Services\MqttEntitySet.cs"   Link="Linked\MqttEntitySet.cs" />
     <Compile Include="..\Models\AppConfig.cs"         Link="Linked\AppConfig.cs" />
     <Compile Include="..\Models\NetworkRule.cs"       Link="Linked\NetworkRule.cs" />
     <Compile Include="..\Models\VmTarget.cs"          Link="Linked\VmTarget.cs" />

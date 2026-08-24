@@ -20,10 +20,10 @@ jobs:
   build-test:
     runs-on: windows-latest
     env:
-      # The ProjectReferences to ZeroZero.Brand.WinUI, ZeroZero.Mqtt and ZeroZero.Mqtt.HomeAssistant
-      # default to the sibling 0z0-shared folder for local dev; CI only has this repo, so we check the
-      # 0z0-shared repo out below and point both csprojs' $(ZeroZeroSharedDir) property at it via this
-      # env var (MSBuild reads env as a property). Job-scoped, so the test step gets it too.
+      # The ProjectReference to ZeroZero.Brand.WinUI defaults to the sibling 0z0-shared folder for local
+      # dev; CI only has this repo, so we check the 0z0-shared repo out below and point the csproj's
+      # $(ZeroZeroSharedDir) property at it via this env var (MSBuild reads env as a property).
+      # Job-scoped, so the test step gets it too.
       ZeroZeroSharedDir: ${{ github.workspace }}/0z0-shared
     steps:
       - name: Checkout

@@ -4,7 +4,6 @@ using System.Text.Json.Serialization;
 using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Models;
 using Microsoft.Extensions.Logging;
-using ZeroZero.Mqtt;
 
 namespace HyperVManagerTray.Services;
 
@@ -154,9 +153,6 @@ public sealed class ConfigManager : IDisposable
             var json = File.ReadAllText(_configPath);
             var loaded = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? new AppConfig();
             loaded.Rules = [.. loaded.Rules.OrderBy(r => r.Priority)];
-            // A missing or hand-blanked section reads as "configured, disabled" rather than crashing
-            // every consumer.
-            loaded.Mqtt ??= new MqttSettings();
             _config = loaded;
             // The file parsed, so the next failure is news again. This is the ONE place every successful
             // load flows through — the constructor, the debounce tick, SaveAndReload's read-back and the
@@ -551,70 +547,6 @@ public sealed class ConfigManager : IDisposable
         },
         "Failed to save the Settings window rect");
 
-    /// <summary>Persists the whole <c>mqtt</c> section; a no-op when nothing changed. The reload it
-    /// raises reports <see cref="ConfigReloadedEventArgs.AffectsNetwork"/> false — see
-    /// <see cref="NonNetworkProperties"/> — so a broker edit cannot move a VM's switch.</summary>
-    public void SaveMqttSettings(MqttSettings settings)
-    {
-        ArgumentNullException.ThrowIfNull(settings);
-        var copy = settings.Copy();
-
-        SaveAndReload(
-            () =>
-            {
-                if (MqttEqual(copy, _config.Mqtt))
-                {
-                    _logger.LogInformation("SaveMqttSettings: unchanged — skipping.");
-                    return null;
-                }
-
-                return new SaveRequest(
-                    With(mqtt: copy),
-                    $"MQTT settings saved to {_configPath} (enabled={copy.Enabled})");
-            },
-            "Failed to save the MQTT settings");
-    }
-
-    /// <summary>Records the transport and port the broker last answered on, so the next start reaches
-    /// it without a sweep. State the connection writes back, not something the user set.</summary>
-    public void RememberMqttEndpoint(MqttEndpointMemory endpoint)
-    {
-        ArgumentNullException.ThrowIfNull(endpoint);
-
-        SaveAndReload(
-            () =>
-            {
-                if (Equals(_config.Mqtt?.LastGoodEndpoint, endpoint)) return null;
-
-                var updated = (_config.Mqtt ?? new MqttSettings()).Copy();
-                updated.LastGoodEndpoint = endpoint;
-
-                return new SaveRequest(
-                    With(mqtt: updated),
-                    $"MQTT endpoint {endpoint.Transport}:{endpoint.Port} remembered in {_configPath}");
-            },
-            "Failed to remember the MQTT endpoint");
-    }
-
-    /// <summary>Value equality of two MQTT sections — used to skip a redundant write.</summary>
-    private static bool MqttEqual(MqttSettings a, MqttSettings? b) =>
-        b is not null
-        && a.Enabled == b.Enabled
-        && a.Port == b.Port
-        && a.Transport == b.Transport
-        && a.UseTls == b.UseTls
-        && a.PublishNetwork == b.PublishNetwork
-        && a.PublishVmState == b.PublishVmState
-        && a.PublishVmDiagnostics == b.PublishVmDiagnostics
-        && a.PublishVmMetrics == b.PublishVmMetrics
-        && string.Equals(a.Host, b.Host, StringComparison.Ordinal)
-        && string.Equals(a.Username, b.Username, StringComparison.Ordinal)
-        && string.Equals(a.Password, b.Password, StringComparison.Ordinal)
-        && string.Equals(a.DiscoveryPrefix, b.DiscoveryPrefix, StringComparison.Ordinal)
-        && string.Equals(a.DeviceName, b.DeviceName, StringComparison.Ordinal)
-        && string.Equals(a.NodeId, b.NodeId, StringComparison.Ordinal)
-        && Equals(a.LastGoodEndpoint, b.LastGoodEndpoint);
-
     // ── "Does this reload matter to the network?" (issue #49) ──────────────────────────────────────
 
     /// <summary>
@@ -648,7 +580,6 @@ public sealed class ConfigManager : IDisposable
         "settingsWindowY",
         "settingsWindowWidth",
         "settingsWindowHeight",
-        "mqtt",                // the broker/entity settings — read by MqttService only
     ];
 
     /// <summary>
@@ -786,18 +717,13 @@ public sealed class ConfigManager : IDisposable
         FallbackAction? fallback = null,
         List<AdapterNameOverride>? adapterNames = null,
         LogLevel? logLevel = null,
-        WindowRect? settingsWindowRect = null,
-        MqttSettings? mqtt = null) => new()
+        WindowRect? settingsWindowRect = null) => new()
         {
             VirtualMachines = vms          ?? _config.VirtualMachines,
             Rules           = rules        ?? _config.Rules,
             Fallback        = fallback     ?? _config.Fallback,
             AdapterNames    = adapterNames ?? _config.AdapterNames,
             LogLevel        = logLevel     ?? _config.LogLevel,
-
-            // Same rule as the window rect below, and the same cost for getting it wrong: omit this
-            // and every unrelated mutator writes the whole MQTT section back as null.
-            Mqtt            = mqtt         ?? _config.Mqtt ?? new MqttSettings(),
 
             // The Settings window rect (issue #31) MUST be carried through here like every other field:
             // this method builds the object that is serialised over config.json wholesale, so a field it

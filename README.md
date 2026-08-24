@@ -179,8 +179,7 @@ Right-click the tray icon → **Settings…**. Seven sections in a sidebar; ever
 | **Managed VMs** | The VMs this app looks after: add or remove one, the NIC name each is reconnected through, and an optional action (pause / save / shutdown, after a configurable delay) when the bridged network is lost |
 | **Network** | The rules editor — add, edit, remove and re-prioritise rules; **Add current network** captures the live adapter's MAC and subnet in one step; the fallback switch and target VMs; the transient per-VM switch override |
 | **Adapters** | Rename a physical adapter. Note this renames the adapter's **description** (what Device Manager, Hyper-V Manager and this app show) — not its Windows connection name/alias. Renaming briefly drops that adapter's connection; only real physical NICs are listed, and a rename can be reset to the factory name |
-| **Home Assistant** | The MQTT broker, its credentials and a connection test; the device name and device ID; and the four publish groups — host network, VM state and controls, VM diagnostics, VM metrics |
-| **Maintenance** | Open `config.json`, open any of the four log files or the logs folder, reload the config from disk (a reload that can't parse says so and changes nothing), re-check the network, repair host networking (for the "host offline but VM online" duplicate-vNIC state after a dock cycle), check for updates |
+| **Maintenance** | Open `config.json`, open any of the three log files or the logs folder, reload the config from disk (a reload that can't parse says so and changes nothing), re-check the network, repair host networking (for the "host offline but VM online" duplicate-vNIC state after a dock cycle), check for updates |
 | **About** | The same brand/about content as the About window, embedded |
 
 ---
@@ -233,47 +232,9 @@ Everything below is the annotated **reference** for the full format — copy fro
   "fallback": {
     "virtualSwitch": "Default Switch",     // Used when no rule matches
     "targetVms":     ["MyVM"]
-  },
-  "mqtt": {
-    "enabled":          true,              // false (the default) stands the whole integration down
-    "host":             "homeassistant.lan",
-    "port":             1883,              // omit to let the app find the port and transport
-    "transport":        "Auto",            // "Auto" | "Tcp" | "WebSocket"
-    "useTls":           false,
-    "username":         "hvmt",
-    "password":         "…",               // plain text, beside the rest of the configuration
-    "discoveryPrefix":  "homeassistant",   // blank uses Home Assistant's own default
-    "deviceName":       "Hyper-V host",    // blank derives one from the machine name
-    "nodeId":           "",                // blank derives one from the machine name
-    "publishNetwork":       true,          // host network sensors + the re-check/repair buttons
-    "publishVmState":       true,          // per-VM state + the power / on-off / override controls
-    "publishVmDiagnostics": true,          // per-VM switch, IP, uptime, last operation
-    "publishVmMetrics":     false          // CPU / memory / VHD; see the caveat below
   }
 }
 ```
-
-### Home Assistant over MQTT
-
-With `mqtt.enabled` set, the app publishes the host network's state and each managed VM's state to a
-single Home Assistant device via MQTT discovery, and accepts commands back: re-check network, repair
-host networking, per-VM power, a per-VM on/off switch, and a per-VM switch override over the switches
-the rules name. **Every command is held to the same state rule the dashboard's own buttons are** — a
-verb the VM's current state does not allow is refused and logged, never attempted.
-
-**Everything is edited from Settings → Home Assistant** — the broker, the credentials, a connection
-test, the device ID and the four publish groups. Switching a group off empties its entities' retained
-discovery, so they leave Home Assistant rather than staying there permanently unavailable; the same
-applies to the whole integration when `enabled` is turned off. Changing the device ID or the discovery
-prefix clears the old identity's retained topics first, for the same reason.
-
-**`publishVmMetrics` is the one group that is off by default, and turning it on has a cost.** CPU,
-memory and VHD only flow while the app holds a 2.5 s WMI polling loop, which it otherwise never runs
-while idle. The subscription is held only while the toggle is on and the broker session is live, and
-released the moment either stops being true. The other three groups publish state the app already
-holds, so they cost nothing extra and default on.
-
-The password is stored in plain text. Everything MQTT-related is logged to `mqtt.log`.
 
 The app also writes a few keys of its own into the same file — `adapterNames` (the saved original
 descriptions behind the adapter-rename Reset) and `settingsWindow*` (the Settings window's last
@@ -306,11 +267,8 @@ HyperVManagerTray/
 │  ├─ StartupManager.cs        "run at startup" scheduled task (schtasks)
 │  ├─ UpdateChecker.cs         GitHub release check behind the update badge
 │  ├─ ProcessRunner.cs         shared process-spawning helper (timeout, stream capture)
-│  ├─ MqttService.cs           the live Home Assistant integration: connection, events, commands
-│  ├─ MqttEntitySet.cs         the published entities and their command handlers (pure)
-│  ├─ MqttStateCache.cs        the picture the MQTT channels publish from (pure)
-│  └─ FileLogger.cs            category-routing ILogger file sink (switcher/vm-power/ui/mqtt logs)
-├─ Models/                  POCOs: AppConfig, MqttSettings, NetworkRule, VmTarget, VmStatus,
+│  └─ FileLogger.cs            category-routing ILogger file sink (switcher/vm-power/ui logs)
+├─ Models/                  POCOs: AppConfig, NetworkRule, VmTarget, VmStatus,
 │                           DiscoveredVm, VmOperation
 ├─ UI/                      DashboardWindow (Mica popup + VM cards), SettingsWindow (sidebar + editors),
 │                           TrayMenu, RenameAdapterWindow + AdapterRenameFlow, shared action classes
@@ -359,9 +317,8 @@ Every third-party package the app references (`HyperVManagerTray.csproj`):
 | [H.NotifyIcon.WinUI](https://github.com/HavenDV/H.NotifyIcon) | 2.4.1 | HavenDV | System-tray icon + native context menu for WinUI 3 | MIT |
 | [System.Drawing.Common](https://www.nuget.org/packages/System.Drawing.Common) | 10.0.8 | Microsoft | Renders the tray `.ico` at runtime | MIT |
 | [Microsoft.Extensions.Logging](https://www.nuget.org/packages/Microsoft.Extensions.Logging) | 10.0.8 | Microsoft | Logging abstraction the whole app codes against; the sink behind it is NLog | MIT |
-| [NLog](https://nlog-project.org/) | 6.1.4 | Jarek Kowalski, Kim Christensen, Julian Verdurmen (NLog Project) | File sink behind the logging abstraction — writes `switcher.log` / `vm-power.log` / `ui.log` / `mqtt.log` and rotates them at 2 MB (issue #55) | BSD-3-Clause² |
+| [NLog](https://nlog-project.org/) | 6.1.4 | Jarek Kowalski, Kim Christensen, Julian Verdurmen (NLog Project) | File sink behind the logging abstraction — writes `switcher.log` / `vm-power.log` / `ui.log` and rotates them at 2 MB (issue #55) | BSD-3-Clause² |
 | [System.Management](https://www.nuget.org/packages/System.Management) | 10.0.8 | Microsoft | WMI access (`root\virtualization\v2`) for VM status/power and switch binding — replaced the earlier PowerShell path | MIT |
-| [MQTTnet](https://github.com/dotnet/MQTTnet) | 5.2.0.1603 | The MQTTnet Contributors (.NET Foundation) | The broker client behind the Home Assistant integration — pulled in transitively by `ZeroZero.Mqtt` (issue #75) | MIT |
 
 ¹ The NuGet packages ship under the Microsoft Software License Terms; the Windows App SDK
 *source* is MIT on [GitHub](https://github.com/microsoft/WindowsAppSDK).
@@ -372,8 +329,7 @@ the NLog name to endorse this app; the full text is at
 [LICENSE.txt](https://github.com/NLog/NLog/blob/master/LICENSE.txt).
 
 The **non-Microsoft** runtime dependencies are **H.NotifyIcon.WinUI** (the tray icon — used the same
-way as in the sibling ChargeKeeper app) and **MQTTnet** (the broker client, reached only through
-`ZeroZero.Mqtt`).
+way as in the sibling ChargeKeeper app) and **NLog** (the file sink).
 
 The test project ([`Tests/HyperVManagerTray.Tests.csproj`](Tests/HyperVManagerTray.Tests.csproj))
 additionally uses, at **test time only** (nothing ships in the app):
@@ -386,21 +342,16 @@ additionally uses, at **test time only** (nothing ships in the app):
 
 ## Shared components
 
-Four projects come from [0z0-shared](https://github.com/0z00z0/0z0-shared), the shared components
-library used across ZeroZero Software apps, referenced as sibling-folder `ProjectReference`s (no
+One project comes from [0z0-shared](https://github.com/0z00z0/0z0-shared), the shared components
+library used across ZeroZero Software apps, referenced as a sibling-folder `ProjectReference` (no
 NuGet package yet):
 
 | Project | What it provides |
 |---|---|
 | `ZeroZero.Brand.WinUI` | The **About** window (`BrandAboutWindow`) |
-| `ZeroZero.Mqtt` | The broker connection: transport sweep, backoff, publish channels, command targets, credential store |
-| `ZeroZero.Mqtt.HomeAssistant` | The Home Assistant binding: the entity model, discovery payloads, availability, retained-entity eviction |
-| `ZeroZero.Mqtt.WinUI` | The MQTT settings panel embedded in **Settings → Home Assistant** |
 
-This repo therefore carries the entity set and the wiring, and no protocol or discovery code of its
-own. Local builds resolve the library as the sibling `..\0z0-shared` folder (`..\..\0z0-shared` from
-the test project); CI checks the repo out into a workspace subfolder and points the
-`ZeroZeroSharedDir` MSBuild property at it (see
+Local builds resolve the library as the sibling `..\0z0-shared` folder; CI checks the repo out into a
+workspace subfolder and points the `ZeroZeroSharedDir` MSBuild property at it (see
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
 ## Credits & acknowledgements
@@ -443,11 +394,10 @@ Logs are written to `%APPDATA%\HyperVManagerTray\`, split by concern:
 | `switcher.log` | Switch changes, rule evaluation, network events, errors — the catch-all |
 | `vm-power.log` | A begin + outcome audit line for every VM power action, with its origin |
 | `ui.log` | Tray-menu commands, window open/close, rename-flow events, and interactive-path latency |
-| `mqtt.log` | Broker connection and retries, published discovery, and every command from Home Assistant — including the ones the state gate refused |
 
-One setting governs all four: the log level in **Settings → General** (or `logLevel` in
+One setting governs all three: the log level in **Settings → General** (or `logLevel` in
 `config.json`); `None` silences them, and a change applies immediately — no restart. A crash
-additionally writes `crash.log` in the same folder. All four are openable from
+additionally writes `crash.log` in the same folder. All of them are reachable from
 **Settings → Maintenance**.
 
 **Rotation** (issue #55). Each log rotates at **2 MB**, keeping **5** archives beside it

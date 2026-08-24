@@ -6,13 +6,15 @@ using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Models;
 using HyperVManagerTray.Services;
 using Xunit;
-using ZeroZero.Mqtt.HomeAssistant;
 
 namespace HyperVManagerTray.Tests;
 
 /// <summary>The boundary between text the app shows a person and text it hands to a machine. Every test
 /// drives real production code under <c>nb-NO</c> and asserts the machine-readable form did not move.
-/// What this can and cannot prove: <c>docs/mqtt-integration.md</c>.</summary>
+///
+/// <para>Only the FORMATTING pins are provable here: dropping the pinned culture from a format call
+/// fails a test, dropping it from an int, long or <c>TimeSpan</c> parse does not — none of those three
+/// is culture-sensitive for the inputs the app hands them.</para></summary>
 public class CultureBoundaryTests
 {
     /// <summary>A locale with a comma decimal separator, which turns "3.5" into "3,5" the moment a
@@ -125,45 +127,10 @@ public class CultureBoundaryTests
     public void ACidrPrefix_ValidatesTheSameUnderACommaLocale(string cidr, bool expected) =>
         InCulture(CommaDecimalLocale, () => Assert.Equal(expected, SettingsOptions.IsValidCidr(cidr)));
 
-    // ── MQTT topics and payloads ────────────────────────────────────────────────
+    // ── Uptime ──────────────────────────────────────────────────────────────────
 
-    /// <summary>A topic segment is an identity, so the slug may not acquire a locale's casing rules.
-    /// <c>tr-TR</c> lower-cases 'I' to 'ı', which is not an ASCII letter and would be dropped.</summary>
-    [Theory]
-    [InlineData("DevBox",        "devbox")]
-    [InlineData("VM-01 (Test)",  "vm_01_test")]
-    [InlineData("IIS Front-End", "iis_front_end")]
-    public void AVmTopicSlug_IsTheSameInEveryLocale(string vmName, string expected)
-    {
-        Assert.Equal(expected, MqttObjectIds.Slug(vmName));
-        InCulture(CommaDecimalLocale, () => Assert.Equal(expected, MqttObjectIds.Slug(vmName)));
-        InCulture("tr-TR",            () => Assert.Equal(expected, MqttObjectIds.Slug(vmName)));
-    }
-
-    /// <summary>Home Assistant parses a numeric sensor state as a JSON number; "1536,5" is not one, and
-    /// the entity goes unavailable.</summary>
-    [Fact]
-    public void NumericMqttPayloads_UseADotUnderACommaLocale() => InCulture(CommaDecimalLocale, () =>
-    {
-        var set = BuildEntitySet(new VmStatus
-        {
-            Name        = "DevBox",
-            State       = "Running",
-            Switch      = "Bridged",
-            Cpu         = 7,
-            MemAssigned = (long)(1536.5 * 1024 * 1024),
-            MemMax      = 8L * 1024 * 1024 * 1024,
-            VhdBytes    = (long)(64.25 * 1024 * 1024 * 1024),
-            Uptime      = "1.03:14:00",
-        });
-
-        Assert.Equal("7",     Payload(set, "vm_devbox_cpu"));
-        Assert.Equal("1536.5", Payload(set, "vm_devbox_memory"));
-        Assert.Equal("64.25",  Payload(set, "vm_devbox_vhd"));
-    });
-
-    /// <summary>Uptime is published as a sensor state as well as shown on the dashboard card, so its
-    /// wording is a protocol value and may not drift with the machine's locale.</summary>
+    /// <summary>Uptime is rendered from a stored <c>TimeSpan</c> string onto the dashboard card, so its
+    /// wording may not drift with the machine's locale.</summary>
     [Theory]
     [InlineData("00:47:00",   "47m")]
     [InlineData("03:14:00",   "3h 14m")]
@@ -175,7 +142,7 @@ public class CultureBoundaryTests
         InCulture(CommaDecimalLocale, () => Assert.Equal(expected, UptimeFormatter.Format(status)));
     }
 
-    /// <summary>The full round trip: WMI milliseconds → the stored string → the published text. The
+    /// <summary>The full round trip: WMI milliseconds → the stored string → the displayed text. The
     /// read must match <c>TimeSpan.ToString()</c>'s form, not the machine's time separators.</summary>
     [Fact]
     public void UptimeSurvivesTheRoundTripUnderACommaLocale() => InCulture(CommaDecimalLocale, () =>
@@ -242,27 +209,4 @@ public class CultureBoundaryTests
         Assert.True(File.Exists(path), $"'{path}' not found — fix this test's path, don't skip it.");
         return File.ReadAllText(path);
     }
-
-    private static HaEntitySet BuildEntitySet(VmStatus status)
-    {
-        var state = new MqttStateCache();
-        state.SetVms([status]);
-
-        return MqttEntitySet.Build(new MqttEntitySpec
-        {
-            VmNames              = [status.Name],
-            RuleSwitches         = ["Bridged"],
-            State                = state,
-            VmIp                 = _ => null,
-            PublishMetrics       = () => true,
-            ReCheckNetwork       = _ => Task.CompletedTask,
-            RepairHostNetworking = _ => Task.CompletedTask,
-            Power                = (_, _, _) => Task.CompletedTask,
-            OverrideSwitch       = (_, _, _) => Task.CompletedTask,
-            Refuse               = _ => { },
-        });
-    }
-
-    private static string? Payload(HaEntitySet set, string objectId) =>
-        set.All.Single(e => e.ObjectId == objectId).Payload();
 }

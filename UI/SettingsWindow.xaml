@@ -55,9 +55,6 @@
             <NavigationViewItem Content="Adapters" Tag="Adapters">
                 <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/adapters.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
             </NavigationViewItem>
-            <NavigationViewItem Content="Home Assistant" Tag="Mqtt">
-                <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/mqtt.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
-            </NavigationViewItem>
             <NavigationViewItem Content="Maintenance" Tag="Maintenance">
                 <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/maintenance.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
             </NavigationViewItem>
@@ -98,7 +95,6 @@
                 <StackPanel x:Name="VmsPanel"         Spacing="10" Visibility="Collapsed"/>
                 <StackPanel x:Name="NetworkPanel"     Spacing="10" Visibility="Collapsed"/>
                 <StackPanel x:Name="AdaptersPanel"    Spacing="10" Visibility="Collapsed"/>
-                <StackPanel x:Name="MqttPanel"        Spacing="10" Visibility="Collapsed"/>
                 <StackPanel x:Name="MaintenancePanel" Spacing="10" Visibility="Collapsed"/>
                 <StackPanel x:Name="AboutPanel"       Spacing="10" Visibility="Collapsed"/>
             </Grid>
