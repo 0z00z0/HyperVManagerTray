@@ -5,10 +5,10 @@ namespace HyperVManagerTray.Helpers;
 /// <summary>
 /// Single source of truth for the app's <see cref="AboutInfo"/> — name, version, description, repo URL
 /// and the external-libraries credits list. Both the tray "About…" window and the Settings → About
-/// window build their <see cref="BrandAboutOptions"/> from this, so the six-entry credits list (a
-/// maintenance trap that had already drifted between the two call sites) lives in exactly one place
-/// (cleanup 10). Keep this list in sync with the csproj package references and the README "External
-/// libraries" table.
+/// window build their <see cref="BrandAboutOptions"/> from this, so the credits list (a maintenance
+/// trap that had already drifted between the two call sites) lives in exactly one place (cleanup 10).
+/// Keep this list in sync with the csproj package references and the README "External libraries"
+/// table. <c>Tests\AboutCreditsTests.cs</c> fails if it drifts from the csproj's PackageReferences.
 /// </summary>
 internal static class AppAbout
 {
@@ -30,17 +30,20 @@ internal static class AppAbout
         Version     = AppInfo.Version,
         Description = Description,
         RepoUrl     = RepoUrl,
-        // Every third-party runtime package the app references. H.NotifyIcon.WinUI is the only
-        // non-Microsoft dependency; the Microsoft packages ship under the Microsoft Software Licence
-        // Terms (the WinAppSDK *source* is MIT on GitHub).
+        // Every third-party runtime package the app references. H.NotifyIcon.WinUI, NLog and
+        // TaskScheduler are the non-Microsoft dependencies; the Microsoft packages ship under the
+        // Microsoft Software Licence Terms (the WinAppSDK *source* is MIT on GitHub). Licences are
+        // taken from each package's own .nuspec <license> expression, not from memory.
         ExternalLibraries =
         [
             new ExternalLibrary("Microsoft.WindowsAppSDK", "Microsoft", "WinUI 3 framework (windowing, XAML, Mica)", "MS-EULA", "https://github.com/microsoft/WindowsAppSDK"),
             new ExternalLibrary("Microsoft.Windows.SDK.BuildTools", "Microsoft", "Windows SDK build tooling for the App SDK", "MS-EULA", "https://www.nuget.org/packages/Microsoft.Windows.SDK.BuildTools"),
             new ExternalLibrary("H.NotifyIcon.WinUI", "HavenDV", "System-tray icon + native context menu for WinUI 3", "MIT", "https://github.com/HavenDV/H.NotifyIcon"),
             new ExternalLibrary("System.Drawing.Common", "Microsoft", "Renders the tray .ico at runtime", "MIT", "https://www.nuget.org/packages/System.Drawing.Common"),
-            new ExternalLibrary("Microsoft.Extensions.Logging", "Microsoft", "Logging abstraction; output goes to a small custom file sink", "MIT", "https://www.nuget.org/packages/Microsoft.Extensions.Logging"),
+            new ExternalLibrary("Microsoft.Extensions.Logging", "Microsoft", "Logging abstraction; output goes to the NLog file sink", "MIT", "https://www.nuget.org/packages/Microsoft.Extensions.Logging"),
+            new ExternalLibrary("NLog", "NLog Project", "File sink behind the logging abstraction, with log rotation", "BSD-3-Clause", "https://nlog-project.org/"),
             new ExternalLibrary("System.Management", "Microsoft", "WMI access (root\\virtualization\\v2) for VM status/power", "MIT", "https://www.nuget.org/packages/System.Management"),
+            new ExternalLibrary("TaskScheduler", "David Hall", "Typed Task Scheduler API behind the logon-at-startup task", "MIT", "https://github.com/dahall/taskscheduler"),
         ],
     };
 }

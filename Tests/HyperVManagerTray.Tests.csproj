@@ -113,6 +113,11 @@
          is deliberately NOT linked. -->
     <Compile Include="..\Helpers\StartupTaskDefinition.cs" Link="Linked\StartupTaskDefinition.cs" />
     <Compile Include="..\Helpers\StartupTaskRepair.cs"     Link="Linked\StartupTaskRepair.cs" />
+    <!-- The About credits list, so AboutCreditsTests can assert against the REAL
+         AppAbout.CreateInfo() rather than a copy of it parsed out of the source. Pure data — its
+         only dependencies are the linked AppInfo.cs and ZeroZero.Brand.Core's records below, which
+         are plain net10.0 types with no WinUI and no package references of their own. -->
+    <Compile Include="..\Helpers\AppAbout.cs"         Link="Linked\AppAbout.cs" />
     <Compile Include="..\Models\AppConfig.cs"         Link="Linked\AppConfig.cs" />
     <Compile Include="..\Models\NetworkRule.cs"       Link="Linked\NetworkRule.cs" />
     <Compile Include="..\Models\VmTarget.cs"          Link="Linked\VmTarget.cs" />
@@ -126,6 +131,19 @@
     <Content Include="..\config.json" Link="ShippedConfig\config.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+  </ItemGroup>
+
+  <!-- AboutInfo / ExternalLibrary, required by the linked AppAbout.cs. ZeroZero.Brand.Core targets
+       plain net10.0 and references no packages, so this does NOT drag the Windows App SDK runtime
+       into the test assembly the way ZeroZero.Brand.WinUI would; the WinUI project stays referenced
+       by the app alone. Resolved the same way as the app's reference — the sibling 0z0-shared
+       folder locally, $(ZeroZeroSharedDir) in CI, which sets it job-wide so the test step sees it.
+       One level deeper than the app's default, since this project sits under Tests\. -->
+  <PropertyGroup>
+    <ZeroZeroSharedDir Condition="'$(ZeroZeroSharedDir)' == ''">..\..\0z0-shared</ZeroZeroSharedDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Brand.Core\ZeroZero.Brand.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>

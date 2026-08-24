@@ -31,6 +31,11 @@
     <Copyright>Copyright © 2026 ZeroZero Software</Copyright>
     <RepositoryUrl>https://github.com/0z00z0/HyperVManagerTray</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <!-- Assembly-level neutral language, matching 0z0-shared's repo-wide Directory.Build.props. It
+         stamps NeutralResourcesLanguageAttribute("en-GB") on the assembly, which describes the
+         language the built-in strings are written in; it does not select a formatting culture, so
+         InvariantGlobalization below and the CurrentCulture the UI formats with are untouched. -->
+    <NeutralLanguage>en-GB</NeutralLanguage>
 
     <!-- Must stay OFF: invariant mode makes EVERY Task Scheduler write throw, and pins the UI's
          formatting to the invariant culture. Machine-readable text pins InvariantCulture at each

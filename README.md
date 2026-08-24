@@ -319,6 +319,7 @@ Every third-party package the app references (`HyperVManagerTray.csproj`):
 | [Microsoft.Extensions.Logging](https://www.nuget.org/packages/Microsoft.Extensions.Logging) | 10.0.8 | Microsoft | Logging abstraction the whole app codes against; the sink behind it is NLog | MIT |
 | [NLog](https://nlog-project.org/) | 6.1.4 | Jarek Kowalski, Kim Christensen, Julian Verdurmen (NLog Project) | File sink behind the logging abstraction — writes `switcher.log` / `vm-power.log` / `ui.log` and rotates them at 2 MB (issue #55) | BSD-3-Clause² |
 | [System.Management](https://www.nuget.org/packages/System.Management) | 10.0.8 | Microsoft | WMI access (`root\virtualization\v2`) for VM status/power and switch binding — replaced the earlier PowerShell path | MIT |
+| [TaskScheduler](https://github.com/dahall/taskscheduler) | 2.12.2 | David Hall | Typed Task Scheduler API behind `Services\StartupManager.cs` — `schtasks /Create` cannot set the battery flags that stopped the logon task starting the app on battery (issue #61) | MIT |
 
 ¹ The NuGet packages ship under the Microsoft Software License Terms; the Windows App SDK
 *source* is MIT on [GitHub](https://github.com/microsoft/WindowsAppSDK).
@@ -329,16 +330,18 @@ the NLog name to endorse this app; the full text is at
 [LICENSE.txt](https://github.com/NLog/NLog/blob/master/LICENSE.txt).
 
 The **non-Microsoft** runtime dependencies are **H.NotifyIcon.WinUI** (the tray icon — used the same
-way as in the sibling ChargeKeeper app) and **NLog** (the file sink).
+way as in the sibling ChargeKeeper app), **NLog** (the file sink) and **TaskScheduler** (the logon
+task). The same list is credited in the About window; `Tests\AboutCreditsTests.cs` fails if this
+table's source of truth — the csproj's `PackageReference` items — gains a package the credits miss.
 
 The test project ([`Tests/HyperVManagerTray.Tests.csproj`](Tests/HyperVManagerTray.Tests.csproj))
 additionally uses, at **test time only** (nothing ships in the app):
 
 | Name | Version | Author / Publisher | Purpose | License |
 |---|---|---|---|---|
-| [xunit](https://github.com/xunit/xunit) | 2.9.2 | .NET Foundation & contributors | Unit-test framework | Apache-2.0 |
-| [xunit.runner.visualstudio](https://github.com/xunit/visualstudio.xunit) | 2.8.2 | .NET Foundation & contributors | VSTest adapter so `dotnet test` discovers xUnit tests | Apache-2.0 |
-| [Microsoft.NET.Test.Sdk](https://github.com/microsoft/vstest) | 17.11.1 | Microsoft | .NET test host / VSTest platform | MIT |
+| [xunit](https://github.com/xunit/xunit) | 2.9.3 | .NET Foundation & contributors | Unit-test framework | Apache-2.0 |
+| [xunit.runner.visualstudio](https://github.com/xunit/visualstudio.xunit) | 3.1.5 | .NET Foundation & contributors | VSTest adapter so `dotnet test` discovers xUnit tests | Apache-2.0 |
+| [Microsoft.NET.Test.Sdk](https://github.com/microsoft/vstest) | 18.8.1 | Microsoft | .NET test host / VSTest platform | MIT |
 
 ## Shared components
 
