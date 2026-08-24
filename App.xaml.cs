@@ -890,7 +890,8 @@ public partial class App : Application
         // they click it, so the default suppress-when-visible would swallow the report.
         _dashboard = new DashboardWindow(_config!, _monitor!, _hyperV!, _vm!,
                                          (title, message, isError) =>
-                                             ShowBalloon(title, message, isError, suppressWhenDashboardVisible: false));
+                                             ShowBalloon(title, message, isError, suppressWhenDashboardVisible: false),
+                                         _menu!.ShowSettings);   // issue #79 — same singleton the tray menu opens
         _dashboard.Closed += (_, _) => _dashboard = null;
         if (prime) _dashboard.Prime();
     }

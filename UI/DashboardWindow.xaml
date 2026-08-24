@@ -40,12 +40,41 @@
         </Grid.Resources>
         <StackPanel Spacing="14">
 
-            <!-- Title. Text is set in the constructor from AppInfo.Name (issue #42): the literal
-                 "Hyper-V Manager" here was EXACTLY Microsoft's MMC snap-in name, so the popup claimed
-                 to be a tool it is not. AppInfo.Name is the one source of truth for the product name. -->
-            <TextBlock x:Name="TitleText"
-                       FontSize="13" FontWeight="SemiBold"
-                       Foreground="{ThemeResource TextFillColorPrimaryBrush}"/>
+            <!-- Title row: TitleText fills the row, the settings cog docks top-right (issue #79,
+                 matching ChargeKeeper's dashboard). Text is set in the constructor from AppInfo.Name
+                 (issue #42): the literal "Hyper-V Manager" here was EXACTLY Microsoft's MMC snap-in
+                 name, so the popup claimed to be a tool it is not. AppInfo.Name is the one source of
+                 truth for the product name. -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock x:Name="TitleText"
+                           Grid.Column="0"
+                           FontSize="13" FontWeight="SemiBold"
+                           VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorPrimaryBrush}"/>
+
+                <!-- Segoe Fluent Icons' system Settings glyph, same as ChargeKeeper's cog — no SVG
+                     asset needed, and the existing Assets/nav/*.svg icons are two-tone and coloured
+                     for the Settings NavigationView list, not this themed corner button. -->
+                <Button Grid.Column="1"
+                        x:Name="SettingsButton"
+                        Width="28" Height="28"
+                        Padding="0"
+                        CornerRadius="4"
+                        BorderThickness="0"
+                        Background="{ThemeResource ControlFillColorDefaultBrush}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        VerticalAlignment="Center"
+                        ToolTipService.ToolTip="Settings"
+                        AutomationProperties.Name="Settings"
+                        Click="OnSettingsButton">
+                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE713;" FontSize="14"/>
+                </Button>
+            </Grid>
 
             <!-- HOST NETWORK card -->
             <StackPanel Spacing="6">

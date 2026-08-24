@@ -47,6 +47,9 @@ public sealed partial class DashboardWindow : Window
     // channel TrayMenu/NetworkActions report through (issue #37), and passed with the same
     // suppressWhenDashboardVisible:false semantics. See ConnectAsync for why suppression must be off.
     private readonly Action<string, string, bool> _notify;
+    // TrayMenu.ShowSettings (issue #79) — reuses its exact singleton guard/construction path rather
+    // than opening a second SettingsWindow.
+    private readonly Action _showSettings;
 
     private IReadOnlyList<VmStatus> _latest = [];
     // In-flight/failed power-op message per VM, overlaid on the card's state label (optimistic
@@ -109,13 +112,14 @@ public sealed partial class DashboardWindow : Window
     }
 
     public DashboardWindow(ConfigManager config, NetworkMonitor monitor, HyperVManager hyperV, VmService vm,
-                           Action<string, string, bool> notify)
+                           Action<string, string, bool> notify, Action openSettings)
     {
-        _config  = config;
-        _monitor = monitor;
-        _hyperV  = hyperV;
-        _vm      = vm;
-        _notify  = notify;
+        _config       = config;
+        _monitor      = monitor;
+        _hyperV       = hyperV;
+        _vm           = vm;
+        _notify       = notify;
+        _showSettings = openSettings;
 
         InitializeComponent();
         TitleText.Text = AppInfo.Name;   // issue #42 — never the MMC snap-in's name
@@ -161,6 +165,13 @@ public sealed partial class DashboardWindow : Window
         _hiddenAtUtc  = DateTime.UtcNow;
         _hiddenCursor = NativeMethods.GetCursorPosition();
         AppWindow.Hide();
+    }
+
+    /// <summary>Settings cog (issue #79) — hands off to TrayMenu.ShowSettings's own singleton guard.</summary>
+    private void OnSettingsButton(object sender, RoutedEventArgs e)
+    {
+        UiActivityLog.Logger.LogInformation("Dashboard: Settings");
+        _showSettings();
     }
 
     private void SubscribeMetricsIfNeeded()

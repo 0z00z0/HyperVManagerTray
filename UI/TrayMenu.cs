@@ -270,9 +270,11 @@ internal sealed class TrayMenu
 
     /// <summary>
     /// Opens the consolidated Settings window (issue #18) — a reused singleton, mirroring the About
-    /// window, so repeated clicks re-activate the one window instead of stacking duplicates.
+    /// window, so repeated clicks re-activate the one window instead of stacking duplicates. Public
+    /// so the dashboard's own settings cog (issue #79) reuses this exact guard/construction path
+    /// instead of a second one.
     /// </summary>
-    private void ShowSettings()
+    public void ShowSettings()
     {
         _ui.TryEnqueue(() =>
         {
