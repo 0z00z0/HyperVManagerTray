@@ -20,7 +20,8 @@ internal static class AppAbout
         "Automatically connects Hyper-V VMs to the right virtual switch when the host changes networks. " +
         "Click the tray icon for a dashboard with VM power and state.";
 
-    private const string RepoUrl = "https://github.com/0z00z0/HyperVManagerTray";
+    /// <summary>The repository, also published as the MQTT device's configuration URL (issue #75).</summary>
+    public const string RepoUrl = "https://github.com/0z00z0/HyperVManagerTray";
 
     /// <summary>Builds a fresh <see cref="AboutInfo"/> (a new instance each call, so a window can't
     /// mutate a shared one).</summary>

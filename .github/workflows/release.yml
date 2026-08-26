@@ -43,7 +43,10 @@ jobs:
           fetch-depth: 0
 
       # Check out the 0z0-shared sibling so the shared ProjectReferences resolve (see the
-      # ZeroZeroSharedDir env var above). Placed in a workspace subfolder — not ..\ (outside workspace).
+      # ZeroZeroSharedDir env var above). Placed in a workspace subfolder — not ..\ (outside
+      # workspace) — and unpinned, so a release builds against the default branch. 0z0-shared is
+      # pre-1.0, where a minor bump may break the API, so a shared-side change reaches a release
+      # at a time this repo does not choose.
       - name: Checkout 0z0-shared (sibling dependency)
         uses: actions/checkout@v7
         with:

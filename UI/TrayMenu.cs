@@ -59,6 +59,11 @@ internal sealed class TrayMenu
     private readonly HyperVManager  _hyperV;
     private readonly Action<string, string, bool> _notify;
 
+    // An accessor, not the service: the broker session is composed after the tray icon is created, so a
+    // value captured in this constructor would be null for the life of the process. Null still means
+    // "not composed" — Settings renders its MQTT category without a live session rather than not at all.
+    private readonly Func<MqttService?> _mqtt;
+
     /// <summary>UI dispatcher — captured on the UI thread in the constructor.</summary>
     private readonly Microsoft.UI.Dispatching.DispatcherQueue _ui;
 
@@ -66,7 +71,8 @@ internal sealed class TrayMenu
 
     public TrayMenu(ConfigManager config, NetworkMonitor monitor, HyperVManager hyperV, VmService vm,
                     StartupManager startup, UpdateChecker updateChecker,
-                    Action onExit, Action<string, string, bool> notify)
+                    Action onExit, Action<string, string, bool> notify,
+                    Func<MqttService?> mqtt)
     {
         _config        = config;
         _monitor       = monitor;
@@ -75,6 +81,7 @@ internal sealed class TrayMenu
         _startup       = startup;
         _updateChecker = updateChecker;
         _notify        = notify;
+        _mqtt          = mqtt;
         _network       = new NetworkActions(config, monitor, hyperV, notify);
         _managedVms    = new ManagedVmActions(config, notify);
 
@@ -282,7 +289,7 @@ internal sealed class TrayMenu
 
             UiActivityLog.Logger.LogInformation("Window: Settings opened");
             _settingsWindow = new SettingsWindow(_config, _startup, _updateChecker, _monitor, _hyperV,
-                                                 _notify);
+                                                 _notify, _mqtt());
             _settingsWindow.Closed += (_, _) =>
             {
                 UiActivityLog.Logger.LogInformation("Window: Settings closed");

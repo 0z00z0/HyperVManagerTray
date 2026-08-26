@@ -85,6 +85,14 @@ public sealed class AppConfig
     /// </summary>
     public LogLevel LogLevel { get; set; } = LogLevel.Debug;
 
+    /// <summary>
+    /// MQTT publishing (issue #75). Never null in a loaded config: <c>ConfigManager.Load</c> replaces a
+    /// missing section, or one hand-edited to <c>"mqtt": null</c>, with inert defaults — so every
+    /// consumer can read it without a null check and a config written before the section existed still
+    /// loads.
+    /// </summary>
+    public MqttSection Mqtt { get; set; } = new();
+
     #region Settings window placement (issue #31)
 
     // The Settings window's last on-screen rect, in PHYSICAL SCREEN PIXELS (what AppWindow.Position /

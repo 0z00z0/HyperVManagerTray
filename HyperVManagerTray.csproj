@@ -25,7 +25,7 @@
     <Product>Hyper-V Manager Tray</Product>
     <Description>System-tray app that auto-connects a Hyper-V VM to the right virtual switch and controls VMs from a dashboard.</Description>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
-    <Version>2.6.1</Version>
+    <Version>2.7.0</Version>
     <Authors>ZeroZero Software</Authors>
     <Company>ZeroZero Software</Company>
     <Copyright>Copyright © 2026 ZeroZero Software</Copyright>
@@ -36,6 +36,10 @@
          language the built-in strings are written in; it does not select a formatting culture, so
          InvariantGlobalization below and the CurrentCulture the UI formats with are untouched. -->
     <NeutralLanguage>en-GB</NeutralLanguage>
+    <!-- The language the merged app PRI is built for. Separate from NeutralLanguage above, which stamps
+         the assembly: this one is MakePRI's default, and without it the shared MQTT module's en-GB .resw
+         is compared against en-US and warns PRI257. No library can declare it on the app's behalf. -->
+    <DefaultLanguage>en-GB</DefaultLanguage>
 
     <!-- Must stay OFF: invariant mode makes EVERY Task Scheduler write throw, and pins the UI's
          formatting to the invariant culture. Machine-readable text pins InvariantCulture at each
@@ -49,8 +53,11 @@
          StreamWriter never had (issue #55). Configured in code, not NLog.config — see
          Services\FileLogger.cs — so there is no config file for an unpackaged app to fail to find. -->
     <PackageReference Include="NLog" Version="6.1.4" />
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.1.3" />
-    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.1839" />
+    <!-- At or above 0z0-shared's pins (2.2.0 / 10.0.28000.2270). A direct reference BELOW a
+         transitive one is NU1605, an error: the shared pins are a floor a consumer must meet, not
+         one a lower local pin overrides. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.2.0" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2270" />
     <PackageReference Include="H.NotifyIcon.WinUI" Version="2.4.1" />
     <PackageReference Include="System.Drawing.Common" Version="10.0.8" />
     <PackageReference Include="System.Management" Version="10.0.8" />
@@ -63,7 +70,12 @@
   <!-- Shared ZeroZero Software branding: the About window now comes from here instead of a
        hand-rolled UI/AboutWindow. Local dev resolves it as the sibling ..\0z0-shared folder;
        CI (which only checks out this repo) overrides ZeroZeroSharedDir — set as an env var, which
-       MSBuild surfaces as this property — to point at its own checkout of the 0z0-shared repo. -->
+       MSBuild surfaces as this property — to point at its own checkout of the 0z0-shared repo.
+
+       The reference is unpinned: local builds compile whatever the sibling working tree holds, and
+       CI and releases take the 0z0-shared default branch. That library is pre-1.0, where a minor
+       bump may break the API, so a shared-side change reaches this build without warning and at a
+       time this repo does not choose. A build failing on a shared type is read there first. -->
   <PropertyGroup>
     <ZeroZeroSharedDir Condition="'$(ZeroZeroSharedDir)' == ''">..\0z0-shared</ZeroZeroSharedDir>
   </PropertyGroup>
@@ -73,6 +85,12 @@
          class library"). Strip it for this reference only — the app aggregates the self-contained
          Windows App SDK; the library just builds framework-dependent as normal. -->
     <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Brand.WinUI\ZeroZero.Brand.WinUI.csproj">
+      <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
+    </ProjectReference>
+    <!-- The shared MQTT module. One reference delivers all four assemblies: ZeroZero.Config,
+         ZeroZero.Mqtt, ZeroZero.Mqtt.Discovery and the settings panel. Same UndefineProperties
+         reason as above. -->
+    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt.WinUI\ZeroZero.Mqtt.WinUI.csproj">
       <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
     </ProjectReference>
   </ItemGroup>

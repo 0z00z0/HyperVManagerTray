@@ -345,17 +345,23 @@ additionally uses, at **test time only** (nothing ships in the app):
 
 ## Shared components
 
-One project comes from [0z0-shared](https://github.com/0z00z0/0z0-shared), the shared components
-library used across ZeroZero Software apps, referenced as a sibling-folder `ProjectReference` (no
+Two projects come from [0z0-shared](https://github.com/0z00z0/0z0-shared), the shared components
+library used across ZeroZero Software apps, referenced as sibling-folder `ProjectReference`s (no
 NuGet package yet):
 
 | Project | What it provides |
 |---|---|
 | `ZeroZero.Brand.WinUI` | The **About** window (`BrandAboutWindow`) |
+| `ZeroZero.Mqtt.WinUI` | The MQTT module — broker connection, Home Assistant discovery and the settings panel. Delivers `ZeroZero.Config`, `ZeroZero.Mqtt` and `ZeroZero.Mqtt.Discovery` with it |
 
 Local builds resolve the library as the sibling `..\0z0-shared` folder; CI checks the repo out into a
 workspace subfolder and points the `ZeroZeroSharedDir` MSBuild property at it (see
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+
+The reference is **unpinned**: local builds compile whatever the sibling working tree holds, and CI
+and releases take the 0z0-shared default branch. That library is pre-1.0, where a minor bump may
+break the API, so a shared-side change reaches this build without warning and at a time this repo
+does not choose. A build failing on a shared type is read there first.
 
 ## Credits & acknowledgements
 

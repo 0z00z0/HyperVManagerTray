@@ -29,6 +29,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Unpinned: the default branch. 0z0-shared is pre-1.0, where a minor bump may break the API,
+      # so a shared-side change reaches this build at a time this repo does not choose.
       - name: Checkout 0z0-shared (sibling dependency)
         uses: actions/checkout@v7
         with:

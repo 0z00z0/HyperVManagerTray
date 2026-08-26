@@ -12,8 +12,11 @@ public enum VmOpKind { Start, Resume, Pause, Save, Shutdown }
 /// full of <c>origin=Tray</c> lines that a reader will want to interpret, and the members are only ever
 /// rendered BY NAME into a log — never persisted, serialised or matched by ordinal — so a dead member
 /// costs nothing, while renumbering the live ones to drop it would buy nothing.</para>
+///
+/// <para><see cref="Mqtt"/> is a command from the broker (issue #75), gated through
+/// <c>VmStateUi.AllowedVerbs</c> exactly as the dashboard's own buttons are.</para>
 /// </summary>
-public enum VmOpOrigin { Tray, Dashboard, Auto }
+public enum VmOpOrigin { Tray, Dashboard, Auto, Mqtt }
 
 /// <summary>Lifecycle phase of a <see cref="VmOpKind"/>.</summary>
 public enum VmOpPhase { Requested, Running, Succeeded, Failed }

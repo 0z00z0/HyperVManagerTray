@@ -24,6 +24,7 @@ public partial class App : Application
     private HyperVManager?  _hyperV;   // switch binding / host-vNIC repair (native WMI, issue #17)
     private VmService?      _vm;       // VM status/metrics/power/IPs via WMI
     private NetworkMonitor? _monitor;
+    private MqttService?    _mqtt;     // broker session and discovery document (issue #75)
     private StartupManager  _startup = null!;
     private HttpClient?     _httpClient;
     private UpdateChecker?  _updateChecker;
@@ -128,11 +129,13 @@ public partial class App : Application
                 // _logLevelSwitch is the sole runtime gate for all three logs (issue #22).
                 b.SetMinimumLevel(LogLevel.Trace);
                 // Category-routing sink: "vm-power" → vm-power.log (issue #20), "ui" → ui.log
-                // (issue #21); everything else → switcher.log. All gated by the live switch.
+                // (issue #21), "mqtt" → mqtt.log (issue #75); everything else → switcher.log. All
+                // gated by the live switch.
                 b.AddSimpleFileLogger(AppInfo.LogFile, new Dictionary<string, string>
                 {
-                    ["vm-power"] = AppInfo.VmPowerLog,
-                    ["ui"]       = AppInfo.UiLog,
+                    ["vm-power"]              = AppInfo.VmPowerLog,
+                    ["ui"]                    = AppInfo.UiLog,
+                    [MqttService.LogCategory] = AppInfo.MqttLog,
                 }, _logLevelSwitch);
             });
 
@@ -178,6 +181,14 @@ public partial class App : Application
             bool createdDefaultConfig = ConfigMigration.MayCreateDefault(configMigration)
                                         && ConfigManager.CreateDefaultIfMissing(configPath, uiLog);
 
+            // Shared "mqtt" category logger → mqtt.log (issue #75).
+            var mqttLog = _loggerFactory.CreateLogger(MqttService.LogCategory);
+
+            // Discard the flat mqtt block an earlier build wrote, before anything can save over it and
+            // destroy it silently. Here — after the copy above has landed the file, and before the
+            // ConfigManager and its watcher exist — so the rewrite races nothing.
+            MqttLegacyRemoval.Run(configPath, mqttLog);
+
             _config  = new ConfigManager(configPath, uiLog, _logLevelSwitch);
             _hyperV  = new HyperVManager(_loggerFactory.CreateLogger<HyperVManager>());
             _vm      = new VmService(_loggerFactory.CreateLogger<VmService>(), powerLog);
@@ -219,6 +230,10 @@ public partial class App : Application
             // completely silent.
             _vm.OperationProgress += OnVmOperationFailed;
             _vm.SubscribeStateWatcher();
+
+            // Publishing to a broker (issue #75). Inert until the config's mqtt section is enabled and
+            // names a host, so a fresh install pays nothing for it beyond the construction here.
+            StartMqtt(mqttLog);
 
             // Show something immediately (caches may still be warming — PreWarmVmCacheAsync fills them).
             PostTooltipFromCaches();
@@ -380,9 +395,15 @@ public partial class App : Application
         // The tray's manual network actions report through the same balloon channel a failed apply uses
         // (issue #37). Not suppressed by a visible dashboard: unlike an automatic apply, these are direct
         // answers to something the user just clicked, and must never be swallowed.
+        //
+        // The MQTT session is handed over as an ACCESSOR, not a value: StartMqtt runs later in
+        // OnLaunched than this (the tray must appear before the broker session is composed), so a
+        // reference captured here would be null forever. Settings resolves it when the window is opened,
+        // by which time it is set.
         _menu = new TrayMenu(_config!, _monitor!, _hyperV!, _vm!, _startup, _updateChecker!, OnExit,
                              (title, message, isError) =>
-                                 ShowBalloon(title, message, isError, suppressWhenDashboardVisible: false));
+                                 ShowBalloon(title, message, isError, suppressWhenDashboardVisible: false),
+                             () => _mqtt);
         _trayIcon.ContextFlyout     = _menu.Flyout;
         _trayIcon.LeftClickCommand  = new RelayCommand(ToggleDashboard);
         _trayIcon.RightClickCommand = new RelayCommand(OnTrayRightClick);
@@ -836,6 +857,28 @@ public partial class App : Application
         catch { /* best-effort cleanup; never surface */ }
     }
 
+    /// <summary>
+    /// Composes the MQTT session alongside the other long-lived services (issue #75). Hand-rolled, like
+    /// every other service here — there is no container.
+    ///
+    /// <para>The two host-network commands run the same <see cref="NetworkActions"/> bodies the tray and
+    /// Settings use, so a remote button gets the hard-won behaviour rather than a re-derived copy. Their
+    /// outcome reports go to mqtt.log rather than to a tray balloon: the desktop has nobody waiting on
+    /// the answer.</para>
+    /// </summary>
+    private void StartMqtt(ILogger mqttLog)
+    {
+        var actions = new NetworkActions(_config!, _monitor!, _hyperV!,
+            (title, message, isError) => mqttLog.Log(isError ? LogLevel.Warning : LogLevel.Information,
+                                                     "{Title}: {Message}", title, message));
+
+        _mqtt = new MqttService(_config!, _monitor!, _vm!, _hyperV!, mqttLog, AppInfo.Version,
+                                _ => actions.ReCheckNetworkAsync(),
+                                _ => actions.RepairHostNetworkingAsync(),
+                                AppInfo.DataDir);
+        _mqtt.Start();
+    }
+
     /// <summary>Truncates <paramref name="line"/> to <paramref name="maxLen"/> chars, appending "…" if trimmed.</summary>
     private static string TruncateLine(string line, int maxLen) =>
         line.Length <= maxLen ? line : line[..(maxLen - 1)] + "…";
@@ -899,6 +942,12 @@ public partial class App : Application
         SelfHealWatchdog.MarkLegitimateExit();
         // Let the persistent dashboard actually close now (it otherwise cancels close → hide).
         if (_dashboard is not null) _dashboard.AllowClose = true;
+
+        // Detaching is synchronous here, so no event reaches a torn-down session below. The teardown it
+        // starts publishes offline and blocks for up to ~3 s, so it runs on the pool and is joined
+        // before the logger factory goes — it logs.
+        var mqttTeardown = _mqtt?.BeginDisposeAsync();
+
         _trayIcon?.Dispose();
         _iconImage?.Dispose();
         _monitor?.Dispose();
@@ -906,6 +955,7 @@ public partial class App : Application
         _config?.Dispose();
         _hyperV?.Dispose();
         _httpClient?.Dispose();
+        try { mqttTeardown?.Wait(MqttService.TeardownBudget); } catch { /* never hold the exit on it */ }
         _loggerFactory?.Dispose();
         Exit();
     }

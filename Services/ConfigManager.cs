@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Models;
 using Microsoft.Extensions.Logging;
+using ZeroZero.Mqtt;
 
 namespace HyperVManagerTray.Services;
 
@@ -153,6 +154,12 @@ public sealed class ConfigManager : IDisposable
             var json = File.ReadAllText(_configPath);
             var loaded = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? new AppConfig();
             loaded.Rules = [.. loaded.Rules.OrderBy(r => r.Priority)];
+            // A missing section deserialises to the property initialiser, but an explicit
+            // "mqtt": null (or "settings": null inside it) overwrites it with null. Repair both here,
+            // so AppConfig.Mqtt is never null downstream and a hand-blanked section reads as
+            // "configured, disabled" rather than crashing every consumer of it.
+            loaded.Mqtt ??= new MqttSection();
+            loaded.Mqtt.Settings ??= new MqttSettings();
             _config = loaded;
             // The file parsed, so the next failure is news again. This is the ONE place every successful
             // load flows through — the constructor, the debounce tick, SaveAndReload's read-back and the
@@ -547,6 +554,41 @@ public sealed class ConfigManager : IDisposable
         },
         "Failed to save the Settings window rect");
 
+    /// <summary>
+    /// Applies <paramref name="mutate"/> to the <c>mqtt</c> section and saves, writing nothing when the
+    /// section comes out unchanged. The whole read-modify-write is the module's
+    /// <c>IMqttSettingsStore.Update</c> contract: a caller holding a stale snapshot commits one field
+    /// without rolling back what a sibling changed meanwhile.
+    ///
+    /// <para><b>The snapshot is built inside the save lock, and that is the point of routing it through
+    /// a builder.</b> <paramref name="mutate"/> runs against a copy of the config the previous write
+    /// just landed, so two quick edits — the panel committing a device name while a successful connect
+    /// records its endpoint — cannot each read the same "before" and have the second silently revert the
+    /// first. See <see cref="SaveAndReload"/>'s <c>build</c> remarks for the general form and for the
+    /// case that produced the rule (issue #31).</para>
+    /// </summary>
+    public void UpdateMqtt(Action<MqttSection> mutate)
+    {
+        ArgumentNullException.ThrowIfNull(mutate);
+        SaveAndReload(
+            () =>
+            {
+                var section = _config.Mqtt.Copy();
+                mutate(section);
+                // Serialised comparison rather than a field list, for the same reason NetworkProjection
+                // serialises: a field a comparison forgets reads as unchanged and is never written.
+                if (SectionJson(section) == SectionJson(_config.Mqtt)) return null;
+
+                // Never names a value: the section carries the broker password.
+                return new SaveRequest(With(mqtt: section), $"MQTT settings saved to {_configPath}");
+            },
+            "Failed to save the MQTT settings");
+    }
+
+    /// <summary>The section as it would reach the file — the shape a change is judged on.</summary>
+    internal static string SectionJson(MqttSection section) =>
+        JsonSerializer.Serialize(section, WriteOptions);
+
     // ── "Does this reload matter to the network?" (issue #49) ──────────────────────────────────────
 
     /// <summary>
@@ -580,6 +622,7 @@ public sealed class ConfigManager : IDisposable
         "settingsWindowY",
         "settingsWindowWidth",
         "settingsWindowHeight",
+        "mqtt",                // broker settings and endpoint memory (issue #75) — read by MqttService only
     ];
 
     /// <summary>
@@ -717,6 +760,7 @@ public sealed class ConfigManager : IDisposable
         FallbackAction? fallback = null,
         List<AdapterNameOverride>? adapterNames = null,
         LogLevel? logLevel = null,
+        MqttSection? mqtt = null,
         WindowRect? settingsWindowRect = null) => new()
         {
             VirtualMachines = vms          ?? _config.VirtualMachines,
@@ -724,6 +768,9 @@ public sealed class ConfigManager : IDisposable
             Fallback        = fallback     ?? _config.Fallback,
             AdapterNames    = adapterNames ?? _config.AdapterNames,
             LogLevel        = logLevel     ?? _config.LogLevel,
+            // Carried like every other field: this method builds the object serialised over config.json
+            // wholesale, so omitting the section would blank it on every unrelated write (issue #75).
+            Mqtt            = mqtt         ?? _config.Mqtt,
 
             // The Settings window rect (issue #31) MUST be carried through here like every other field:
             // this method builds the object that is serialised over config.json wholesale, so a field it

@@ -12,6 +12,7 @@ using HyperVManagerTray.Models;
 using HyperVManagerTray.Services;
 using ZeroZero.Brand.Core;
 using ZeroZero.Brand.WinUI;
+using ZeroZero.Mqtt.WinUI;
 
 namespace HyperVManagerTray.UI;
 
@@ -20,7 +21,9 @@ namespace HyperVManagerTray.UI;
 /// category per pane item: General (run-on-startup, log level), Managed VMs (per-VM on-bridge-lost
 /// action + delay), Network (the full rules editor + editable fallback switch/target-VMs — values that
 /// were previously reachable only by hand-editing config.json), Adapters (rename a physical NIC's
-/// description), Maintenance
+/// description), MQTT (the shared <see cref="MqttSettingsPanel"/>, hosted whole — this window supplies
+/// the heading around it and the one control the panel has no counterpart for, taking the published
+/// device off the broker), Maintenance
 /// (open config/log, reload, check for updates), and About (embeds the shared
 /// <see cref="BrandAboutControl"/> content inline rather than opening a second window).
 ///
@@ -57,6 +60,18 @@ internal sealed partial class SettingsWindow : Window
     // and — per issue #47 — creating and deleting a managed VM at all).
     private readonly NetworkActions   _network;
     private readonly ManagedVmActions _managedVms;
+
+    // The broker session, or null when it was never composed. Only the MQTT category reads it, and only
+    // to build the shared panel's setup object — this window owns no MQTT vocabulary of its own.
+    private readonly MqttService? _mqtt;
+
+    // The MQTT category, built ONCE and re-added on every later rebuild rather than rebuilt with the
+    // rest. Two reasons, and both are the shared panel's own contract: Initialise may be called only
+    // once, and the panel holds the staged broker edits and the expander states, which a rebuild would
+    // throw away mid-edit. The whole section is cached, not just the panel, so nothing is ever re-parented
+    // (BuildSections clears MqttPanel, which detaches this element cleanly and leaves its children alone).
+    private UIElement?        _mqttSection;
+    private MqttSettingsPanel? _mqttSettings;
 
     // Suppresses commit handlers while controls are populated programmatically (same re-entrancy
     // guard idiom as the sibling app's settings window). One flag is safe: every Load runs
@@ -154,15 +169,21 @@ internal sealed partial class SettingsWindow : Window
     /// from, and inventing a second display vocabulary for the same events is what issue #37 spent its
     /// effort undoing.
     /// </param>
+    /// <param name="mqtt">
+    /// The live broker session, or null when it was never composed. Null renders the MQTT category as a
+    /// single explanatory card instead of the panel: a settings category that silently disappears is
+    /// harder to explain than one that says why it is empty.
+    /// </param>
     public SettingsWindow(ConfigManager config, StartupManager startup, UpdateChecker updateChecker,
                           NetworkMonitor monitor, HyperVManager hyperV,
-                          Action<string, string, bool> notify)
+                          Action<string, string, bool> notify, MqttService? mqtt)
     {
         _consumerSink  = _sectionConsumers;   // RebuildRuleCards swaps this while it builds
         _config        = config;
         _startup       = startup;
         _updateChecker = updateChecker;
         _monitor       = monitor;
+        _mqtt          = mqtt;
 
         InitializeComponent();
         Title = $"{AppInfo.Name} — Settings";
@@ -253,6 +274,10 @@ internal sealed partial class SettingsWindow : Window
         if (_startupToggle is not null) _startupToggle.Toggled         -= OnStartupToggled;
         if (_logLevelCombo is not null) _logLevelCombo.SelectionChanged -= OnLogLevelChanged;
 
+        // An in-flight broker probe outlives this window by up to its own budget, and marshalling back
+        // into a torn-down XAML tree throws. Cancel is silent before Initialise.
+        _mqttSettings?.Cancel();
+
         // NetworkChange is a static event: without this a closed window stays subscribed for the life of
         // the process, and every dock transition keeps ticking a generation nobody reads. Before the rect
         // save below, which has its own early return.
@@ -286,6 +311,11 @@ internal sealed partial class SettingsWindow : Window
 
         foreach (var (panelTag, panel) in _panels)
             panel.Visibility = panelTag == tag ? Visibility.Visible : Visibility.Collapsed;
+
+        // Coming back on screen with nothing edited: re-read only what the live connection decides, so
+        // the status rows are not showing the link as it was when the window opened. Refresh touches no
+        // store and is silent before Initialise, unlike Reload.
+        if (tag == "Mqtt") _mqttSettings?.Refresh();
     }
 
     // ── Window chrome / placement ────────────────────────────────────────────────
@@ -375,6 +405,7 @@ internal sealed partial class SettingsWindow : Window
             ["Vms"]         = VmsPanel,
             ["Network"]     = NetworkPanel,
             ["Adapters"]    = AdaptersPanel,
+            ["Mqtt"]        = MqttPanel,
             ["Maintenance"] = MaintenancePanel,
             ["About"]       = AboutPanel,
         };
@@ -390,6 +421,9 @@ internal sealed partial class SettingsWindow : Window
 
         AdaptersPanel.Children.Clear();
         AdaptersPanel.Children.Add(BuildAdaptersSection());
+
+        MqttPanel.Children.Clear();
+        MqttPanel.Children.Add(BuildMqttSection());
 
         MaintenancePanel.Children.Clear();
         MaintenancePanel.Children.Add(BuildMaintenanceSection());
@@ -1477,6 +1511,109 @@ internal sealed partial class SettingsWindow : Window
         return rows;
     }
 
+    // ── MQTT ───────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The one category this window does not draw: <see cref="MqttSettingsPanel"/> from
+    /// ZeroZero.Mqtt.WinUI renders the whole surface, and <see cref="MqttService"/> supplies everything
+    /// it needs. Only the section heading stays with the application, which is the shared panel's own
+    /// hosting recipe — it is a tall StackPanel that scrolls nothing itself and expects the page's
+    /// ScrollViewer around it.
+    ///
+    /// <para>Built once and cached (see <see cref="_mqttSection"/>). A later call re-reads the store
+    /// through <c>Reload</c>, which keeps whatever is being typed — the panel commits its broker fields
+    /// behind an Apply, so a rebuild that discarded them would lose work the user can see on screen.</para>
+    /// </summary>
+    private UIElement BuildMqttSection()
+    {
+        if (_mqttSection is { } cached)
+        {
+            // Throws before Initialise, which is why this is guarded on the panel and not on the cache.
+            _mqttSettings?.Reload();
+            return cached;
+        }
+
+        var panel = Section("MQTT");
+
+        if (_mqtt is null)
+        {
+            panel.Children.Add(Card(Description(
+                "The broker session did not start, so there is nothing to configure here. See mqtt.log "
+                + "under Maintenance for why.")));
+            _mqttSection = panel;
+            return panel;
+        }
+
+        _mqttSettings = new MqttSettingsPanel();
+        panel.Children.Add(_mqttSettings);
+        // After the panel is in the tree, and before anything else touches it: Initialise does the first
+        // read-back itself, and Reload/Revert throw until it has run.
+        _mqttSettings.Initialise(_mqtt.CreatePanelSetup());
+
+        panel.Children.Add(BuildMqttRemovalCard(_mqtt));
+
+        _mqttSection = panel;
+        return panel;
+    }
+
+    /// <summary>
+    /// The one MQTT control this window draws, in the ordinary card idiom below the hosted panel. The
+    /// shared panel switches publishing on and off, which stops the connection and leaves the retained
+    /// discovery document standing — so without this there is nothing in the app that can take the device
+    /// off the broker, and a stranded document needs an external MQTT client to clear.
+    ///
+    /// <para>App-side rather than a request to the shared panel because the wording is this app's: the
+    /// MQTT surface names no particular consumer (see <see cref="MqttPanelStrings"/>), and a removal
+    /// message is where a receiver's name would otherwise creep in.</para>
+    /// </summary>
+    private UIElement BuildMqttRemovalCard(MqttService mqtt)
+    {
+        var removeBtn = new Button { Content = "Remove the published device" };
+        removeBtn.Click += (_, _) => _ = RemovePublishedDeviceAsync(mqtt, removeBtn);
+
+        return SettingRow(
+            "Published device",
+            "Empties this host's discovery document, both availability topics and every published value "
+            + "and command topic, then switches publishing off so nothing re-announces it. Needs a live "
+            + "connection to the broker, and cannot be undone.",
+            removeBtn);
+    }
+
+    /// <summary>
+    /// Ask, remove, tell — the sequence is <see cref="MqttWithdrawal.RunAsync"/>'s, so its rules are
+    /// tested rather than trusted. The outcome is a modal rather than a balloon: it is the counterpart of
+    /// a blocking consent for a mutation that cannot be undone, which is the bounded exception in
+    /// docs\DISPLAY-VOCABULARY.md.
+    /// </summary>
+    private async Task RemovePublishedDeviceAsync(MqttService mqtt, Button removeBtn)
+    {
+        removeBtn.IsEnabled = false;
+        try
+        {
+            await MqttWithdrawal.RunAsync(
+                confirm:  prompt => NativeMethods.Confirm(prompt, AppInfo.Name),
+                withdraw: mqtt.WithdrawDeviceAsync,
+                report:   (message, isFailure) =>
+                {
+                    // Before the modal: a successful removal has just written Enabled off, and the panel's
+                    // toggle would otherwise still read on behind the message saying it is off.
+                    if (!_closed) _mqttSettings?.Reload();
+
+                    if (isFailure) NativeMethods.Warn(message, AppInfo.Name);
+                    else NativeMethods.Info(message, AppInfo.Name);
+                });
+        }
+        catch (Exception ex)
+        {
+            AppInfo.AppendCrashLogLine("SettingsWindow", $"RemovePublishedDevice: {ex}");
+            if (!_closed) NativeMethods.Warn($"Could not remove the published device:\n\n{ex.Message}", AppInfo.Name);
+        }
+        finally
+        {
+            if (!_closed) removeBtn.IsEnabled = true;
+        }
+    }
+
     // ── Maintenance ────────────────────────────────────────────────────────────────
 
     // The last "Reload config from disk" confirmation, held here rather than on the TextBlock because a
@@ -1495,9 +1632,9 @@ internal sealed partial class SettingsWindow : Window
         var openConfig = new Button { Content = "Open config.json" };
         openConfig.Click += (_, _) => Shell.OpenOrReveal(ConfigManager.GetConfigPath());
 
-        // The app writes three separate logs (switcher.log, vm-power.log, ui.log — issues #20/#21), so a
-        // single "Open log file" button no longer covers them. Expose each one, plus a reveal of the
-        // whole data folder (which also surfaces crash.log).
+        // The app writes four separate logs (switcher.log, vm-power.log, ui.log — issues #20/#21 — and
+        // mqtt.log, issue #75), so a single "Open log file" button no longer covers them. Expose each
+        // one, plus a reveal of the whole data folder (which also surfaces crash.log).
         var openLog = new DropDownButton { Content = "Open log" };
         var logMenu = new MenuFlyout();
         void AddLogItem(string text, string path) =>
@@ -1509,6 +1646,7 @@ internal sealed partial class SettingsWindow : Window
         AddLogItem("Switcher log", AppInfo.LogFile);
         AddLogItem("VM power log", AppInfo.VmPowerLog);
         AddLogItem("UI log", AppInfo.UiLog);
+        AddLogItem("MQTT log", AppInfo.MqttLog);
         logMenu.Items.Add(new MenuFlyoutSeparator());
         logMenu.Items.Add(new MenuFlyoutItem
         {
@@ -1571,7 +1709,7 @@ internal sealed partial class SettingsWindow : Window
 
         panel.Children.Add(SettingRow(
             "Config & logs",
-            "Open the raw config.json, open any of the app's log files (switcher, VM power, UI) or the logs folder, "
+            "Open the raw config.json, open any of the app's log files (switcher, VM power, UI, MQTT) or the logs folder, "
             + "or re-read config.json from disk after an out-of-band edit. A reload that can't parse the file says "
             + "so and changes nothing — the settings already loaded stay active.",
             buttons));

@@ -122,6 +122,27 @@
     <Compile Include="..\Models\NetworkRule.cs"       Link="Linked\NetworkRule.cs" />
     <Compile Include="..\Models\VmTarget.cs"          Link="Linked\VmTarget.cs" />
     <Compile Include="..\Models\VmStatus.cs"          Link="Linked\VmStatus.cs" />
+
+    <!-- The MQTT integration. None of these touch WinUI, so the test assembly stays runtime-free.
+         MqttService.cs is deliberately absent: it is the composition shell over NetworkMonitor,
+         VmService and HyperVManager, none of which are linkable here. Logic that needs cover
+         belongs in the files below rather than in that shell. -->
+    <Compile Include="..\Models\MqttSection.cs"       Link="Linked\MqttSection.cs" />
+    <Compile Include="..\Services\MqttConfigStore.cs" Link="Linked\MqttConfigStore.cs" />
+    <Compile Include="..\Services\MqttEntityTable.cs" Link="Linked\MqttEntityTable.cs" />
+    <Compile Include="..\Services\MqttStateCache.cs"  Link="Linked\MqttStateCache.cs" />
+    <Compile Include="..\Services\MqttLog.cs"         Link="Linked\MqttLog.cs" />
+    <Compile Include="..\Helpers\MqttCommandGate.cs"  Link="Linked\MqttCommandGate.cs" />
+    <Compile Include="..\Helpers\MqttMetricsHold.cs"  Link="Linked\MqttMetricsHold.cs" />
+    <!-- The two decisions the shell would otherwise hold inline: whether a state change is signalled now
+         or held until there is a link (the fifty failed publishes at every launch), and when the
+         published device is taken off the broker. Both take their side effects as delegates, so neither
+         drags a connection into the test assembly. -->
+    <Compile Include="..\Helpers\MqttPublishGate.cs"  Link="Linked\MqttPublishGate.cs" />
+    <Compile Include="..\Helpers\MqttWithdrawal.cs"   Link="Linked\MqttWithdrawal.cs" />
+    <!-- The one-time removal of the flat mqtt block. File IO over a path handed in, so temp files are
+         all its tests need — the same reason ConfigMigration.cs links in above. -->
+    <Compile Include="..\Helpers\MqttLegacyRemoval.cs" Link="Linked\MqttLegacyRemoval.cs" />
   </ItemGroup>
 
   <!-- The repo's sample config. Copied in so DefaultConfigTests can assert it is byte-for-byte the
@@ -144,6 +165,11 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Brand.Core\ZeroZero.Brand.Core.csproj" />
+    <!-- The MQTT entity and document layer, required by the linked MqttEntityTable.cs and
+         MqttConfigStore.cs. ZeroZero.Mqtt.Discovery and its dependencies (ZeroZero.Mqtt,
+         ZeroZero.Config) are plain net10.0, so this stays a runtime-free test assembly;
+         ZeroZero.Mqtt.WinUI — the panel — is deliberately NOT referenced. -->
+    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt.Discovery\ZeroZero.Mqtt.Discovery.csproj" />
   </ItemGroup>
 
   <ItemGroup>

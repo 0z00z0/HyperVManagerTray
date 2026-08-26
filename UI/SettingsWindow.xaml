@@ -9,9 +9,11 @@
     </Window.SystemBackdrop>
 
     <!-- Issue #23: the flat single-scroll card list became an in-box NavigationView with left-nav
-         categories (General / Managed VMs / Network / Adapters / Home Assistant / Maintenance /
-         About; the Home Assistant one arrived with issue #75). Zero new
-         dependencies — the plain WinUI NavigationView plus the same code-built card idiom every other
+         categories (General / Managed VMs / Network / Adapters / MQTT / Maintenance /
+         About; the MQTT one arrived with issue #75). The MQTT category is the one panel this window
+         does not build itself — it hosts ZeroZero.Mqtt.WinUI's MqttSettingsPanel, which brings the
+         Community Toolkit's SettingsControls transitively; every other category is still the plain WinUI
+         NavigationView plus the same code-built card idiom every other
          window in this app uses (BuildXxxSection in code-behind fills the per-category panels). The
          window stays a real titled, resizable, taskbar-visible window (NOT the borderless auto-dismiss
          tray popup): it must stay open while the user edits and alt-tabs away. -->
@@ -55,6 +57,9 @@
             <NavigationViewItem Content="Adapters" Tag="Adapters">
                 <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/adapters.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
             </NavigationViewItem>
+            <NavigationViewItem Content="MQTT" Tag="Mqtt">
+                <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/mqtt.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
+            </NavigationViewItem>
             <NavigationViewItem Content="Maintenance" Tag="Maintenance">
                 <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/maintenance.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
             </NavigationViewItem>
@@ -95,6 +100,9 @@
                 <StackPanel x:Name="VmsPanel"         Spacing="10" Visibility="Collapsed"/>
                 <StackPanel x:Name="NetworkPanel"     Spacing="10" Visibility="Collapsed"/>
                 <StackPanel x:Name="AdaptersPanel"    Spacing="10" Visibility="Collapsed"/>
+                <!-- The shared MqttSettingsPanel is a tall StackPanel that scrolls nothing itself, so it
+                     sits inside RootScroll like every other category. -->
+                <StackPanel x:Name="MqttPanel"        Spacing="10" Visibility="Collapsed"/>
                 <StackPanel x:Name="MaintenancePanel" Spacing="10" Visibility="Collapsed"/>
                 <StackPanel x:Name="AboutPanel"       Spacing="10" Visibility="Collapsed"/>
             </Grid>

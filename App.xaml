@@ -10,6 +10,23 @@
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
 
+            <!-- The one colour the shared MQTT panel needs a per-theme value for. The other four read
+                 stock WinUI colours that are already theme-aware, so only the accent has to vary here:
+                 a single accent shade is illegible against the opposite ground. Same shades the module
+                 picks for itself. The BRUSHES that consume this live below, as immediate children of
+                 Application.Resources — see the comment there. -->
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Default">
+                    <StaticResource x:Key="MqttAccentColour" ResourceKey="SystemAccentColorLight2"/>
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Light">
+                    <StaticResource x:Key="MqttAccentColour" ResourceKey="SystemAccentColorDark2"/>
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="HighContrast">
+                    <StaticResource x:Key="MqttAccentColour" ResourceKey="SystemColorHighlightColor"/>
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+
             <!-- ─────────────────────────────────────────────────────────────────────────────
                  Brand typeface: Cascadia Mono (issue #44), matching the sibling app's treatment.
 
@@ -68,6 +85,31 @@
                 <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}"/>
                 <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
             </Style>
+
+            <!-- ─────────────────────────────────────────────────────────────────────────────
+                 The shared MQTT settings panel's whole theming surface (ZeroZero.Mqtt.WinUI), so it
+                 reads as one of this window's own cards rather than as a stock-WinUI page dropped in
+                 beside them.
+
+                 PLACEMENT IS LOAD-BEARING (0z0-shared v0.2.1). These six keys must be IMMEDIATE
+                 children of Application.Resources and nowhere deeper. The module merges its own
+                 defaults into Application.Resources.MergedDictionaries when the first panel is
+                 constructed, and a dictionary's own entries outrank everything it merges — one level
+                 down, inside ThemeDictionaries above or inside a dictionary this app merges itself,
+                 all six silently fall back to stock with no warning and no build error.
+
+                 Colours: the same stock roles Card()/SettingRow() in SettingsWindow already paint
+                 with, named as colours rather than brushes because a brush cannot take another brush
+                 as its value. The theme variation lives in the colour each one resolves, which is what
+                 keeps the keys at the one level the panel's lookup reads. -->
+            <SolidColorBrush x:Key="MqttPanelHeadingBrush"        Color="{ThemeResource TextFillColorPrimary}"/>
+            <SolidColorBrush x:Key="MqttPanelBodyBrush"           Color="{ThemeResource TextFillColorPrimary}"/>
+            <SolidColorBrush x:Key="MqttPanelSecondaryBrush"      Color="{ThemeResource TextFillColorSecondary}"/>
+            <SolidColorBrush x:Key="MqttPanelAccentBrush"         Color="{ThemeResource MqttAccentColour}"/>
+            <SolidColorBrush x:Key="MqttPanelCardBackgroundBrush" Color="{ThemeResource CardBackgroundFillColorDefault}"/>
+            <!-- The only route to the panel's typeface: every element it styles carries an explicit
+                 style, so the implicit TextBlock style above never reaches inside it. -->
+            <StaticResource x:Key="MqttPanelFontFamily" ResourceKey="BrandFont"/>
 
             <tb:TaskbarIcon
                 x:Key="TrayIcon"
