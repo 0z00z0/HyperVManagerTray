@@ -73,6 +73,9 @@ internal sealed partial class SettingsWindow : Window
     private UIElement?        _mqttSection;
     private MqttSettingsPanel? _mqttSettings;
 
+    // The one MQTT setting this window owns rather than the shared panel — see BuildMqttPowerCard.
+    private ToggleSwitch? _mqttPowerButtons;
+
     // Suppresses commit handlers while controls are populated programmatically (same re-entrancy
     // guard idiom as the sibling app's settings window). One flag is safe: every Load runs
     // synchronously to completion before anything else can fire.
@@ -1530,6 +1533,9 @@ internal sealed partial class SettingsWindow : Window
         {
             // Throws before Initialise, which is why this is guarded on the panel and not on the cache.
             _mqttSettings?.Reload();
+            // The app's own control re-reads with it: a hand-edited config.json, or a second window,
+            // must not leave this toggle showing a shape that is no longer published.
+            if (_mqtt is { } service && _mqttPowerButtons is { } toggle) LoadPowerButtons(toggle, service);
             return cached;
         }
 
@@ -1550,10 +1556,50 @@ internal sealed partial class SettingsWindow : Window
         // read-back itself, and Reload/Revert throw until it has run.
         _mqttSettings.Initialise(_mqtt.CreatePanelSetup());
 
+        panel.Children.Add(BuildMqttPowerCard(_mqtt));
         panel.Children.Add(BuildMqttRemovalCard(_mqtt));
 
         _mqttSection = panel;
         return panel;
+    }
+
+    /// <summary>
+    /// Which shape each managed VM's power verbs are published in. App-side rather than a request to the
+    /// shared panel for the reason the removal card is: the wording is this app's, it describes this
+    /// app's own entities, and the MQTT surface names no particular consumer.
+    ///
+    /// <para>Switching shape rewrites what is announced, so the controls the receiving end holds are
+    /// replaced rather than renamed — which is what the description says out loud, because the settings
+    /// filed against the old ones do not come across.</para>
+    /// </summary>
+    private UIElement BuildMqttPowerCard(MqttService mqtt)
+    {
+        var toggle = _mqttPowerButtons = new ToggleSwitch { OnContent = "On", OffContent = "Off" };
+        LoadPowerButtons(toggle, mqtt);
+        toggle.Toggled += (_, _) =>
+        {
+            if (_updating) return;
+            mqtt.SetPowerButtons(toggle.IsOn);
+        };
+
+        return SettingRow(
+            "A button per power verb",
+            "Publishes a separate button for each power verb — start, shut down, pause, save, resume — "
+            + "instead of one list to pick a verb from. A list has no current verb to report, so it "
+            + "stands empty until one is used; buttons report nothing at all, by design. Either way a "
+            + "verb the VM's state does not allow is refused. Switching this replaces the power controls "
+            + "at the receiving end, so anything set on the old ones is not carried over.",
+            toggle);
+    }
+
+    /// <summary>Populates the toggle from the stored setting without the commit handler reading it as
+    /// the user having flipped it.</summary>
+    private void LoadPowerButtons(ToggleSwitch toggle, MqttService mqtt)
+    {
+        bool was = _updating;
+        _updating = true;
+        try { toggle.IsOn = mqtt.PowerButtons; }
+        finally { _updating = was; }
     }
 
     /// <summary>

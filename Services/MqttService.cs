@@ -57,9 +57,10 @@ public sealed class MqttService : IDisposable
     // that disposed it would throw in whichever background reconcile was waiting on it.
     private readonly SemaphoreSlim _reconcile = new(1, 1);
 
-    // Which VM names the announced table was built from. A config write that leaves them alone —
-    // a log-level change, a saved window rect — must not rebuild and re-announce the whole document.
-    private string _vmSignature;
+    // What the announced table was built from: the VM names, and which shape the power verbs take. A
+    // config write that leaves both alone — a log-level change, a saved window rect — must not rebuild
+    // and re-announce the whole document.
+    private string _tableSignature;
     private int _disposed;
 
     public MqttService(
@@ -95,7 +96,7 @@ public sealed class MqttService : IDisposable
         _publish = new MqttPublishGate(() => _connection?.RequestPublish());
 
         var moduleLog = _moduleLog = new MqttLog(log);
-        _vmSignature = VmSignature(config.Current);
+        _tableSignature = TableSignature(config.Current);
         _applied = _store.Read();
 
         _publisher = new DiscoveryPublisher(new DiscoveryPublisherSetup
@@ -226,12 +227,14 @@ public sealed class MqttService : IDisposable
 
     private void OnConfigReloaded(object? sender, ConfigReloadedEventArgs e)
     {
-        string signature = VmSignature(e.Config);
-        if (signature == _vmSignature) return;
-        _vmSignature = signature;
+        string signature = TableSignature(e.Config);
+        if (signature == _tableSignature) return;
+        _tableSignature = signature;
 
         // Replaced whole, never mutated: this rebuilds the channels, the command targets and the
-        // document in one pass and empties the state topics of entities that have gone.
+        // document in one pass and empties the state topics of entities that have gone. That is also
+        // what sheds the power shape just switched away from — the entities it replaced are absent from
+        // the new set rather than withheld, so they are announced as removed rather than unavailable.
         _publisher.SetEntities(BuildEntities(e.Config));
     }
 
@@ -378,7 +381,18 @@ public sealed class MqttService : IDisposable
                 return Task.CompletedTask;
             },
             OverrideSwitch       = (name, switchName, _) => _monitor.ManualOverrideAsync(name, switchName),
+            // Read once here, not per pass: the two shapes are different entities, so a flip has to
+            // reach SetEntities for the shape being left behind to be evicted.
+            PowerButtons         = config.Mqtt.PowerButtons,
         });
+
+    /// <summary>Whether each VM's power verbs are published as one button per verb rather than as one
+    /// select of them. Setting it writes config.json, whose reload rebuilds the entity table — see
+    /// <see cref="OnConfigReloaded"/>, which is what evicts the shape being switched away from.</summary>
+    public bool PowerButtons => _store.PowerButtons;
+
+    /// <inheritdoc cref="PowerButtons"/>
+    public void SetPowerButtons(bool on) => _store.SetPowerButtons(on);
 
     /// <summary>Applying is idempotent, so a settings write that changed nothing the connection reads
     /// leaves the projection identical and never bounces the socket.</summary>
@@ -396,9 +410,12 @@ public sealed class MqttService : IDisposable
         return string.IsNullOrWhiteSpace(stored) ? MqttSettings.DefaultDiscoveryPrefix : stored;
     }
 
-    /// <summary>The managed VM names, in order — what the entity table is composed from.</summary>
-    private static string VmSignature(AppConfig config) =>
-        string.Join("\n", config.VirtualMachines.Select(v => v.Name ?? string.Empty));
+    /// <summary>What the entity table is composed from. Composed by <see cref="MqttEntityTable"/>, which
+    /// is linked into the test assembly — a rule that decides whether the document is re-announced is
+    /// not one to leave in this file, which nothing tests.</summary>
+    private static string TableSignature(AppConfig config) =>
+        MqttEntityTable.Signature(
+            config.VirtualMachines.Select(v => v.Name), config.Mqtt.PowerButtons);
 
     // ── Lifecycle ───────────────────────────────────────────────────────────────
 

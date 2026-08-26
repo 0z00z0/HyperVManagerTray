@@ -22,11 +22,23 @@ public sealed class MqttSection
     /// otherwise make the connection re-apply on the strength of its own success.</summary>
     public MqttEndpointMemory? Endpoint { get; set; }
 
+    /// <summary>Whether each managed VM's power verbs are published as one button per verb instead of
+    /// as a single select of them. Off by default, which is the select.
+    ///
+    /// <para>This app's setting, not the module's, and deliberately outside <see cref="Settings"/>: it
+    /// decides what the entity table composes rather than how the connection is made, and a shape
+    /// change must rebuild the entity set without the broker settings reading as having moved.</para></summary>
+    public bool PowerButtons { get; set; }
+
     /// <summary>A copy, so a mutator staging edits never hands the live instance to a writer.</summary>
+    /// <remarks>Every field is carried. This is what <c>ConfigManager.UpdateMqtt</c> mutates and then
+    /// writes back whole, so a field omitted here is not left alone — it is written back as its default
+    /// and permanently lost, the same trap <c>ConfigManager.With</c> carries for the top-level fields.</remarks>
     public MqttSection Copy() => new()
     {
         Settings = Settings.Copy(),
         // A record with no mutable state — sharing the instance cannot leak an edit.
         Endpoint = Endpoint,
+        PowerButtons = PowerButtons,
     };
 }
