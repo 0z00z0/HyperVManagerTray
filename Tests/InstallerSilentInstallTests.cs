@@ -10,9 +10,9 @@ namespace HyperVManagerTray.Tests;
 /// <para>The installer is per-user and needs no admin, but three of its steps do — closing the running
 /// (elevated) app, registering the RL HIGHEST logon task, and launching the app. Each elevates through
 /// <c>ShellExec('runas', …)</c>, which raises a UAC prompt. <c>/SILENT</c> and <c>/SUPPRESSMSGBOXES</c>
-/// suppress Inno's own dialogs; neither suppresses UAC. The app's own installer schedules a
-/// <c>winget upgrade --silent</c> at every sign-in, so an unguarded elevation would put an unexplained
-/// consent dialog on the desktop and block the upgrade until somebody answered it.</para>
+/// suppress Inno's own dialogs; neither suppresses UAC. A silent install has nobody at the keyboard,
+/// so an unguarded elevation puts an unexplained consent dialog on the desktop and blocks the install
+/// until somebody answers it.</para>
 ///
 /// <para>These read Pascal script as text, which no unit test can execute. That is the whole point:
 /// <c>installer\HyperVManagerTray.iss</c> is compiled by ISCC and has no other automated reader, so a
@@ -43,7 +43,7 @@ public class InstallerSilentInstallTests
     /// <summary>
     /// THE test for the defect. <c>RegisterStartupTask</c> is the only step whose elevation is driven
     /// by a task tick rather than by the app already running, so it was the one left unguarded — and
-    /// the one a background winget upgrade would hit.
+    /// the one an unattended install would hit.
     /// </summary>
     [Fact]
     public void TheStartupTaskIsRegisteredOnlyOnAnInteractiveInstall() =>
@@ -61,22 +61,25 @@ public class InstallerSilentInstallTests
         Assert.Contains(guarded, Code());
 
     /// <summary>
-    /// The counterpart that must NOT be guarded: the auto-update task is created without
-    /// <c>/RL HIGHEST</c>, so it needs no admin and no prompt. Guarding it would silently drop the
-    /// user's "auto update in background" choice on exactly the silent upgrades that renew it.
+    /// The counterpart that must NOT be guarded: the background-update logon task left behind by older
+    /// installs is deleted with a plain <c>schtasks /Delete</c>, needing no admin and no prompt. The
+    /// deletion is unconditional, so an upgrade clears the dead task whether or not anyone ever ticked
+    /// the option that created it, and a silent upgrade clears it too. Nothing creates the task any
+    /// more — the installer must never register one again.
     /// </summary>
     [Fact]
-    public void TheAutoUpdateTaskIsStillRegisteredOnASilentInstall()
+    public void TheDeadBackgroundUpdateTaskIsRemovedOnEveryInstall()
     {
         var code = Code();
 
-        Assert.Contains("if WizardIsTaskSelected('autoupdate') then RegisterAutoUpdateTask();", code);
-        Assert.DoesNotContain("WizardSilent()) and WizardIsTaskSelected('autoupdate')", code);
+        Assert.Contains("RegisterStartupTask(); RemoveAutoUpdateTask();", code);
+        Assert.DoesNotContain("WizardIsTaskSelected('autoupdate')", code);
+        Assert.DoesNotContain("RegisterAutoUpdateTask", code);
     }
 
     /// <summary>
     /// Why the guard above is needed at all, stated as an assertion rather than a comment: this is the
-    /// only <c>runas</c> reachable from <c>CurStepChanged</c>, and <c>RegisterAutoUpdateTask</c> plain
+    /// only <c>runas</c> reachable from <c>CurStepChanged</c>, and <c>RemoveAutoUpdateTask</c> plain
     /// <c>Exec</c>s <c>schtasks</c>. If a future step gains an elevation, the count moves and this test
     /// asks for the guard to be considered.
     /// </summary>

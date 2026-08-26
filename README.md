@@ -54,22 +54,17 @@ dotnet run
 
 ### Install (recommended)
 
-Via **winget** (per-user, no admin needed to install — the app elevates itself at runtime):
+Download `HyperVManagerTray-Setup-<version>.exe` from the
+[latest release](https://github.com/0z00z0/HyperVManagerTray/releases/latest) and run it. The
+installer is per-user: no admin is needed to install, and the app elevates itself at runtime.
 
-```powershell
-winget install 0z00z0.HyperVManagerTray
-winget upgrade 0z00z0.HyperVManagerTray   # later, to update
-```
+Updating means downloading the current installer from the same page and running it over the
+existing install. `config.json` is untouched by an upgrade.
 
-Or download `HyperVManagerTray-Setup-<version>.exe` from the
-[latest release](https://github.com/0z00z0/HyperVManagerTray/releases/latest) and run it.
-
-The setup offers two optional tasks:
+The setup offers one optional task:
 
 - **Run at startup** — a `/RL HIGHEST` logon task (one UAC prompt, only if ticked) so the
   elevated app auto-starts at sign-in with no boot-time prompt.
-- **Auto update in background** — a non-elevated logon task that runs `winget upgrade` 5 minutes
-  after each sign-in, so you stay on the latest published version automatically.
 
 It installs to `%LocalAppData%\Programs\HyperVManagerTray`. `config.json` lives in
 `%APPDATA%\HyperVManagerTray\`, outside the install folder, so an upgrade never touches it.
@@ -97,8 +92,8 @@ Desktop Runtime** on the target and offers to install it (via winget, falling ba
 download). See [`installer/README.md`](installer/README.md) for how the elevation is handled.
 
 > **Releases** are automated: pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`,
-> which builds + signs the installer, patches the winget manifests, creates the GitHub Release,
-> and re-validates the published manifests.
+> which runs the tests, builds and signs the installer, and creates the GitHub Release with the
+> installer and its SHA-256 attached.
 
 ### Publish manually (no installer)
 
@@ -304,7 +299,7 @@ the app talks to Hyper-V or the host network.
 ## Built with
 
 - **Language / UI:** C# on **.NET 10**, **WinUI 3 / Windows App SDK** (`net10.0-windows10.0.26100.0`, unpackaged, Mica backdrop)
-- **OS integration:** Win32 P/Invoke (`iphlpapi.dll` `GetBestInterface`, `user32.dll`/`Shcore.dll` for popup positioning + message boxes, SetupAPI for the adapter rename); all Hyper-V interaction — VM status/metrics/power/guest IPs, switch binding, host-vNIC repair — via native WMI (`root\virtualization\v2`, `System.Management`), event-driven and PowerShell-free (metrics poll only while the dashboard is open); `schtasks.exe` for the auto-start and auto-update tasks
+- **OS integration:** Win32 P/Invoke (`iphlpapi.dll` `GetBestInterface`, `user32.dll`/`Shcore.dll` for popup positioning + message boxes, SetupAPI for the adapter rename); all Hyper-V interaction — VM status/metrics/power/guest IPs, switch binding, host-vNIC repair — via native WMI (`root\virtualization\v2`, `System.Management`), event-driven and PowerShell-free (metrics poll only while the dashboard is open); `schtasks.exe` for the auto-start task
 
 ## External libraries
 
@@ -383,8 +378,8 @@ does not choose. A build failing on a shared type is read there first.
   Hyper-V Manager behaves.
 
 **Tooling:** the installer is built with **[Inno Setup](https://jrsoftware.org/isinfo.php)** by
-Jordan Russell & Martijn Laan (free, with attribution under its license), and distributed via
-**[winget](https://github.com/microsoft/winget-cli)** (Microsoft, MIT).
+Jordan Russell & Martijn Laan (free, with attribution under its license), and distributed as a
+signed installer attached to each GitHub release.
 
 ---
 
