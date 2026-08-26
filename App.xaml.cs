@@ -408,7 +408,9 @@ public partial class App : Application
         _trayIcon.LeftClickCommand  = new RelayCommand(ToggleDashboard);
         _trayIcon.RightClickCommand = new RelayCommand(OnTrayRightClick);
 
-        _trayIcon.ForceCreate();
+        // Explicit false: the default arms EcoQoS and IDLE_PRIORITY_CLASS across the whole process and
+        // never undoes them, which starves the message pump — and so the tray — under host load.
+        _trayIcon.ForceCreate(enablesEfficiencyMode: false);
 
         // Issue #54 milestone. ForceCreate() has returned, so Shell_NotifyIcon(NIM_ADD) was accepted —
         // "created", deliberately not "visible": when the shell paints it (or whether it folds it into
