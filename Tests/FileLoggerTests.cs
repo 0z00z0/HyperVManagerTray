@@ -1,3 +1,4 @@
+using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Services;
 using Microsoft.Extensions.Logging;
 using Xunit;
@@ -82,6 +83,49 @@ public class FileLoggerTests : IDisposable
 
         var text = File.Exists(_path) ? File.ReadAllText(_path) : "";
         Assert.DoesNotContain("should not appear", text);
+    }
+
+    // ── Startup version line (issue #93) ────────────────────────────────────────
+
+    /// <summary>
+    /// The startup version line's two claims, measured against the REAL sink rather than argued from
+    /// the level enum: written through the un-mapped "startup" category it lands in the default log
+    /// (switcher.log), and at Critical it is still written when logLevel has been raised as far as it
+    /// goes short of "off". Composed exactly as <c>App.OnLaunched</c> composes it — same
+    /// <c>AddSimpleFileLogger</c> call, same category map, same live switch — so a routing or gating
+    /// change that would silence the line fails here.
+    /// </summary>
+    [Fact]
+    public void StartupVersionLine_AtCritical_ReachesTheDefaultLog_EvenAtTheHighestLogLevel()
+    {
+        var vmPowerPath = TempPath();
+        var uiPath      = TempPath();
+        var line        = AppInfo.StartupVersionLine;
+
+        // Critical is the highest minimum a user can set without turning logging off entirely.
+        var sw = new LogLevelSwitch(LogLevel.Critical);
+        using (var factory = LoggerFactory.Create(b =>
+        {
+            b.SetMinimumLevel(LogLevel.Trace);
+            b.AddSimpleFileLogger(_path, new Dictionary<string, string>
+            {
+                ["vm-power"] = vmPowerPath,
+                ["ui"]       = uiPath,
+            }, sw);
+        }))
+        {
+            factory.CreateLogger("startup").LogCritical("{Event}", line);
+            // The Information-level line the version used to ride on: gone at this setting, which is
+            // the gap issue #93 exists to close.
+            factory.CreateLogger("startup").LogInformation("{Event}", "update check: running=…");
+        }
+
+        var defaultText = File.ReadAllText(_path);
+        Assert.Contains(line, defaultText);
+        Assert.DoesNotContain("update check: running=…", defaultText);
+        // Absent files count as absent lines: an un-mapped category must not open a routed log at all.
+        Assert.DoesNotContain(line, File.Exists(vmPowerPath) ? File.ReadAllText(vmPowerPath) : "");
+        Assert.DoesNotContain(line, File.Exists(uiPath)      ? File.ReadAllText(uiPath)      : "");
     }
 
     // ── Category routing (issue #20) ────────────────────────────────────────────

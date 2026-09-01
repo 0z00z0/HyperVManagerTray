@@ -139,6 +139,13 @@ public partial class App : Application
                 }, _logLevelSwitch);
             });
 
+            // First write of every run (issue #93): which build produced this log. Critical, and
+            // not Information, because it must survive every logLevel short of "off" — a log that
+            // cannot be attributed to a build is exactly what this line removes. Unconditional, so
+            // it lands even when the update check (the only other version-bearing line) never
+            // completes, and before anything below can fail.
+            _loggerFactory.CreateLogger("startup").LogCritical("{Event}", AppInfo.StartupVersionLine);
+
             // Capture a minidump if the app dies from a NATIVE fault (GDI+, comctl32, the
             // WinUI/Mica compositor during a dock/display/power transition, …).  Those bypass
             // the managed handlers below, so without this a crash leaves no trace at all.
