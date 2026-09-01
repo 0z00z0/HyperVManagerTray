@@ -62,10 +62,20 @@ public class ConfigManagerTests : IDisposable
         return new ConfigManager(path, NullLogger<ConfigManager>.Instance);
     }
 
+    /// <summary>The dated copies a save keeps beside a config it found unreadable.</summary>
+    private static string[] BrokenCopiesOf(string configPath) =>
+        Directory.GetFiles(
+            Path.GetDirectoryName(configPath)!,
+            $"{Path.GetFileNameWithoutExtension(configPath)}.broken-*{Path.GetExtension(configPath)}");
+
     public void Dispose()
     {
         foreach (var f in _tempFiles)
+        {
             try { File.Delete(f); } catch { /* best-effort */ }
+            try { File.Delete(f + ".tmp"); } catch { /* best-effort */ }
+            try { foreach (var kept in BrokenCopiesOf(f)) File.Delete(kept); } catch { /* best-effort */ }
+        }
     }
 
     // ── AddBridgedRule ────────────────────────────────────────────────────────
@@ -1370,5 +1380,171 @@ public class ConfigManagerTests : IDisposable
         Assert.True(WaitFor(() => Volatile.Read(ref announced) == 2),
             "the second breakage was never announced — the say-it-once latch is stuck set, so the app is "
             + "running on a config the user did not write and telling nobody");
+    }
+
+    // ── An interrupted write must not be able to truncate config.json ─────────────────────
+
+    /// <summary>
+    /// A save that cannot be completed leaves the previous config whole, and leaves no half-written temp
+    /// file beside it for the next write to trip over. This is the property that makes an interrupted
+    /// write survivable: config.json is replaced by renaming a fully-written sibling over it, never
+    /// truncated and refilled in place.
+    ///
+    /// <para><b>How the interruption is forced, and why it discriminates.</b> A handle is held on
+    /// config.json permitting WRITE but not DELETE. That asymmetry is the whole test: an in-place
+    /// <c>File.WriteAllText</c> can still open the file under those terms and truncates it immediately,
+    /// destroying the previous config before it writes a byte; a rename onto the same file cannot proceed
+    /// at all, and fails having touched nothing. So the previous config is only still here at the end if
+    /// the new one was staged in a sibling first — this test goes red on a direct write, at the comparison
+    /// below, which is exactly the defect it exists for.</para>
+    /// </summary>
+    [Fact]
+    public void AWriteThatCannotCompleteLeavesThePreviousConfigIntact()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [new VmTarget { Name = "vm1", NicName = "Network Adapter" }],
+        });
+        using var mgr = MakeManager(path);
+
+        var before = File.ReadAllBytes(path);
+
+        using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        {
+            // Which exception the OS raises for the blocked rename is not the property under test; that
+            // the file survives it is. A direct write raises nothing here and still destroys the file.
+            try { mgr.SetVmNicName("vm1", "Ethernet 2"); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+
+        Assert.Equal(before, File.ReadAllBytes(path));
+        Assert.False(File.Exists(path + ".tmp"),
+                     "a half-written temp config was left beside config.json");
+    }
+
+    // ── A config that never loaded must never be saved over ───────────────────────────────
+
+    /// <summary>
+    /// A file that exists but has never parsed is the user's config with a typo in it, and <c>_config</c>
+    /// is still the EMPTY default the failed load left untouched. Writing is whole-document, so one
+    /// ordinary save — closing the Settings window is enough — would put that blank config on disk over
+    /// every rule and VM the user has. The save must be refused, and said so rather than silently skipped.
+    /// </summary>
+    [Fact]
+    public void ASaveIsRefusedWhenTheConfigHasNeverLoaded()
+    {
+        var path   = WriteRawTempConfig("{ \"virtualMachines\": [ this was hand-edited badly");
+        var before = File.ReadAllBytes(path);
+
+        using var mgr = new ConfigManager(path, NullLogger<ConfigManager>.Instance);
+        Assert.False(mgr.LastLoad.Succeeded, "the broken file should not have loaded");
+
+        Exception? refusal = null;
+        try { mgr.SaveSettingsWindowRect(new WindowRect(10, 20, 900, 700)); }
+        catch (Exception ex) { refusal = ex; }
+
+        // Asserted BEFORE the refusal itself: losing the file is the damage, and a mutation that removes
+        // the guard should fail here — naming the destroyed config — rather than on a missing exception.
+        Assert.Equal(before, File.ReadAllBytes(path));
+        Assert.IsType<InvalidOperationException>(refusal);
+    }
+
+    /// <summary>
+    /// The refusal is "has never loaded", NOT "the last load failed", and the difference is load-bearing:
+    /// an app running on a good config must still be able to write it back over a file the user has since
+    /// broken by hand. That self-heal is what
+    /// <see cref="ABrokenConfigIsAnnouncedAgainAfterAnInAppSaveSucceeded"/> depends on, and gating on the
+    /// last outcome instead would silently disable it.
+    /// </summary>
+    [Fact]
+    public void ASaveStillProceedsAfterAGoodLoadIsFollowedByABrokenOne()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [new VmTarget { Name = "vm1", NicName = "Network Adapter" }],
+        });
+        using var mgr = MakeManager(path);
+
+        File.WriteAllText(path, "{ broken by hand");
+        Assert.False(mgr.Load().Succeeded);   // forced directly — no watcher, no debounce
+
+        mgr.SetVmNicName("vm1", "Ethernet 2");
+
+        Assert.Equal("Ethernet 2", Assert.Single(ReadConfig(path).VirtualMachines).NicName);
+    }
+
+    // ── A broken config is kept before it is written over ─────────────────────────────────
+
+    /// <summary>
+    /// The self-heal above is right, but it destroys whatever the user was in the middle of writing — a
+    /// typo in an hour of rules is still an hour of rules. Keep a dated copy first, so the edit is
+    /// recoverable.
+    /// </summary>
+    [Fact]
+    public void AnUnreadableConfigIsKeptBeforeTheSelfHealWritesOverIt()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [new VmTarget { Name = "vm1", NicName = "Network Adapter" }],
+        });
+        using var mgr = MakeManager(path);
+
+        const string handEdit = "{ \"virtualMachines\": [ { \"name\": \"vm1\", oops";
+        File.WriteAllText(path, handEdit);
+        Assert.False(mgr.Load().Succeeded);
+
+        mgr.SetVmNicName("vm1", "Ethernet 2");
+
+        var kept = Assert.Single(BrokenCopiesOf(path));
+        Assert.Equal(handEdit, File.ReadAllText(kept));                  // the user's edit is recoverable
+        Assert.Equal("Ethernet 2", Assert.Single(ReadConfig(path).VirtualMachines).NicName);
+    }
+
+    /// <summary>
+    /// The copy is kept only for a file nobody can read. An ordinary save replaces contents that are
+    /// already loaded and therefore not lost, so keeping one would just litter the data directory.
+    /// </summary>
+    [Fact]
+    public void AnOrdinarySaveOverAValidConfigKeepsNoCopy()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [new VmTarget { Name = "vm1", NicName = "Network Adapter" }],
+        });
+        using var mgr = MakeManager(path);
+
+        mgr.SetVmNicName("vm1", "Ethernet 2");
+
+        Assert.Empty(BrokenCopiesOf(path));
+    }
+
+    /// <summary>
+    /// The kept copies are capped, so a config left broken across many saves cannot fill the data
+    /// directory without bound — and it is the NEWEST that survive the pruning.
+    /// </summary>
+    [Fact]
+    public void TheKeptCopiesArePrunedToTheNewest()
+    {
+        var path = WriteTempConfig(new AppConfig
+        {
+            VirtualMachines = [new VmTarget { Name = "vm1", NicName = "Network Adapter" }],
+        });
+        using var mgr = MakeManager(path);
+
+        var dir  = Path.GetDirectoryName(path)!;
+        var stem = Path.GetFileNameWithoutExtension(path);
+
+        // Stamped older than anything this save can produce, so the survivors are identifiable.
+        for (int i = 1; i <= ConfigManager.KeptBrokenCopies + 3; i++)
+            File.WriteAllText(Path.Combine(dir, $"{stem}.broken-2020-01-0{i}T000000.json"), $"old {i}");
+
+        File.WriteAllText(path, "{ broken by hand");
+        Assert.False(mgr.Load().Succeeded);
+        mgr.SetVmNicName("vm1", "Ethernet 2");
+
+        var kept = BrokenCopiesOf(path);
+        Assert.Equal(ConfigManager.KeptBrokenCopies, kept.Length);
+        Assert.Contains(kept, f => !Path.GetFileName(f).Contains("broken-2020-", StringComparison.Ordinal));
     }
 }
