@@ -9,14 +9,14 @@ namespace HyperVManagerTray.Tests;
 ///
 /// <para><see cref="AppInfoTests"/> proves the line's text is right, but it links
 /// <c>Helpers\AppInfo.cs</c> directly and would stay green if the call in <c>App.xaml.cs</c> were
-/// deleted, moved after the work that can crash, or dropped to a level a raised <c>logLevel</c>
+/// deleted, moved after the work that can crash, or dropped to a level the default <c>logLevel</c>
 /// filters out. <c>App.xaml.cs</c> is WinUI <c>Application</c> code-behind, which this deliberately
 /// runtime-free test assembly cannot instantiate, so the wiring is asserted over the source text —
 /// the same instrument, and the same limits, as <see cref="VmConnectFlowSourceTests"/>.</para>
 ///
 /// <para>The properties asserted are the three the issue asks for: the line is written, it is written
-/// at a level that survives every <c>logLevel</c> short of "off", and it is written before anything
-/// else that can fail.</para>
+/// at Warning — above the Information level the update-check line rode on, so a raised <c>logLevel</c>
+/// keeps it as far as Warning — and it is written before anything else that can fail.</para>
 /// </summary>
 public class StartupVersionLogSourceTests
 {
@@ -37,18 +37,18 @@ public class StartupVersionLogSourceTests
     /// <summary>Comments stripped: the surrounding prose names the level and the helper it explains.</summary>
     private static string AppCode() => Regex.Replace(AppSource(), @"//[^\n]*", "");
 
-    /// <summary>The one call, at the level the issue requires. Anything lower is filtered by a raised logLevel.</summary>
+    /// <summary>The one call, at Warning. Information and below are filtered by a raised logLevel.</summary>
     private static readonly Regex VersionWrite =
-        new(@"CreateLogger\(""startup""\)\s*\.\s*LogCritical\([^)]*AppInfo\.StartupVersionLine");
+        new(@"CreateLogger\(""startup""\)\s*\.\s*LogWarning\([^)]*AppInfo\.StartupVersionLine");
 
     [Fact]
-    public void OnLaunched_WritesTheVersionLine()
+    public void OnLaunched_WritesTheVersionLineAtWarning()
     {
         Assert.True(VersionWrite.IsMatch(AppCode()),
-            "App.OnLaunched no longer logs AppInfo.StartupVersionLine at Critical through the \"startup\" "
+            "App.OnLaunched no longer logs AppInfo.StartupVersionLine at Warning through the \"startup\" "
           + "category (issue #93). Without it a log is attributable to a build only when the update check "
-          + "completed, which is exactly the gap this line closes — and Critical is the only level that "
-          + "survives every logLevel short of \"off\".");
+          + "completed, which is exactly the gap this line closes — and Warning, not Information, is what "
+          + "keeps it through a logLevel raised as far as Warning.");
     }
 
     /// <summary>
@@ -61,7 +61,7 @@ public class StartupVersionLogSourceTests
     {
         var code    = AppCode();
         var version = VersionWrite.Match(code);
-        Assert.True(version.Success, "The version write is missing — see OnLaunched_WritesTheVersionLine.");
+        Assert.True(version.Success, "The version write is missing — see OnLaunched_WritesTheVersionLineAtWarning.");
 
         var milestone = code.IndexOf(@"LogStartupMilestone(""OnLaunched entered""", StringComparison.Ordinal);
         Assert.True(milestone >= 0,
@@ -81,7 +81,7 @@ public class StartupVersionLogSourceTests
     {
         var code    = AppCode();
         var version = VersionWrite.Match(code);
-        Assert.True(version.Success, "The version write is missing — see OnLaunched_WritesTheVersionLine.");
+        Assert.True(version.Success, "The version write is missing — see OnLaunched_WritesTheVersionLineAtWarning.");
 
         var updateCheck = code.IndexOf("CheckForUpdatesOnStartupAsync", StringComparison.Ordinal);
         Assert.True(updateCheck >= 0,

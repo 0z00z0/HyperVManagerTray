@@ -29,11 +29,13 @@ internal static class CrashDumps
             using var key = Registry.LocalMachine.CreateSubKey(LocalDumpsKey);
             if (key is null) return;
             key.SetValue("DumpFolder", dumpDir, RegistryValueKind.ExpandString);
-            key.SetValue("DumpCount",  5, RegistryValueKind.DWord);
+            // Two, not five: a full dump of this process runs to hundreds of megabytes, and the
+            // dump folder sits in the roaming profile.
+            key.SetValue("DumpCount",  2, RegistryValueKind.DWord);
             // 2 = full, not 1 = mini: a mini carries thread stacks but no heap, so the type and
             // message of a stowed WinRT exception are simply absent from it and the crash cannot be
             // diagnosed. Trade-off: a full dump is an order of magnitude larger on disk, and
-            // DumpCount above keeps five of them.
+            // DumpCount above keeps two of them.
             key.SetValue("DumpType",   2, RegistryValueKind.DWord);
         }
         catch { /* needs admin / policy-restricted — best-effort only */ }

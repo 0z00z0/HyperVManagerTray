@@ -88,22 +88,23 @@ public class FileLoggerTests : IDisposable
     // ── Startup version line (issue #93) ────────────────────────────────────────
 
     /// <summary>
-    /// The startup version line's two claims, measured against the REAL sink rather than argued from
-    /// the level enum: written through the un-mapped "startup" category it lands in the default log
-    /// (switcher.log), and at Critical it is still written when logLevel has been raised as far as it
-    /// goes short of "off". Composed exactly as <c>App.OnLaunched</c> composes it — same
-    /// <c>AddSimpleFileLogger</c> call, same category map, same live switch — so a routing or gating
-    /// change that would silence the line fails here.
+    /// The startup version line's claims, measured against the REAL sink rather than argued from the
+    /// level enum: written through the un-mapped "startup" category it lands in the default log
+    /// (switcher.log), and at Warning it survives a logLevel raised to Warning — the setting at which
+    /// the Information-level update-check line, the version's only other carrier, is already gone.
+    /// Composed exactly as <c>App.OnLaunched</c> composes it — same <c>AddSimpleFileLogger</c> call,
+    /// same category map, same live switch — so a routing or gating change that would silence the line
+    /// fails here. A logLevel of Critical does drop it; that is
+    /// <see cref="StartupVersionLine_AtWarning_IsDroppedWhenLogLevelIsRaisedToCritical"/>.
     /// </summary>
     [Fact]
-    public void StartupVersionLine_AtCritical_ReachesTheDefaultLog_EvenAtTheHighestLogLevel()
+    public void StartupVersionLine_AtWarning_ReachesTheDefaultLog_WhenLogLevelIsRaisedToWarning()
     {
         var vmPowerPath = TempPath();
         var uiPath      = TempPath();
         var line        = AppInfo.StartupVersionLine;
 
-        // Critical is the highest minimum a user can set without turning logging off entirely.
-        var sw = new LogLevelSwitch(LogLevel.Critical);
+        var sw = new LogLevelSwitch(LogLevel.Warning);
         using (var factory = LoggerFactory.Create(b =>
         {
             b.SetMinimumLevel(LogLevel.Trace);
@@ -114,7 +115,7 @@ public class FileLoggerTests : IDisposable
             }, sw);
         }))
         {
-            factory.CreateLogger("startup").LogCritical("{Event}", line);
+            factory.CreateLogger("startup").LogWarning("{Event}", line);
             // The Information-level line the version used to ride on: gone at this setting, which is
             // the gap issue #93 exists to close.
             factory.CreateLogger("startup").LogInformation("{Event}", "update check: running=…");
@@ -126,6 +127,30 @@ public class FileLoggerTests : IDisposable
         // Absent files count as absent lines: an un-mapped category must not open a routed log at all.
         Assert.DoesNotContain(line, File.Exists(vmPowerPath) ? File.ReadAllText(vmPowerPath) : "");
         Assert.DoesNotContain(line, File.Exists(uiPath)      ? File.ReadAllText(uiPath)      : "");
+    }
+
+    /// <summary>
+    /// The accepted limit of the Warning level: a logLevel of Critical, the highest minimum settable
+    /// without turning logging off entirely, drops the startup version line. Intended — a routine
+    /// startup banner is not a critical event — and stated here so the trade-off is measured rather
+    /// than assumed.
+    /// </summary>
+    [Fact]
+    public void StartupVersionLine_AtWarning_IsDroppedWhenLogLevelIsRaisedToCritical()
+    {
+        var line = AppInfo.StartupVersionLine;
+
+        var sw = new LogLevelSwitch(LogLevel.Critical);
+        using (var factory = LoggerFactory.Create(b =>
+        {
+            b.SetMinimumLevel(LogLevel.Trace);
+            b.AddSimpleFileLogger(_path, new Dictionary<string, string>(), sw);
+        }))
+        {
+            factory.CreateLogger("startup").LogWarning("{Event}", line);
+        }
+
+        Assert.DoesNotContain(line, File.Exists(_path) ? File.ReadAllText(_path) : "");
     }
 
     // ── Category routing (issue #20) ────────────────────────────────────────────
