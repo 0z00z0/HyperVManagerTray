@@ -35,9 +35,22 @@ public class MqttConfigStoreTests : IDisposable
 
     private readonly List<string> _tempFiles = [];
 
+    /// <summary>
+    /// A directory of this test class's own, holding nothing but the configs it writes.
+    ///
+    /// <para>ConfigManager puts a <see cref="FileSystemWatcher"/> on the directory its config lives in.
+    /// Pointed at the machine temp directory it also sees every other file the rest of the suite writes
+    /// there, and the watcher's kernel buffer is a fixed 8 KB: on a loaded runner it overflows and the
+    /// change we are waiting for is dropped, never late. No wait ceiling can recover a dropped event, so
+    /// the watcher has to be given a quiet directory instead. Production already has one — the app's own
+    /// %AppData% folder.</para>
+    /// </summary>
+    private readonly string _tempDir =
+        Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"hvmt_mqtt_{Guid.NewGuid():N}")).FullName;
+
     private string WriteTempConfig(AppConfig cfg)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"hvmt_mqtt_{Guid.NewGuid():N}.json");
+        var path = Path.Combine(_tempDir, $"hvmt_mqtt_{Guid.NewGuid():N}.json");
         File.WriteAllText(path, JsonSerializer.Serialize(cfg, WriteOpts));
         _tempFiles.Add(path);
         return path;
@@ -109,6 +122,7 @@ public class MqttConfigStoreTests : IDisposable
     {
         foreach (var f in _tempFiles)
             try { File.Delete(f); } catch { /* best-effort */ }
+        try { Directory.Delete(_tempDir, recursive: true); } catch { /* best-effort */ }
         GC.SuppressFinalize(this);
     }
 
@@ -194,7 +208,7 @@ public class MqttConfigStoreTests : IDisposable
     [InlineData("""{ "logLevel": "Debug", "mqtt": { "settings": null } }""")]
     public void AConfigWithNoUsableMqttSection_LoadsAsConfiguredAndDisabled(string json)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"hvmt_mqtt_{Guid.NewGuid():N}.json");
+        var path = Path.Combine(_tempDir, $"hvmt_mqtt_{Guid.NewGuid():N}.json");
         File.WriteAllText(path, json);
         using var config = MakeManager(path);
 
@@ -299,7 +313,7 @@ public class MqttConfigStoreTests : IDisposable
     [InlineData("""{ "logLevel": "Debug", "mqtt": { "settings": { "enabled": true } } }""")]
     public void PowerButtons_AreOffForAConfigThatNeverNamedThem(string json)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"hvmt_mqtt_{Guid.NewGuid():N}.json");
+        var path = Path.Combine(_tempDir, $"hvmt_mqtt_{Guid.NewGuid():N}.json");
         File.WriteAllText(path, json);
         using var config = MakeManager(path);
         using var store = InlineStore(config);

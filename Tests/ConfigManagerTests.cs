@@ -32,9 +32,22 @@ public class ConfigManagerTests : IDisposable
         Converters             = { new JsonStringEnumConverter() }
     };
 
-    private static string WriteTempConfig(AppConfig cfg)
+    /// <summary>
+    /// A directory of this test class's own, holding nothing but the configs it writes.
+    ///
+    /// <para>ConfigManager puts a <see cref="FileSystemWatcher"/> on the directory its config lives in.
+    /// Pointed at the machine temp directory it also sees every other file the rest of the suite writes
+    /// there, and the watcher's kernel buffer is a fixed 8 KB: on a loaded runner it overflows and the
+    /// change we are waiting for is dropped, never late. No wait ceiling can recover a dropped event, so
+    /// the watcher has to be given a quiet directory instead. Production already has one — the app's own
+    /// %AppData% folder.</para>
+    /// </summary>
+    private readonly string _tempDir =
+        Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"hvmt_test_{Guid.NewGuid():N}")).FullName;
+
+    private string WriteTempConfig(AppConfig cfg)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"hvmt_test_{Guid.NewGuid():N}.json");
+        var path = Path.Combine(_tempDir, $"hvmt_test_{Guid.NewGuid():N}.json");
         File.WriteAllText(path, JsonSerializer.Serialize(cfg, WriteOpts));
         return path;
     }
@@ -48,7 +61,7 @@ public class ConfigManagerTests : IDisposable
     /// <summary>Writes a raw JSON string verbatim (to simulate a hand-edited, non-canonical config).</summary>
     private string WriteRawTempConfig(string json)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"hvmt_test_{Guid.NewGuid():N}.json");
+        var path = Path.Combine(_tempDir, $"hvmt_test_{Guid.NewGuid():N}.json");
         File.WriteAllText(path, json);
         _tempFiles.Add(path);
         return path;
@@ -76,6 +89,8 @@ public class ConfigManagerTests : IDisposable
             try { File.Delete(f + ".tmp"); } catch { /* best-effort */ }
             try { foreach (var kept in BrokenCopiesOf(f)) File.Delete(kept); } catch { /* best-effort */ }
         }
+
+        try { Directory.Delete(_tempDir, recursive: true); } catch { /* best-effort */ }
     }
 
     // ── AddBridgedRule ────────────────────────────────────────────────────────
