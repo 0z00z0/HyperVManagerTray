@@ -138,11 +138,55 @@ jobs:
           Remove-Item $pfxPath -Force
           Write-Host 'Signed app exe + installer; PFX deleted.'
 
-      # ── 7b. Warn if signing was skipped (no secret) ─────────────────────────
-      - name: Warn if unsigned
-        if: ${{ env.CODE_SIGN_PFX == '' }}
+      # ── 7b. A tagged release without signing material fails ─────────────────
+      # Gated on the ref being a tag — the same discriminator the release step uses.
+      # A tag push publishes, so an unsigned installer must never get that far.
+      - name: Require signing material (tagged release)
+        if: ${{ github.ref_type == 'tag' && (env.CODE_SIGN_PFX == '' || env.CODE_SIGN_PASSWORD == '') }}
         shell: pwsh
-        run: Write-Warning 'CODE_SIGN_PFX secret not set — installer is UNSIGNED. Add the secret to sign CI releases.'
+        run: |
+          throw 'Signing secrets are not available to this run (CODE_SIGN_PFX / CODE_SIGN_PASSWORD). A tagged release is not published unsigned.'
+
+      # ── 7c. Warn when a dry run is unsigned ─────────────────────────────────
+      # workflow_dispatch publishes nothing, so an absent secret is informational.
+      - name: Warn if unsigned (dry run)
+        if: ${{ github.ref_type != 'tag' && (env.CODE_SIGN_PFX == '' || env.CODE_SIGN_PASSWORD == '') }}
+        shell: pwsh
+        run: Write-Warning 'Signing secrets not set — this dry-run installer is UNSIGNED. A tagged release would fail instead.'
+
+      # ── 7d. Prove the signature rather than trust the signing step ──────────
+      # Checks the produced files themselves: a signature is present, it is intact
+      # (NotSigned and HashMismatch are rejected), the signer is the certificate the
+      # release publishes for users to import, and the signature is timestamped.
+      # The status allow-list admits UnknownError/NotTrusted because the certificate
+      # is self-signed and a hosted runner does not trust it — a genuinely signed
+      # installer reports that there, so demanding 'Valid' would fail every release.
+      - name: Verify signatures
+        if: ${{ env.CODE_SIGN_PFX != '' }}
+        shell: pwsh
+        run: |
+          $expected = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            (Resolve-Path 'scripts\ZeroZeroSoftware.cer'))
+          $accepted = @('Valid', 'UnknownError', 'NotTrusted')
+
+          $targets = @(
+            'publish\HyperVManagerTray.exe',
+            "installer\Output\HyperVManagerTray-Setup-${{ steps.version.outputs.version }}.exe"
+          )
+
+          foreach ($target in $targets) {
+            if (-not (Test-Path $target)) { throw "Cannot verify '$target': file not found." }
+            $sig = Get-AuthenticodeSignature $target
+
+            if (-not $sig.SignerCertificate) { throw "'$target' carries no signature (status: $($sig.Status))." }
+            if ($accepted -notcontains [string]$sig.Status) { throw "'$target' has an unusable signature (status: $($sig.Status))." }
+            if ($sig.SignerCertificate.Thumbprint -ne $expected.Thumbprint) {
+              throw "'$target' is signed by '$($sig.SignerCertificate.Subject)', not by the published certificate '$($expected.Subject)'."
+            }
+            if (-not $sig.TimeStamperCertificate) { throw "'$target' is signed but not timestamped." }
+
+            Write-Host "Verified $target — signed by $($sig.SignerCertificate.Subject), timestamped, status $($sig.Status)."
+          }
 
       # ── 8. Compute SHA256 of the installer ───────────────────────────────────
       - name: Compute installer SHA256
