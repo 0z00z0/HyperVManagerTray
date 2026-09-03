@@ -68,12 +68,15 @@ if (-not (Test-Path $appIco)) {
 # Uses an installed .NET 10 Desktop Runtime instead of bundling it, keeping the
 # installer small. Windows App SDK is still self-contained (uncommon dependency).
 # H.NotifyIcon.WinUI and System.Drawing.Common ship as DLLs next to the exe.
+# WindowsAppSDKSelfContained is declared in HyperVManagerTray.csproj, never passed here: an MSBuild
+# property given on the command line is global and reaches every project in the graph, and a shared
+# class library errors when it receives it.
 Write-Host "==> Publishing app (framework-dependent win-x64, Windows App SDK bundled)..." -ForegroundColor Cyan
 Write-Host "    (ReadyToRun compilation may take several minutes  -  this is normal)" -ForegroundColor DarkGray
 if (Test-Path $publishDir) { Remove-Item $publishDir -Recurse -Force }
 dotnet publish $proj `
     -c Release -r win-x64 --self-contained false `
-    -p:WindowsAppSDKSelfContained=true -p:PublishTrimmed=false -p:PublishReadyToRun=true `
+    -p:PublishTrimmed=false -p:PublishReadyToRun=true `
     -o $publishDir -v minimal
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed ($LASTEXITCODE)." }
 
