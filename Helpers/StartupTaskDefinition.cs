@@ -57,6 +57,10 @@ internal static class StartupTaskDefinition
         td.Principal.RunLevel  = TaskRunLevel.Highest;             // requireAdministrator app, no logon UAC prompt
 
         ApplyPowerSafe(td.Settings);
+        // Explicit, not left to the library default (issue #71): Enable() re-registers with this
+        // definition via CreateOrUpdate, so switching the toggle on must also clear a previous
+        // disable, not merely leave it to chance.
+        td.Settings.Enabled = true;
         return td;
     }
 
