@@ -25,7 +25,7 @@
     <Product>Hyper-V Manager Tray</Product>
     <Description>System-tray app that auto-connects a Hyper-V VM to the right virtual switch and controls VMs from a dashboard.</Description>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
-    <Version>2.7.3</Version>
+    <Version>2.7.6</Version>
     <Authors>ZeroZero Software</Authors>
     <Company>ZeroZero Software</Company>
     <Copyright>Copyright © 2026 ZeroZero Software</Copyright>
@@ -80,10 +80,11 @@
     <ZeroZeroSharedDir Condition="'$(ZeroZeroSharedDir)' == ''">..\0z0-shared</ZeroZeroSharedDir>
   </PropertyGroup>
   <ItemGroup>
-    <!-- WindowsAppSDKSelfContained is a publish-time global property the app sets; MSBuild would
-         propagate it into this class-library reference, which errors ("should not be applied to a
-         class library"). Strip it for this reference only — the app aggregates the self-contained
-         Windows App SDK; the library just builds framework-dependent as normal. -->
+    <!-- WindowsAppSDKSelfContained applies to this application alone; a class library errors on it
+         ("should not be applied to a class library"). The property is declared in this project, so
+         it does not flow across a reference, and the metadata below keeps it off these libraries
+         even when a caller supplies it globally. The app aggregates the self-contained Windows App
+         SDK; the libraries build framework-dependent as normal. -->
     <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Brand.WinUI\ZeroZero.Brand.WinUI.csproj">
       <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
     </ProjectReference>
@@ -164,6 +165,10 @@
   <PropertyGroup>
     <PublishReadyToRun Condition="'$(Configuration)' != 'Debug'">true</PublishReadyToRun>
     <PublishTrimmed>false</PublishTrimmed>
+    <!-- Bundle the Windows App SDK with the app so no machine-wide runtime install is needed. It
+         belongs here rather than on a publish command line: a command-line property is global and
+         MSBuild carries it into every referenced project, where a class library errors on it. -->
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
   </PropertyGroup>
 
   <!--

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -117,6 +118,15 @@ public sealed class ConfigManager : IDisposable
     // volatile: set on the debounce timer thread, cleared by any thread that completes a successful Load.
     private volatile bool _failureAnnounced;
 
+    // True once ANY load has succeeded, so a save can tell "this is the user's config" from "this is the
+    // empty default _config was initialised to because the file never parsed". Never cleared: a LATER
+    // failed load leaves the last good config live, and writing that back over a broken hand-edit is the
+    // intended self-heal (ABrokenConfigIsAnnouncedAgainAfterAnInAppSaveSucceeded depends on it). It is
+    // only the never-loaded case that must not reach the file. See SaveAndReload's guard.
+    //
+    // volatile: set by whichever thread completes the first successful Load, read by every saver.
+    private volatile bool _everLoaded;
+
     public ConfigManager(string configPath, ILogger logger, LogLevelSwitch? levelSwitch = null)
     {
         _configPath  = configPath;
@@ -166,6 +176,9 @@ public sealed class ConfigManager : IDisposable
             // Maintenance Reload button all land here — which is exactly why the re-arm belongs here and
             // not in any single caller (see _failureAnnounced).
             _failureAnnounced = false;
+            // Latched beside the re-arm, and here for the same reason: this is the one place every
+            // successful load flows through, so no caller can forget to unlock saving.
+            _everLoaded = true;
             // Apply the loaded verbosity to the live gate immediately (issue #22) — this is the single
             // place every path (startup, UpdateLogLevel's SaveAndReload, a manual file edit) flows through.
             if (_levelSwitch is not null) _levelSwitch.MinimumLevel = loaded.LogLevel;
@@ -703,6 +716,23 @@ public sealed class ConfigManager : IDisposable
         // other. The build is inside deliberately — see the <paramref name="build"/> remarks.
         lock (_saveLock)
         {
+            // Never write a config that was never read. _config is initialised to an EMPTY AppConfig and
+            // is only replaced by a successful Load, so if the file exists but has never parsed, every
+            // mutator's With(...) snapshot is that empty default — and the write below is whole-document.
+            // One ordinary save (closing Settings suffices) would then put a blank config over the user's
+            // real file. Refuse instead, and throw rather than no-op silently: every mutator already
+            // throws on a write failure so the caller can say so, and a save that quietly did nothing is
+            // the "surface reports a state the app never confirmed" defect ConfigLoadUi exists to prevent.
+            if (!_everLoaded)
+            {
+                _logger.LogError("{Message} — config.json has never been read successfully, so there is no "
+                                 + "loaded config to write. Refusing to overwrite {Path}.",
+                                 failureMessage, _configPath);
+                throw new InvalidOperationException(
+                    "config.json has not been loaded successfully, so nothing can be saved over it. "
+                    + "Fix the file and reload.");
+            }
+
             if (build() is not { } request) return;   // nothing to write
 
             // The config this write replaces. Captured inside the lock, before the write, for the same
@@ -713,7 +743,11 @@ public sealed class ConfigManager : IDisposable
             _watcher.EnableRaisingEvents = false;
             try
             {
-                File.WriteAllText(_configPath, JsonSerializer.Serialize(request.Config, WriteOptions));
+                // The file about to be replaced does not parse, so it holds something nobody can get back
+                // — a hand-edit with a typo in it. Keep a copy before the self-heal writes over it.
+                PreserveUnreadableFile();
+
+                WriteAtomic(_configPath, JsonSerializer.Serialize(request.Config, WriteOptions));
                 _logger.LogInformation("{Message}", request.SuccessMessage);
 
                 // We just serialised this object ourselves, so a failed read-back is a bug (or the file
@@ -738,6 +772,99 @@ public sealed class ConfigManager : IDisposable
             {
                 _watcher.EnableRaisingEvents = true;
             }
+        }
+    }
+
+    /// <summary>How many <c>.broken-</c> copies are kept beside config.json before the oldest are dropped.</summary>
+    internal const int KeptBrokenCopies = 5;
+
+    /// <summary>
+    /// Serialises to a temporary file beside <paramref name="path"/> and renames it over the target, so the
+    /// file a reader sees is always either the whole old config or the whole new one — never the truncated
+    /// middle of a write. <c>File.WriteAllText</c> opens the target with <c>FileMode.Create</c>, i.e. it
+    /// TRUNCATES the user's config first and only then starts writing it back; losing power, or being
+    /// killed, in that window leaves a config.json that no longer parses.
+    ///
+    /// <para>The temp file is a sibling on purpose: a rename is only atomic within one volume, and
+    /// <c>%TEMP%</c> is routinely on another. Flushed through to disk before the rename, so the rename
+    /// cannot win the race against the contents it is publishing.</para>
+    /// </summary>
+    /// <remarks>
+    /// The temp name never matches the <see cref="FileSystemWatcher"/> filter, which is the literal config
+    /// file name, so writing it cannot provoke a reload of its own.
+    /// </remarks>
+    private static void WriteAtomic(string path, string contents)
+    {
+        var tempPath = path + ".tmp";
+
+        using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        using (var writer = new StreamWriter(stream))
+        {
+            writer.Write(contents);
+            writer.Flush();
+            stream.Flush(flushToDisk: true);
+        }
+
+        try
+        {
+            File.Move(tempPath, path, overwrite: true);
+        }
+        catch
+        {
+            // The rename is the only step that can touch the target, so a failure here leaves the previous
+            // config whole — which is the point. Clear the temp so the next write starts clean; if even
+            // that fails, the original exception is still the one worth reporting.
+            try { File.Delete(tempPath); } catch { /* best-effort */ }
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Copies config.json aside under a dated name when it is about to be overwritten while unreadable.
+    /// Does nothing when the last load succeeded — an ordinary save replaces a file whose contents are
+    /// already loaded and therefore not lost.
+    ///
+    /// <para>The case this exists for: the app is running on a good config, the user hand-edits the file
+    /// and gets the JSON wrong, and then does anything at all in the app. The write is a self-heal — the
+    /// last good config goes back on disk — but it also destroys the edit the user was in the middle of,
+    /// which may be an hour of rules they cannot retype. Keeping a copy costs a few KB.</para>
+    ///
+    /// <para>Best-effort by design: a failure to preserve is logged and swallowed. Refusing to save the
+    /// user's actual change because a courtesy copy failed would be the worse outcome of the two.</para>
+    /// </summary>
+    private void PreserveUnreadableFile()
+    {
+        if (LastLoad.Succeeded) return;
+
+        try
+        {
+            if (!File.Exists(_configPath)) return;
+
+            var dir      = Path.GetDirectoryName(_configPath)!;
+            var stem     = Path.GetFileNameWithoutExtension(_configPath);
+            var ext      = Path.GetExtension(_configPath);
+            // ISO 8601 basic time form: a colon is not a legal filename character on Windows. Invariant
+            // because this is a machine-readable name, and local time because it is read next to the log.
+            var stamp    = DateTime.Now.ToString("yyyy-MM-dd'T'HHmmss", CultureInfo.InvariantCulture);
+            var pattern  = $"{stem}.broken-*{ext}";
+            var kept     = Path.Combine(dir, $"{stem}.broken-{stamp}{ext}");
+
+            File.Copy(_configPath, kept, overwrite: true);
+            _logger.LogWarning("config.json at {Path} could not be read and is about to be replaced — "
+                               + "kept a copy of it at {Kept}", _configPath, kept);
+
+            // Sorted by NAME, not by timestamp: the stamp format sorts lexicographically in chronological
+            // order, and a filename cannot be perturbed by a copy or a sync client the way a file time can.
+            var stale = Directory.GetFiles(dir, pattern)
+                                 .OrderByDescending(f => f, StringComparer.Ordinal)
+                                 .Skip(KeptBrokenCopies);
+            foreach (var old in stale)
+                try { File.Delete(old); } catch { /* best-effort */ }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Could not keep a copy of the unreadable config at {Path} — saving anyway",
+                             _configPath);
         }
     }
 
@@ -809,7 +936,10 @@ public sealed class ConfigManager : IDisposable
             if (File.Exists(configPath)) return false;
 
             Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
-            File.WriteAllText(configPath, DefaultConfig.Json);
+            // Atomic like every other write to this file: an interrupted default write would leave a
+            // truncated config.json that never parses, which then blocks saving entirely (see the
+            // _everLoaded guard in SaveAndReload).
+            WriteAtomic(configPath, DefaultConfig.Json);
             logger?.LogInformation("No config.json at {Path} — created a default one", configPath);
             return true;
         }
