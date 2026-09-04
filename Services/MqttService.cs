@@ -1,6 +1,7 @@
 using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Models;
 using Microsoft.Extensions.Logging;
+using Microsoft.Win32;
 using ZeroZero.Mqtt;
 using ZeroZero.Mqtt.Discovery;
 using ZeroZero.Mqtt.WinUI;
@@ -148,6 +149,10 @@ public sealed class MqttService : IDisposable
         _store.Changed += OnSettingsChanged;
         _groups.Changed += OnGroupsChanged;
         _connection!.StateChanged += OnConnectionState;
+        // Issue #83: the connection deliberately does not subscribe to system events itself — the
+        // unsubscribe lifetime belongs to the host — so without this the device only clears the
+        // 60-second ConnectedPoll notices the link died across the suspend.
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
 
         Apply();
     }
@@ -307,6 +312,14 @@ public sealed class MqttService : IDisposable
         _log.LogWarning("MQTT: {Entity} refused ({Outcome}). {Detail}",
                         refusal.EntityId, refusal.Outcome, refusal.Detail);
 
+    /// <summary>Resume only: sleep and every other <see cref="PowerModes"/> value are not a dead link.
+    /// <see cref="MqttConnection.OnPowerResume"/> is itself a no-op with publishing off or no connection,
+    /// so nothing here needs to check either first.</summary>
+    private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Resume) _connection?.OnPowerResume();
+    }
+
     // ── Withdrawal ──────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -433,6 +446,7 @@ public sealed class MqttService : IDisposable
         _store.Changed -= OnSettingsChanged;
         _groups.Changed -= OnGroupsChanged;
         if (_connection is not null) _connection.StateChanged -= OnConnectionState;
+        SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         _metrics.Release();
 
         return Task.Run(() =>
