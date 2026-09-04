@@ -31,6 +31,29 @@ internal static class AppInfo
     /// </summary>
     internal static string FormatVersion(Version? version) => version?.ToString(3) ?? "unknown";
 
+    /// <summary>
+    /// The build-identifying line written to the log at the start of every run (issue #93), so a log
+    /// is attributable to a build without the update check having completed.
+    /// </summary>
+    public static string StartupVersionLine => FormatStartupVersionLine(
+        Assembly.GetExecutingAssembly()
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
+        Assembly.GetExecutingAssembly().GetName().Version);
+
+    /// <summary>
+    /// Pure formatting helper, extracted so it can be unit-tested without a WinUI runtime. The
+    /// informational version leads because it carries the source revision the four-component
+    /// assembly version cannot; the assembly version follows because that is what the update check
+    /// and the installer compare against. Falls back to the assembly version alone when the build
+    /// stamped no informational version, and to "unknown" when neither is available.
+    /// </summary>
+    internal static string FormatStartupVersionLine(string? informational, Version? assemblyVersion)
+    {
+        var assembly = assemblyVersion?.ToString() ?? "unknown";
+        var build    = string.IsNullOrWhiteSpace(informational) ? assembly : informational.Trim();
+        return $"{Name} {build} starting (assembly {assembly})";
+    }
+
     /// <summary>Per-user data directory (<c>%APPDATA%\HyperVManagerTray</c>). Not created by this getter.</summary>
     public static string DataDir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), Id);

@@ -139,6 +139,13 @@ public partial class App : Application
                 }, _logLevelSwitch);
             });
 
+            // First write of every run (issue #93): which build produced this log. Warning, and not
+            // Information, so it survives a logLevel raised to Warning or Error; a routine startup
+            // banner is not Critical, so a logLevel of Critical does drop it. Unconditional, so it
+            // lands even when the update check (the only other version-bearing line) never
+            // completes, and before anything below can fail.
+            _loggerFactory.CreateLogger("startup").LogWarning("{Event}", AppInfo.StartupVersionLine);
+
             // Capture a minidump if the app dies from a NATIVE fault (GDI+, comctl32, the
             // WinUI/Mica compositor during a dock/display/power transition, …).  Those bypass
             // the managed handlers below, so without this a crash leaves no trace at all.
@@ -408,7 +415,9 @@ public partial class App : Application
         _trayIcon.LeftClickCommand  = new RelayCommand(ToggleDashboard);
         _trayIcon.RightClickCommand = new RelayCommand(OnTrayRightClick);
 
-        _trayIcon.ForceCreate();
+        // Explicit false: the default arms EcoQoS and IDLE_PRIORITY_CLASS across the whole process and
+        // never undoes them, which starves the message pump — and so the tray — under host load.
+        _trayIcon.ForceCreate(enablesEfficiencyMode: false);
 
         // Issue #54 milestone. ForceCreate() has returned, so Shell_NotifyIcon(NIM_ADD) was accepted —
         // "created", deliberately not "visible": when the shell paints it (or whether it folds it into

@@ -59,6 +59,16 @@ public sealed class MqttConfigStore : IMqttSettingsStore, IDisposable
     /// <summary>Where the broker last answered, or null when nothing has been recorded.</summary>
     public MqttEndpointMemory? RecallEndpoint() => _config.Current.Mqtt.Endpoint;
 
+    /// <summary>Whether the power verbs are published as one button each rather than as one select.
+    /// Outside <see cref="MqttSettings"/> for the same reason the endpoint memory is: it raises no
+    /// <see cref="Changed"/>, so a shape change rebuilds the entity table without the broker settings
+    /// reading as having moved and bouncing the connection.</summary>
+    public bool PowerButtons => _config.Current.Mqtt.PowerButtons;
+
+    /// <inheritdoc cref="PowerButtons"/>
+    public void SetPowerButtons(bool on) =>
+        _config.UpdateMqtt(section => section.PowerButtons = on);
+
     public void Dispose() => _config.ConfigReloaded -= OnConfigReloaded;
 
     private void OnConfigReloaded(object? sender, ConfigReloadedEventArgs e)

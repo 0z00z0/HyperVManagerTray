@@ -14,7 +14,6 @@
 ; Matches the task name used by the app's in-tray "Run on startup" toggle (StartupManager),
 ; so the installer option and the tray toggle control the exact same logon task.
 #define TaskName      "HyperVManagerTray"
-#define WingetId      "0z00z0.HyperVManagerTray"
 
 #ifndef AppVersion
   #define AppVersion "2.0.0"
@@ -62,7 +61,7 @@ WizardSmallImageFile=wizard\wizsmall-55x58.bmp,wizard\wizsmall-69x73.bmp,wizard\
 ; interactive upgrade: the app is requireAdministrator (high integrity) and this installer
 ; is per-user (low integrity), so it has no rights to terminate it.  PrepareToInstall (see
 ; [Code]) handles that case with a single elevated taskkill.  CloseApplications stays on as
-; the non-elevated fallback for the silent (winget) path, which never elevates.  Do NOT
+; the non-elevated fallback for the silent path, which never elevates.  Do NOT
 ; auto-restart — the app is relaunched explicitly by LaunchApp on interactive installs only.
 CloseApplications=yes
 RestartApplications=no
@@ -82,7 +81,6 @@ Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; IconFilename: "{
 
 [Tasks]
 Name: "runstartup"; Description: "Run {#AppName} automatically at sign-in (starts elevated without a UAC prompt at boot)"; Flags: unchecked
-Name: "autoupdate"; Description: "Auto update in background (checks for updates via winget after each sign-in)"
 
 ; ── Repair poisoned installs ────────────────────────────────────────────────
 ; An older SELF-CONTAINED build (≤ April 2026) deposited a full app-local .NET
@@ -366,25 +364,13 @@ begin
             '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
-procedure RegisterAutoUpdateTask();
-var
-  ResultCode: Integer;
-  Params: string;
-begin
-  // Per-user, NON-elevated logon task (runs 5 min after sign-in) that lets winget pull
-  // any newer published version silently. No /RL HIGHEST -> creating it needs no admin,
-  // so the "Auto update in background" option never triggers a UAC prompt.
-  Params := '/Create /TN "' + UpdateTaskName + '" /TR "winget upgrade --id {#WingetId} '
-          + '--silent --accept-package-agreements --accept-source-agreements" /SC ONLOGON '
-          + '/DELAY 0005:00 /F';
-  Exec('schtasks.exe', Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-end;
-
 procedure RemoveAutoUpdateTask();
 var
   ResultCode: Integer;
 begin
-  // Non-elevated; harmless if the task doesn't exist.
+  // Older installs left a per-user logon task behind that has no work to do: it invoked a
+  // package manager this app is not published to, so every run ended in file-not-found.
+  // Removed on install and on uninstall alike. Non-elevated; harmless if absent.
   Exec('schtasks.exe', '/Delete /TN "' + UpdateTaskName + '" /F', '',
        SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
@@ -417,9 +403,9 @@ begin
   // Close the running app BEFORE files are copied, otherwise its locked exe/dll can't be
   // overwritten on upgrade.  The Restart Manager (CloseApplications) can't do it because the
   // app runs elevated while this installer doesn't, so an interactive upgrade elevates a
-  // single taskkill — one UAC prompt, exactly like the uninstaller.  Silent installs (the
-  // winget background update) are skipped so they never pop a prompt; they replace the files
-  // the next time the app happens not to be running.
+  // single taskkill — one UAC prompt, exactly like the uninstaller.  Silent installs (scripted
+  // or MDM-driven) are skipped so they never pop a prompt; they replace the files the next time
+  // the app happens not to be running.
   if (not WizardSilent()) and AppIsRunning() then
   begin
     ShellExec('runas', ExpandConstant('{cmd}'),
@@ -441,8 +427,9 @@ begin
     // /MERGETASKS=runstartup leaves it uncreated, and Settings → "Run on startup" registers it with no
     // prompt. Never created behind the user's back: its existence IS the toggle's state.
     if (not WizardSilent()) and WizardIsTaskSelected('runstartup') then RegisterStartupTask();
-    // Non-elevated (no /RL HIGHEST), so this one is safe to run silently.
-    if WizardIsTaskSelected('autoupdate') then RegisterAutoUpdateTask();
+    // Clear the dead background-update task from machines carrying one. Unconditional, so an
+    // upgrade cleans up whether or not the option was ever ticked. Non-elevated, no prompt.
+    RemoveAutoUpdateTask();
     // Auto-launch only on an interactive install (not silent installs). Runs after task
     // creation so a freshly-created startup task is used for a prompt-free launch.
     if not WizardSilent() then LaunchApp();

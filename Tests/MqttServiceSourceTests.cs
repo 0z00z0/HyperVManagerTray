@@ -161,4 +161,39 @@ public class MqttServiceSourceTests
 
         Assert.Matches(new Regex(@"_publish\.Signal\(_connection\?\.IsConnected \?\? false\)"), body);
     }
+
+    // ── Defect 3: resume from standby (issue #83) ───────────────────────────────
+    //
+    // Start() and BeginDisposeAsync() are not usable with Body() here: it locates a method's end by
+    // finding the next "private" member, and Start() is followed by public properties before the next
+    // private one, while BeginDisposeAsync() is the last private member in the class (only the public
+    // Dispose() follows) — so these three assert directly against the whole source, the same way the
+    // withdrawal-routing and gate tests above do.
+
+    /// <summary><c>MqttConnection.OnPowerResume</c> documents that it does not subscribe to system events
+    /// itself — the host must. Without this subscription the device lingers unavailable until the
+    /// 60-second <c>ConnectedPoll</c> notices the link died across the suspend.</summary>
+    [Fact]
+    public void Start_SubscribesToPowerModeChanged()
+    {
+        Assert.Matches(new Regex(@"SystemEvents\.PowerModeChanged\s*\+=\s*OnPowerModeChanged\s*;"), ServiceSource());
+    }
+
+    /// <summary>Every other <see cref="Microsoft.Win32.PowerModes"/> value — Suspend, StatusChange — is
+    /// not a dead link, and calling <c>OnPowerResume</c> on those would force a reconnect for nothing.</summary>
+    [Fact]
+    public void PowerModeHandler_ActsOnResumeOnly()
+    {
+        var src = ServiceSource();
+
+        Assert.Matches(new Regex(@"if\s*\(\s*e\.Mode\s*==\s*PowerModes\.Resume\s*\)\s*_connection\?\.OnPowerResume\s*\(\s*\)\s*;"), src);
+    }
+
+    /// <summary>A handler left attached keeps <c>MqttService</c> alive for the process's life —
+    /// <c>SystemEvents</c> holds a static event, so the unsubscribe has to sit alongside the other five.</summary>
+    [Fact]
+    public void Dispose_UnsubscribesFromPowerModeChanged()
+    {
+        Assert.Matches(new Regex(@"SystemEvents\.PowerModeChanged\s*-=\s*OnPowerModeChanged\s*;"), ServiceSource());
+    }
 }

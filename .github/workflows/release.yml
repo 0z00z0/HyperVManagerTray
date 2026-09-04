@@ -138,11 +138,55 @@ jobs:
           Remove-Item $pfxPath -Force
           Write-Host 'Signed app exe + installer; PFX deleted.'
 
-      # ── 7b. Warn if signing was skipped (no secret) ─────────────────────────
-      - name: Warn if unsigned
-        if: ${{ env.CODE_SIGN_PFX == '' }}
+      # ── 7b. A tagged release without signing material fails ─────────────────
+      # Gated on the ref being a tag — the same discriminator the release step uses.
+      # A tag push publishes, so an unsigned installer must never get that far.
+      - name: Require signing material (tagged release)
+        if: ${{ github.ref_type == 'tag' && (env.CODE_SIGN_PFX == '' || env.CODE_SIGN_PASSWORD == '') }}
         shell: pwsh
-        run: Write-Warning 'CODE_SIGN_PFX secret not set — installer is UNSIGNED. Add the secret to sign CI releases.'
+        run: |
+          throw 'Signing secrets are not available to this run (CODE_SIGN_PFX / CODE_SIGN_PASSWORD). A tagged release is not published unsigned.'
+
+      # ── 7c. Warn when a dry run is unsigned ─────────────────────────────────
+      # workflow_dispatch publishes nothing, so an absent secret is informational.
+      - name: Warn if unsigned (dry run)
+        if: ${{ github.ref_type != 'tag' && (env.CODE_SIGN_PFX == '' || env.CODE_SIGN_PASSWORD == '') }}
+        shell: pwsh
+        run: Write-Warning 'Signing secrets not set — this dry-run installer is UNSIGNED. A tagged release would fail instead.'
+
+      # ── 7d. Prove the signature rather than trust the signing step ──────────
+      # Checks the produced files themselves: a signature is present, it is intact
+      # (NotSigned and HashMismatch are rejected), the signer is the certificate the
+      # release publishes for users to import, and the signature is timestamped.
+      # The status allow-list admits UnknownError/NotTrusted because the certificate
+      # is self-signed and a hosted runner does not trust it — a genuinely signed
+      # installer reports that there, so demanding 'Valid' would fail every release.
+      - name: Verify signatures
+        if: ${{ env.CODE_SIGN_PFX != '' }}
+        shell: pwsh
+        run: |
+          $expected = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            (Resolve-Path 'scripts\ZeroZeroSoftware.cer'))
+          $accepted = @('Valid', 'UnknownError', 'NotTrusted')
+
+          $targets = @(
+            'publish\HyperVManagerTray.exe',
+            "installer\Output\HyperVManagerTray-Setup-${{ steps.version.outputs.version }}.exe"
+          )
+
+          foreach ($target in $targets) {
+            if (-not (Test-Path $target)) { throw "Cannot verify '$target': file not found." }
+            $sig = Get-AuthenticodeSignature $target
+
+            if (-not $sig.SignerCertificate) { throw "'$target' carries no signature (status: $($sig.Status))." }
+            if ($accepted -notcontains [string]$sig.Status) { throw "'$target' has an unusable signature (status: $($sig.Status))." }
+            if ($sig.SignerCertificate.Thumbprint -ne $expected.Thumbprint) {
+              throw "'$target' is signed by '$($sig.SignerCertificate.Subject)', not by the published certificate '$($expected.Subject)'."
+            }
+            if (-not $sig.TimeStamperCertificate) { throw "'$target' is signed but not timestamped." }
+
+            Write-Host "Verified $target — signed by $($sig.SignerCertificate.Subject), timestamped, status $($sig.Status)."
+          }
 
       # ── 8. Compute SHA256 of the installer ───────────────────────────────────
       - name: Compute installer SHA256
@@ -154,65 +198,9 @@ jobs:
           Write-Host "SHA256: $hash"
           "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      # ── 9. Update winget manifests ───────────────────────────────────────────
-      - name: Update winget manifest
-        shell: pwsh
-        run: |
-          $ver    = '${{ steps.version.outputs.version }}'
-          $sha256 = '${{ steps.sha256.outputs.sha256 }}'
-          $tag    = "v$ver"
-
-          $installerYaml = 'installer\winget\0z00z0.HyperVManagerTray.installer.yaml'
-          $versionYaml   = 'installer\winget\0z00z0.HyperVManagerTray.yaml'
-          $localeYaml    = 'installer\winget\0z00z0.HyperVManagerTray.locale.en-GB.yaml'
-
-          # Helper: replace a YAML scalar in-place
-          function Set-YamlValue {
-            param([string]$File, [string]$Key, [string]$Value)
-            $content = Get-Content $File -Raw
-            $content = $content -replace "(?m)^($Key\s*:\s*).*$", "`${1}$Value"
-            Set-Content $File -Value $content -NoNewline
-          }
-
-          # installer manifest
-          Set-YamlValue $installerYaml 'PackageVersion'   $ver
-          Set-YamlValue $installerYaml 'InstallerSha256'  $sha256
-
-          # Update InstallerUrl to point at the new release asset
-          $url = "https://github.com/${{ github.repository }}/releases/download/$tag/HyperVManagerTray-Setup-$ver.exe"
-          Set-YamlValue $installerYaml 'InstallerUrl' $url
-
-          # Also update DisplayVersion inside AppsAndFeaturesEntries
-          Set-YamlValue $installerYaml 'DisplayVersion' $ver
-
-          # version manifest
-          Set-YamlValue $versionYaml 'PackageVersion' $ver
-
-          # locale manifest
-          Set-YamlValue $localeYaml 'PackageVersion' $ver
-
-          Write-Host "Manifests updated:"
-          Get-Content $installerYaml | Write-Host
-
-      # ── 10. Validate winget manifests (against the patched files) ────────────
-      - name: Validate winget manifests
-        shell: pwsh
-        run: |
-          $wg = Get-Command winget -ErrorAction SilentlyContinue
-          if (-not $wg) {
-            Write-Warning 'winget not found on this runner; skipping manifest validation.'
-          } else {
-            winget validate --manifest installer\winget
-            if ($LASTEXITCODE -ne 0) {
-              Write-Error "winget validate failed (exit $LASTEXITCODE)."
-              exit $LASTEXITCODE
-            }
-            Write-Host 'Manifests are valid.'
-          }
-
-      # ── 11. Create GitHub Release (tag pushes only) ──────────────────────────
-      # A manual workflow_dispatch is a dry-run: it builds, tests, signs, and
-      # validates the manifests but does NOT publish a release.
+      # ── 9. Create GitHub Release (tag pushes only) ───────────────────────────
+      # A manual workflow_dispatch is a dry-run: it builds, tests and signs, but
+      # does NOT publish a release.
       - name: Create GitHub Release
         if: ${{ github.ref_type == 'tag' }}
         uses: softprops/action-gh-release@v3
@@ -223,64 +211,10 @@ jobs:
           prerelease: false
           files: |
             installer/Output/HyperVManagerTray-Setup-*.exe
-            installer/winget/0z00z0.HyperVManagerTray.installer.yaml
-            installer/winget/0z00z0.HyperVManagerTray.yaml
-            installer/winget/0z00z0.HyperVManagerTray.locale.en-GB.yaml
             scripts/ZeroZeroSoftware.cer
           body: |
             ## Hyper-V Manager Tray v${{ steps.version.outputs.version }}
 
-            **Install / upgrade via winget:**
-            ```
-            winget install 0z00z0.HyperVManagerTray
-            winget upgrade 0z00z0.HyperVManagerTray
-            ```
-
-            Or download `HyperVManagerTray-Setup-${{ steps.version.outputs.version }}.exe` below — per-user installer, no admin required.
+            Download `HyperVManagerTray-Setup-${{ steps.version.outputs.version }}.exe` below — per-user installer, no admin required. Run it over an existing install to upgrade.
 
             **SHA256 (installer):** `${{ steps.sha256.outputs.sha256 }}`
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Post-release: download the manifest assets from the release and re-validate
-  # ─────────────────────────────────────────────────────────────────────────────
-  validate-manifests:
-    runs-on: windows-latest
-    needs: release
-    # Only runs for real (tag) releases — a dispatch dry-run publishes no assets.
-    if: ${{ github.ref_type == 'tag' }}
-
-    steps:
-      # Download the three winget manifest assets that were attached to the release
-      - name: Download winget manifests from release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $tag = 'v${{ needs.release.outputs.version }}'
-          $outDir = 'winget-validate'
-          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-
-          $assets = @(
-            '0z00z0.HyperVManagerTray.installer.yaml',
-            '0z00z0.HyperVManagerTray.yaml',
-            '0z00z0.HyperVManagerTray.locale.en-GB.yaml'
-          )
-          foreach ($a in $assets) {
-            gh release download $tag --repo ${{ github.repository }} --pattern $a --dir $outDir
-          }
-
-      - name: Validate downloaded manifests
-        shell: pwsh
-        run: |
-          $wg = Get-Command winget -ErrorAction SilentlyContinue
-          if (-not $wg) {
-            Write-Warning 'winget not found on this runner; skipping manifest validation.'
-            exit 0
-          }
-
-          winget validate --manifest winget-validate
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "winget validate failed (exit $LASTEXITCODE)."
-            exit $LASTEXITCODE
-          }
-          Write-Host 'Released manifests are valid.'

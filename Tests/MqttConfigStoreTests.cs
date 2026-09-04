@@ -35,9 +35,22 @@ public class MqttConfigStoreTests : IDisposable
 
     private readonly List<string> _tempFiles = [];
 
+    /// <summary>
+    /// A directory of this test class's own, holding nothing but the configs it writes.
+    ///
+    /// <para>ConfigManager puts a <see cref="FileSystemWatcher"/> on the directory its config lives in.
+    /// Pointed at the machine temp directory it also sees every other file the rest of the suite writes
+    /// there, and the watcher's kernel buffer is a fixed 8 KB: on a loaded runner it overflows and the
+    /// change we are waiting for is dropped, never late. No wait ceiling can recover a dropped event, so
+    /// the watcher has to be given a quiet directory instead. Production already has one — the app's own
+    /// %AppData% folder.</para>
+    /// </summary>
+    private readonly string _tempDir =
+        Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"hvmt_mqtt_{Guid.NewGuid():N}")).FullName;
+
     private string WriteTempConfig(AppConfig cfg)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"hvmt_mqtt_{Guid.NewGuid():N}.json");
+        var path = Path.Combine(_tempDir, $"hvmt_mqtt_{Guid.NewGuid():N}.json");
         File.WriteAllText(path, JsonSerializer.Serialize(cfg, WriteOpts));
         _tempFiles.Add(path);
         return path;
@@ -109,6 +122,7 @@ public class MqttConfigStoreTests : IDisposable
     {
         foreach (var f in _tempFiles)
             try { File.Delete(f); } catch { /* best-effort */ }
+        try { Directory.Delete(_tempDir, recursive: true); } catch { /* best-effort */ }
         GC.SuppressFinalize(this);
     }
 
@@ -157,6 +171,7 @@ public class MqttConfigStoreTests : IDisposable
         using var store = InlineStore(config);
         store.Update(s => { s.Enabled = true; s.Host = "broker.lan"; s.Username = "hvmt"; });
         store.RememberEndpoint(new MqttEndpointMemory("broker.lan", "hvmt", 8883, MqttTransport.Tcp, true));
+        store.SetPowerButtons(true);
 
         config.UpdateLogLevel(LogLevel.Error);
         config.SaveSettingsWindowRect(new WindowRect(10, 20, 900, 700));
@@ -167,6 +182,7 @@ public class MqttConfigStoreTests : IDisposable
         Assert.Equal("broker.lan", saved.Mqtt.Settings.Host);
         Assert.Equal("hvmt", saved.Mqtt.Settings.Username);
         Assert.Equal(8883, saved.Mqtt.Endpoint?.Port);
+        Assert.True(saved.Mqtt.PowerButtons);
     }
 
     /// <summary>Group state rides in the settings block, so it survives every unrelated write for the
@@ -192,7 +208,7 @@ public class MqttConfigStoreTests : IDisposable
     [InlineData("""{ "logLevel": "Debug", "mqtt": { "settings": null } }""")]
     public void AConfigWithNoUsableMqttSection_LoadsAsConfiguredAndDisabled(string json)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"hvmt_mqtt_{Guid.NewGuid():N}.json");
+        var path = Path.Combine(_tempDir, $"hvmt_mqtt_{Guid.NewGuid():N}.json");
         File.WriteAllText(path, json);
         using var config = MakeManager(path);
 
@@ -286,6 +302,93 @@ public class MqttConfigStoreTests : IDisposable
 
         Assert.Equal(0, changes);
         Assert.Equal(1883, store.RecallEndpoint()?.Port);   // …but it was recorded
+    }
+
+    // ── The power shape is this app's setting, not the module's ─────────────────
+
+    /// <summary>Off is the default and the shape an existing installation keeps: the buttons are opt-in,
+    /// and a config written before the field existed must not read as having opted in.</summary>
+    [Theory]
+    [InlineData("""{ "logLevel": "Debug" }""")]
+    [InlineData("""{ "logLevel": "Debug", "mqtt": { "settings": { "enabled": true } } }""")]
+    public void PowerButtons_AreOffForAConfigThatNeverNamedThem(string json)
+    {
+        var path = Path.Combine(_tempDir, $"hvmt_mqtt_{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, json);
+        using var config = MakeManager(path);
+        using var store = InlineStore(config);
+
+        Assert.False(store.PowerButtons);
+    }
+
+    [Fact]
+    public void SetPowerButtons_RoundTripsThroughTheStoreAndTheFile()
+    {
+        var path = WriteTempConfig(PopulatedConfig());
+        using var config = MakeManager(path);
+        using var store = InlineStore(config);
+
+        store.SetPowerButtons(true);
+
+        Assert.True(store.PowerButtons);
+        Assert.True(ReadConfig(path).Mqtt.PowerButtons);
+        AssertUnrelatedConfigIntact(ReadConfig(path));
+
+        store.SetPowerButtons(false);
+
+        Assert.False(store.PowerButtons);
+        Assert.False(ReadConfig(path).Mqtt.PowerButtons);
+    }
+
+    /// <summary>
+    /// <c>UpdateMqtt</c> mutates a <see cref="MqttSection.Copy"/> and writes the result back whole, so a
+    /// field the copy forgets is not left alone — it is written back as its default and lost. Asserted
+    /// both ways: a broker write must not blank the power shape, and a power-shape write must not blank
+    /// the broker settings or the endpoint memory.
+    /// </summary>
+    [Fact]
+    public void APowerShapeWriteAndABrokerWrite_EachPreserveTheOther()
+    {
+        var path = WriteTempConfig(PopulatedConfig());
+        using var config = MakeManager(path);
+        using var store = InlineStore(config);
+
+        store.SetPowerButtons(true);
+        store.Update(s => { s.Enabled = true; s.Host = "broker.lan"; s.Username = "hvmt"; });
+        store.RememberEndpoint(new MqttEndpointMemory("broker.lan", "hvmt", 8883, MqttTransport.Tcp, true));
+
+        var saved = ReadConfig(path);
+        Assert.True(saved.Mqtt.PowerButtons);
+        Assert.Equal("broker.lan", saved.Mqtt.Settings.Host);
+        Assert.Equal(8883, saved.Mqtt.Endpoint?.Port);
+
+        store.SetPowerButtons(false);
+
+        saved = ReadConfig(path);
+        Assert.False(saved.Mqtt.PowerButtons);
+        Assert.True(saved.Mqtt.Settings.Enabled);
+        Assert.Equal("broker.lan", saved.Mqtt.Settings.Host);
+        Assert.Equal("hvmt", saved.Mqtt.Settings.Username);
+        Assert.Equal(8883, saved.Mqtt.Endpoint?.Port);
+    }
+
+    /// <summary>The power shape is outside <see cref="MqttSettings"/> for the reason the endpoint memory
+    /// is: a consumer that re-applies its connection on <c>Changed</c> must not bounce the socket because
+    /// the entity table was rebuilt. The rebuild rides on the config reload instead.</summary>
+    [Fact]
+    public void SetPowerButtons_RaisesNoSettingsChange()
+    {
+        var path = WriteTempConfig(new AppConfig());
+        using var config = MakeManager(path);
+        using var store = InlineStore(config);
+
+        var changes = 0;
+        store.Changed += () => changes++;
+
+        store.SetPowerButtons(true);
+        store.SetPowerButtons(false);
+
+        Assert.Equal(0, changes);
     }
 
     // ── Changed ─────────────────────────────────────────────────────────────────

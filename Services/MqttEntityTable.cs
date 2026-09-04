@@ -29,6 +29,12 @@ public sealed record MqttEntitySpec
     /// <summary>Requests a power verb for one VM. Reached only through <see cref="MqttCommandGate"/>.</summary>
     public required Func<string, VmOpKind, CancellationToken, Task> Power { get; init; }
 
+    /// <summary>Which shape the power verbs take: one button per verb when true, a single select of
+    /// them when false. A value read once at <see cref="MqttEntityTable.Build"/> rather than a delegate
+    /// read per pass, and deliberately so — the two shapes are different entities, and swapping them
+    /// has to rebuild the set so the shape being left behind is evicted rather than stranded.</summary>
+    public bool PowerButtons { get; init; }
+
     /// <summary>Forces one VM onto one switch.</summary>
     public required Func<string, string, CancellationToken, Task> OverrideSwitch { get; init; }
 }
@@ -75,7 +81,7 @@ public static class MqttEntityTable
             Info: "The rule in force, the virtual switch and host adapter it bound, and two buttons: "
                 + "re-check the network, and repair host networking."),
         new PublishGroup(VmGroup, "Virtual machines",
-            Info: "Each managed VM's state, an on/off switch, a power verb, and a switch override."),
+            Info: "Each managed VM's state, an on/off switch, its power verbs, and a switch override."),
         new PublishGroup(DiagnosticsGroup, "Diagnostics",
             Info: "Host IP and gateway, and each VM's switch, guest IP, uptime and last operation."),
         new PublishGroup(MetricsGroup, "VM metrics",
@@ -110,17 +116,45 @@ public static class MqttEntityTable
     /// <summary>The head every per-VM id carries, and every suffix one ends in — the bare power
     /// switch's empty suffix included. The slug budget and the collision check are both composed from
     /// these, so a suffix missing here is one nothing sizes or de-duplicates against.</summary>
+    /// <remarks><b>Both power shapes are declared, not the one in force.</b> A budget following the
+    /// active shape would be recomputed the moment <see cref="MqttEntitySpec.PowerButtons"/> is flipped,
+    /// and a VM name that fitted under one shape would throw the whole table out under the other — the
+    /// startup crash the budget exists to prevent, triggered by a setting instead of a rename. Sizing
+    /// against the union also keeps a slug the same in both shapes, so switching shape moves the power
+    /// controls and nothing else.</remarks>
     internal const string VmIdPrefix = "vm_";
+
+    /// <summary>The suffix the power select carries.</summary>
+    internal const string PowerSelectSuffix = "_power";
+
+    /// <summary>The suffix one power button carries: the verb in the id alphabet.</summary>
+    internal static string PowerButtonSuffix(VmOpKind kind) =>
+        PowerSelectSuffix + "_" + kind.ToString().ToLowerInvariant();
 
     /// <inheritdoc cref="VmIdPrefix"/>
     internal static readonly IReadOnlyList<string> VmIdSuffixes =
     [
         "", "_state", "_running", "_switch", "_ip", "_uptime", "_operation",
-        "_cpu", "_memory", "_vhd", "_power", "_switch_override",
+        "_cpu", "_memory", "_vhd", "_switch_override",
+        PowerSelectSuffix,
+        // Composed from the verbs rather than spelled out, so a verb added to the gate enters the slug
+        // budget and the collision check with it instead of composing an id nothing sized against.
+        .. MqttCommandGate.PowerVerbs.Select(PowerButtonSuffix),
     ];
 
+    /// <summary>Everything the composed table depends on, as one string. A config write that leaves it
+    /// alone must not rebuild and re-announce the whole document; a write that moves it must, because
+    /// the entities it names have changed — which is what evicts the power shape being left behind.</summary>
+    public static string Signature(IEnumerable<string?> vmNames, bool powerButtons)
+    {
+        ArgumentNullException.ThrowIfNull(vmNames);
+        return (powerButtons ? "buttons" : "select")
+             + "\n" + string.Join("\n", vmNames.Select(n => n ?? string.Empty));
+    }
+
     /// <summary>Builds the whole table. Called again — through
-    /// <c>DiscoveryPublisher.SetEntities</c> — whenever the managed VM list changes.</summary>
+    /// <c>DiscoveryPublisher.SetEntities</c> — whenever <see cref="Signature"/> moves: the managed VM
+    /// list, or the power shape.</summary>
     public static MqttEntitySet Build(MqttEntitySpec spec)
     {
         ArgumentNullException.ThrowIfNull(spec);
@@ -373,20 +407,38 @@ public static class MqttEntityTable
                 state.Vm(vmName)?.State, on, (kind, ct) => spec.Power(vmName, kind, ct)),
         };
 
-        yield return new MqttSelect
+        // The two power shapes, one or the other. Both reach MqttCommandGate.Power, so the state gating
+        // and the refusal wording are the same whichever is published; only the controls differ.
+        if (spec.PowerButtons)
         {
-            EntityId = $"vm_{slug}_power",
-            Name     = $"{vmName} power",
-            Group    = VmGroup,
-            Icon     = "mdi:power-settings",
-            Options  = () => MqttCommandGate.PowerOptions,
-            // A verb is an event, not a state: there is no "current power verb" to report, and
-            // announcing the last one requested would read as the VM being in it.
-            Read     = () => null,
-            Apply    = option => MqttCommandGate.ParseVerb(option) is { } kind
-                ? MqttCommandGate.Power(state.Vm(vmName)?.State, kind, ct => spec.Power(vmName, kind, ct))
-                : MqttCommandVerdict.NotAnOption($"'{option}' is not a power verb."),
-        };
+            foreach (var kind in MqttCommandGate.PowerVerbs)
+                yield return new MqttButton
+                {
+                    EntityId = $"vm_{slug}{PowerButtonSuffix(kind)}",
+                    Name     = $"{vmName} {PowerButtonLabel(kind)}",
+                    Group    = VmGroup,
+                    Icon     = PowerButtonIcon(kind),
+                    Press    = () => MqttCommandGate.Power(
+                        state.Vm(vmName)?.State, kind, ct => spec.Power(vmName, kind, ct)),
+                };
+        }
+        else
+        {
+            yield return new MqttSelect
+            {
+                EntityId = $"vm_{slug}{PowerSelectSuffix}",
+                Name     = $"{vmName} power",
+                Group    = VmGroup,
+                Icon     = "mdi:power-settings",
+                Options  = () => MqttCommandGate.PowerOptions,
+                // A verb is an event, not a state: there is no "current power verb" to report, and
+                // announcing the last one requested would read as the VM being in it.
+                Read     = () => null,
+                Apply    = option => MqttCommandGate.ParseVerb(option) is { } kind
+                    ? MqttCommandGate.Power(state.Vm(vmName)?.State, kind, ct => spec.Power(vmName, kind, ct))
+                    : MqttCommandVerdict.NotAnOption($"'{option}' is not a power verb."),
+            };
+        }
 
         yield return new MqttSelect
         {
@@ -405,6 +457,23 @@ public static class MqttEntityTable
                 spec.RuleSwitches(), option, (name, ct) => spec.OverrideSwitch(vmName, name, ct)),
         };
     }
+
+    /// <summary>The verb as a power button names it. "Shut down" rather than "Shutdown": it is the verb
+    /// the user invokes, and the app says so everywhere else it offers one (issue #42). The refusal
+    /// keeps the enum name, because that names the verb the gate declined rather than a control.</summary>
+    private static string PowerButtonLabel(VmOpKind kind) =>
+        kind == VmOpKind.Shutdown ? "shut down" : kind.ToString().ToLowerInvariant();
+
+    /// <summary>The icon one power button carries.</summary>
+    private static string PowerButtonIcon(VmOpKind kind) => kind switch
+    {
+        VmOpKind.Start    => "mdi:play",
+        VmOpKind.Shutdown => "mdi:power",
+        VmOpKind.Pause    => "mdi:pause",
+        VmOpKind.Save     => "mdi:content-save",
+        VmOpKind.Resume   => "mdi:play-circle",
+        _                 => "mdi:power-settings",
+    };
 
     /// <summary>Null publishes the literal <c>None</c>, so a missing reading clears the entity — an
     /// empty payload is ignored by the receiver and the stale value would stand.</summary>
