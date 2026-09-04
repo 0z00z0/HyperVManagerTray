@@ -50,6 +50,18 @@ public class StartupTaskTests
         Assert.True(td.Settings.StopIfGoingOnBatteries);
     }
 
+    /// <summary>Issue #71: the enable path must not leave "enabled" to the library's default — it
+    /// sets the flag explicitly, so re-registering a previously-disabled task also clears the
+    /// disable.</summary>
+    [Fact]
+    public void RegisteredTask_IsExplicitlyEnabled()
+    {
+        using var ts = new TaskService();
+        using TaskDefinition td = StartupTaskDefinition.BuildLogonTask(ts, Exe, User);
+
+        Assert.True(td.Settings.Enabled);
+    }
+
     /// <summary>The rest of what makes the task work at all: a logon trigger for this user, the exe
     /// (quoted, for install paths with a space) and the elevation a requireAdministrator app needs to
     /// start without a UAC prompt.</summary>
