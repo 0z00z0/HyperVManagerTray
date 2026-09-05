@@ -60,8 +60,9 @@ WizardSmallImageFile=wizard\wizsmall-55x58.bmp,wizard\wizsmall-69x73.bmp,wizard\
 ; CloseApplications uses the Restart Manager, which CANNOT close the running app on an
 ; interactive upgrade: the app is requireAdministrator (high integrity) and this installer
 ; is per-user (low integrity), so it has no rights to terminate it.  PrepareToInstall (see
-; [Code]) handles that case with a single elevated taskkill.  CloseApplications stays on as
-; the non-elevated fallback for the silent path, which never elevates.  Do NOT
+; [Code], CloseRunningApp) handles that case: wait for it to exit on its own, then an
+; elevated taskkill if the user chooses Retry.  A silent run (which can answer neither a
+; message box nor a UAC prompt) aborts Setup instead if the app is still running.  Do NOT
 ; auto-restart — the app is relaunched explicitly by LaunchApp on interactive installs only.
 CloseApplications=yes
 RestartApplications=no
@@ -342,15 +343,41 @@ begin
            + 'from the app''s tray menu later.', mbInformation, MB_OK);
 end;
 
-function AppIsRunning(): Boolean;
+function ImageIsRunning(const ImageName: string): Boolean;
 var
   ResultCode: Integer;
 begin
   // tasklist|find: exit 0 only when the process is present. Works without elevation
-  // (the image name is visible even for an elevated process).
+  // (the image name is visible even for an elevated process). Parameterised so the
+  // close-and-retry routine below can be reused for a second image name if ever needed.
   Result := Exec(ExpandConstant('{cmd}'),
-                 '/C tasklist /FI "IMAGENAME eq {#AppExe}" /NH | find /I "{#AppExe}"',
+                 '/C tasklist /FI "IMAGENAME eq ' + ImageName + '" /NH | find /I "' + ImageName + '"',
                  '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+function AppIsRunning(): Boolean;
+begin
+  Result := ImageIsRunning('{#AppExe}');
+end;
+
+// Waits up to ~2 s (10 checks, 200 ms apart) for the named image to exit on its own.
+// Resolves the moment it is gone rather than always burning the full budget: returns False
+// as soon as any check finds it absent, and True only if every one of the 10 checks still
+// found it present.
+function StillRunningAfterWait(const ImageName: string): Boolean;
+var
+  I: Integer;
+begin
+  for I := 1 to 10 do
+  begin
+    if not ImageIsRunning(ImageName) then
+    begin
+      Result := False;
+      Exit;
+    end;
+    Sleep(200);
+  end;
+  Result := True;
 end;
 
 procedure StopAppAndRemoveStartupTask();
@@ -395,26 +422,61 @@ begin
   // falsely reporting that the app "did not start" and confusing the user.
 end;
 
-function PrepareToInstall(var NeedsRestart: Boolean): String;
+// Closes a running instance of the named image before files are copied, giving an interactive
+// user a Retry/Cancel chance to exit it by hand first. Returns '' once nothing is in the way, or
+// a message for Setup to abort with (on Cancel, or immediately on a silent run).
+//
+// Liftable: parameterised on the display name and image name rather than wired to one hardcoded
+// exe, so a second image (e.g. a legacy executable from an older release) could be closed with
+// another call — this installer only needs the one, for {#AppExe}.
+//
+// The elevated taskkill fires only when all three hold: the wait above timed out (still present
+// after ~2 s), the user chose Retry, AND a fresh check right before the kill still finds it
+// present — if the app exited between the prompt and Retry being pressed, no second UAC prompt.
+function CloseRunningApp(const DisplayName, ImageName: string): String;
 var
   ResultCode: Integer;
+  TerminalMessage: String;
 begin
   Result := '';
-  // Close the running app BEFORE files are copied, otherwise its locked exe/dll can't be
-  // overwritten on upgrade.  The Restart Manager (CloseApplications) can't do it because the
-  // app runs elevated while this installer doesn't, so an interactive upgrade elevates a
-  // single taskkill — one UAC prompt, exactly like the uninstaller.  Silent installs (scripted
-  // or MDM-driven) are skipped so they never pop a prompt; they replace the files the next time
-  // the app happens not to be running.
-  if (not WizardSilent()) and AppIsRunning() then
+  if not ImageIsRunning(ImageName) then Exit;
+
+  TerminalMessage := DisplayName + ' is still running, so its files cannot be replaced. Exit it '
+                    + 'from the tray icon, then run this installer again.';
+
+  // Nobody to answer a message box on a silent run, and 'runas' would raise a UAC prompt nobody
+  // can approve either — abort loudly now rather than proceed and fail later on a locked file.
+  if WizardSilent() then
   begin
-    ShellExec('runas', ExpandConstant('{cmd}'),
-              '/C taskkill /IM "{#AppExe}" /F',
-              '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    // Give Windows a moment to tear the process down and release its file handles before
-    // Inno starts copying over them.
-    Sleep(700);
+    Result := TerminalMessage;
+    Exit;
   end;
+
+  while StillRunningAfterWait(ImageName) do
+  begin
+    if MsgBox(DisplayName + ' is still running, so its files cannot be replaced.'
+              + #13#10#13#10
+              + 'Exit it from the tray icon, then choose Retry.',
+              mbError, MB_RETRYCANCEL) <> IDRETRY then
+    begin
+      Result := TerminalMessage;
+      Exit;
+    end;
+
+    // Re-check immediately before elevating: Retry may have been pressed after the app was
+    // already closed by hand.
+    if ImageIsRunning(ImageName) then
+      ShellExec('runas', ExpandConstant('{cmd}'), '/C taskkill /IM "' + ImageName + '" /F',
+                '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  // The Restart Manager (CloseApplications) can't close the running app because the app runs
+  // elevated while this installer doesn't, so this is the only place that can. See
+  // CloseRunningApp for the retry loop and the silent-run behaviour.
+  Result := CloseRunningApp('{#AppName}', '{#AppExe}');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
