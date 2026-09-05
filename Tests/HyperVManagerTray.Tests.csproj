@@ -113,9 +113,9 @@
          is deliberately NOT linked. -->
     <Compile Include="..\Helpers\StartupTaskDefinition.cs" Link="Linked\StartupTaskDefinition.cs" />
     <Compile Include="..\Helpers\StartupTaskRepair.cs"     Link="Linked\StartupTaskRepair.cs" />
-    <!-- Issue #71: the enabled/disabled read, lifted out of StartupManager.IsEnabled the same way
-         StartupTaskRepair's decision is — a delegate seam, so "task absent", "task disabled" and
-         "task enabled" are all testable with no live scheduled task. -->
+    <!-- Issue #71: decides whether the logon toggle reads On from an enabled flag handed in as a
+         delegate, the same seam StartupTaskRepair uses — "task absent", "task disabled" and "task
+         enabled" are all testable with no live scheduled task. -->
     <Compile Include="..\Helpers\StartupTaskState.cs"      Link="Linked\StartupTaskState.cs" />
     <!-- The About credits list, so AboutCreditsTests can assert against the REAL
          AppAbout.CreateInfo() rather than a copy of it parsed out of the source. Pure data — its

@@ -4,10 +4,10 @@ using Xunit;
 namespace HyperVManagerTray.Tests;
 
 /// <summary>
-/// Issue #71: <c>StartupManager.IsEnabled</c> used to test only whether the logon task existed, so a
-/// task disabled through Task Scheduler, Settings → Apps → Startup, or policy still read as On. The
-/// fix is <see cref="StartupTaskState.IsEnabled"/> — the read arrives as a delegate, so all three
-/// states (absent, present-but-disabled, present-and-enabled) are assertable with no live task.
+/// <see cref="StartupTaskState.IsEnabled"/> decides whether the "run at logon" toggle reads On:
+/// existence alone is not enough, since a task disabled through Task Scheduler's own UI or by
+/// policy still exists (issue #71). The read arrives as a delegate, so all three states — absent,
+/// present-but-disabled, present-and-enabled — are assertable with no live task.
 /// </summary>
 public class StartupTaskStateTests
 {

@@ -1,9 +1,9 @@
 namespace HyperVManagerTray.Helpers;
 
 /// <summary>
-/// Issue #71: whether the "run at logon" toggle should read On. Existence alone is not enough — a
-/// task disabled through Task Scheduler's own UI, Settings → Apps → Startup, or policy still
-/// satisfies "the task exists", so the toggle showed On for a task the scheduler will never fire.
+/// Whether the "run at logon" toggle should read On. Existence alone is not enough — a task
+/// disabled through Task Scheduler's own UI or by policy still satisfies "the task exists", so
+/// existence alone would read On for a task the scheduler will never fire (issue #71).
 ///
 /// <para>The read arrives as a delegate, exactly as <see cref="StartupTaskRepair.Run"/> takes its
 /// scheduler calls, so the three-valued state — absent, present-but-disabled, present-and-enabled —

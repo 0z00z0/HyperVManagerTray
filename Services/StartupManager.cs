@@ -34,13 +34,16 @@ internal sealed class StartupManager
     public StartupManager(ILogger<StartupManager> logger) => _logger = logger;
 
     /// <summary>True only if the auto-start scheduled task exists AND is enabled (issue #71) — a
-    /// task disabled through Task Scheduler, Settings, or policy reads as Off, not On. Never throws
-    /// — the toggle reads it.</summary>
+    /// task disabled through Task Scheduler's own UI or by policy reads as Off, not On. Never
+    /// throws — the toggle reads it.</summary>
     public bool IsEnabled => StartupTaskState.IsEnabled(() =>
     {
         using var ts = new TaskService();
         using ScheduledTask? task = ts.GetTask(StartupTaskDefinition.TaskPath);
-        return task?.Definition.Settings.Enabled;
+        // Task.Enabled, not Definition.Settings.Enabled: the same flag off the registered task
+        // itself, one COM call instead of a full definition fetch, and Task.Dispose releases it —
+        // Definition is a separate disposable the task's own Dispose does not cascade to.
+        return task?.Enabled;
     });
 
     /// <summary>Creates the logon task pointing at <paramref name="exePath"/>. Throws on failure.</summary>

@@ -50,11 +50,17 @@ public class StartupTaskTests
         Assert.True(td.Settings.StopIfGoingOnBatteries);
     }
 
-    /// <summary>Issue #71: the enable path must not leave "enabled" to the library's default — it
-    /// sets the flag explicitly, so re-registering a previously-disabled task also clears the
-    /// disable.</summary>
+    /// <summary>Pins the library default <see cref="StartupTaskDefinition.BuildLogonTask"/> relies
+    /// on for issue #71: a virgin definition is already enabled, so building fresh (as every
+    /// registration does) discards any prior disable regardless of the explicit assignment in
+    /// <c>BuildLogonTask</c>. Unlike <see cref="AVirginDefinition_CarriesTheHostileDefaults"/>,
+    /// this default is the friendly one — the explicit line documents it rather than enforcing it,
+    /// so this test cannot tell the two apart. It exists to catch the library changing that
+    /// default, not to guard the enable path; <see cref="StartupTaskStateTests"/> and the untested
+    /// scheduler read in <c>StartupManager.IsEnabled</c> are what issue #71 actually depends on.
+    /// </summary>
     [Fact]
-    public void RegisteredTask_IsExplicitlyEnabled()
+    public void AFreshDefinition_IsAlreadyEnabled()
     {
         using var ts = new TaskService();
         using TaskDefinition td = StartupTaskDefinition.BuildLogonTask(ts, Exe, User);
