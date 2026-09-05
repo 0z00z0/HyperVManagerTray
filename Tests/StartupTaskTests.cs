@@ -50,6 +50,24 @@ public class StartupTaskTests
         Assert.True(td.Settings.StopIfGoingOnBatteries);
     }
 
+    /// <summary>Pins the library default <see cref="StartupTaskDefinition.BuildLogonTask"/> relies
+    /// on for issue #71: a virgin definition is already enabled, so building fresh (as every
+    /// registration does) discards any prior disable regardless of the explicit assignment in
+    /// <c>BuildLogonTask</c>. Unlike <see cref="AVirginDefinition_CarriesTheHostileDefaults"/>,
+    /// this default is the friendly one — the explicit line documents it rather than enforcing it,
+    /// so this test cannot tell the two apart. It exists to catch the library changing that
+    /// default, not to guard the enable path; <see cref="StartupTaskStateTests"/> and the untested
+    /// scheduler read in <c>StartupManager.IsEnabled</c> are what issue #71 actually depends on.
+    /// </summary>
+    [Fact]
+    public void AFreshDefinition_IsAlreadyEnabled()
+    {
+        using var ts = new TaskService();
+        using TaskDefinition td = StartupTaskDefinition.BuildLogonTask(ts, Exe, User);
+
+        Assert.True(td.Settings.Enabled);
+    }
+
     /// <summary>The rest of what makes the task work at all: a logon trigger for this user, the exe
     /// (quoted, for install paths with a space) and the elevation a requireAdministrator app needs to
     /// start without a UAC prompt.</summary>
