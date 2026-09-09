@@ -13,6 +13,10 @@ on:
 
 permissions:
   contents: write
+  # The shared ZeroZero components come from the studio's GitHub Packages feed, which authenticates
+  # every read — an anonymous request returns 401. This is what the run's GITHUB_TOKEN needs to
+  # restore them.
+  packages: read
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
@@ -26,11 +30,11 @@ jobs:
     env:
       CODE_SIGN_PFX: ${{ secrets.CODE_SIGN_PFX }}
       CODE_SIGN_PASSWORD: ${{ secrets.CODE_SIGN_PASSWORD }}
-      # The ProjectReference to ZeroZero.Brand.WinUI defaults to the sibling 0z0-shared folder for local
-      # dev; CI only has this repo, so we check the 0z0-shared repo out below and point the csproj's
-      # $(ZeroZeroSharedDir) property at it via this env var (MSBuild reads env as a property).
-      # Job-scoped, so the test step gets it too.
-      ZeroZeroSharedDir: ${{ github.workspace }}/0z0-shared
+      # The feed credential, handed to NuGet through the environment rather than written into a
+      # config file: NuGet reads NuGetPackageSourceCredentials_<source name> for the source of that
+      # name, and the name here is the one nuget.config gives the studio feed. Job-scoped, so the
+      # test step and the installer build are authenticated too.
+      NuGetPackageSourceCredentials_0z00z0: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }}
 
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -41,17 +45,6 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
-      # Check out the 0z0-shared sibling so the shared ProjectReferences resolve (see the
-      # ZeroZeroSharedDir env var above). Placed in a workspace subfolder — not ..\ (outside
-      # workspace) — and unpinned, so a release builds against the default branch. 0z0-shared is
-      # pre-1.0, where a minor bump may break the API, so a shared-side change reaches a release
-      # at a time this repo does not choose.
-      - name: Checkout 0z0-shared (sibling dependency)
-        uses: actions/checkout@v7
-        with:
-          repository: 0z00z0/0z0-shared
-          path: 0z0-shared
 
       # ── 2. Resolve version string ────────────────────────────────────────────
       # Tag-triggered: strip the leading 'v'.

@@ -66,48 +66,28 @@
     <PackageReference Include="TaskScheduler" />
   </ItemGroup>
 
-  <!-- Shared ZeroZero Software branding: the About window now comes from here instead of a
-       hand-rolled UI/AboutWindow. Local dev resolves it as the sibling ..\0z0-shared folder;
-       CI (which only checks out this repo) overrides ZeroZeroSharedDir — set as an env var, which
-       MSBuild surfaces as this property — to point at its own checkout of the 0z0-shared repo.
-
-       The reference is unpinned: local builds compile whatever the sibling working tree holds, and
-       CI and releases take the 0z0-shared default branch. That library is pre-1.0, where a minor
-       bump may break the API, so a shared-side change reaches this build without warning and at a
-       time this repo does not choose. A build failing on a shared type is read there first. -->
-  <PropertyGroup>
-    <ZeroZeroSharedDir Condition="'$(ZeroZeroSharedDir)' == ''">..\0z0-shared</ZeroZeroSharedDir>
-  </PropertyGroup>
+  <!-- The shared ZeroZero Software components, taken from the studio's GitHub Packages feed. One
+       reference per component, carrying the package name alone; the versions are in
+       Directory.Packages.props, and nuget.config names the feed and maps ZeroZero.* to it. A
+       version resolves the same assemblies here as on a runner, so what a local build compiles and
+       what a release ships are the same code. -->
   <ItemGroup>
-    <!-- WindowsAppSDKSelfContained applies to this application alone; a class library errors on it
-         ("should not be applied to a class library"). The property is declared in this project, so
-         it does not flow across a reference, and the metadata below keeps it off these libraries
-         even when a caller supplies it globally. The app aggregates the self-contained Windows App
-         SDK; the libraries build framework-dependent as normal. -->
-    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Brand.WinUI\ZeroZero.Brand.WinUI.csproj">
-      <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
-    </ProjectReference>
-    <!-- The shared MQTT module. One reference delivers all four assemblies: ZeroZero.Config,
-         ZeroZero.Mqtt, ZeroZero.Mqtt.Discovery and the settings panel. Same UndefineProperties
-         reason as above. -->
-    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt.WinUI\ZeroZero.Mqtt.WinUI.csproj">
-      <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
-    </ProjectReference>
+    <!-- The studio mark, the About window, the typeface and the palette brushes. Replaces a
+         hand-rolled UI/AboutWindow. -->
+    <PackageReference Include="ZeroZero.Brand.WinUI" />
+    <!-- The MQTT module. One reference delivers all four assemblies: ZeroZero.Config,
+         ZeroZero.Mqtt, ZeroZero.Mqtt.Discovery and the settings panel. -->
+    <PackageReference Include="ZeroZero.Mqtt.WinUI" />
     <!-- The single-instance lock, the relaunch on an exit nobody asked for and its three-in-ten-
-         minutes limit, behind Helpers\AppLifecycle.cs. Plain net10.0; it brings ZeroZero.Primitives
-         (already here through the MQTT module) and Microsoft.Win32.SystemEvents with it. Same
-         UndefineProperties reason as above. -->
-    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Lifecycle\ZeroZero.Lifecycle.csproj">
-      <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
-    </ProjectReference>
+         minutes limit, behind Helpers\AppLifecycle.cs. It brings ZeroZero.Primitives (already here
+         through the MQTT module) and Microsoft.Win32.SystemEvents with it. -->
+    <PackageReference Include="ZeroZero.Lifecycle" />
     <!-- The self-update flow behind Services\AppUpdate.cs: the release check, and the download that is
          verified against the release's published SHA-256 and against the signer below before it is
          allowed to run — twice, the second time at the moment of launch. The entry point is the Win32
-         project; it brings ZeroZero.Update with it, and ZeroZero.Win32 is already here through the
-         brand library. Same UndefineProperties reason as above. -->
-    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Update.Win32\ZeroZero.Update.Win32.csproj">
-      <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
-    </ProjectReference>
+         package; it brings ZeroZero.Update with it, and ZeroZero.Win32 is already here through the
+         brand component. -->
+    <PackageReference Include="ZeroZero.Update.Win32" />
   </ItemGroup>
 
   <!-- The publisher certificate, as the pin an installer's signature is checked against. Embedded
@@ -169,22 +149,6 @@
     <Content   Remove="Tests\**\*" />
     <None      Remove="Tests\**\*" />
     <Page      Remove="Tests\**\*" />
-  </ItemGroup>
-
-  <!-- In CI the 0z0-shared branding repo is checked out into a workspace SUBfolder
-       (see the ci.yml/release.yml "Checkout 0z0-shared" step + $(ZeroZeroSharedDir)). It then
-       sits under this project's directory, so the SDK's default globs would compile its sources
-       into THIS assembly on top of the ProjectReference — duplicate types and an ambiguous
-       NativeMethods. Exclude the subfolder from our own globs; it is consumed solely via the
-       ProjectReference. Matches nothing locally, where 0z0-shared is an outside-the-tree
-       sibling (..\0z0-shared). -->
-  <ItemGroup>
-    <Compile               Remove="0z0-shared\**\*" />
-    <Content               Remove="0z0-shared\**\*" />
-    <None                  Remove="0z0-shared\**\*" />
-    <Page                  Remove="0z0-shared\**\*" />
-    <ApplicationDefinition Remove="0z0-shared\**\*" />
-    <EmbeddedResource      Remove="0z0-shared\**\*" />
   </ItemGroup>
 
   <!-- Publish properties: ReadyToRun on Release; trimming OFF (WinUI + reflection-y bits are

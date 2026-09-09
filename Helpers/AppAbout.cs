@@ -31,10 +31,12 @@ internal static class AppAbout
         Version     = AppInfo.Version,
         Description = Description,
         RepoUrl     = RepoUrl,
-        // Every third-party runtime package the app references. H.NotifyIcon.WinUI, NLog and
-        // TaskScheduler are the non-Microsoft dependencies; the Microsoft packages ship under the
-        // Microsoft Software Licence Terms (the WinAppSDK *source* is MIT on GitHub). Licences are
-        // taken from each package's own .nuspec <license> expression, not from memory.
+        // Every runtime package the app references, third-party and studio alike. H.NotifyIcon.WinUI,
+        // NLog and TaskScheduler are the non-Microsoft third parties; the Microsoft packages ship
+        // under the Microsoft Software Licence Terms (the WinAppSDK *source* is MIT on GitHub); the
+        // ZeroZero.* packages are the studio's own shared library, a separate MIT repository this app
+        // consumes from a feed. Licences are taken from each package's own .nuspec <license>
+        // expression, not from memory.
         ExternalLibraries =
         [
             new ExternalLibrary("Microsoft.WindowsAppSDK", "Microsoft", "WinUI 3 framework (windowing, XAML, Mica)", "MS-EULA", "https://github.com/microsoft/WindowsAppSDK"),
@@ -45,6 +47,10 @@ internal static class AppAbout
             new ExternalLibrary("NLog", "NLog Project", "File sink behind the logging abstraction, with log rotation", "BSD-3-Clause", "https://nlog-project.org/"),
             new ExternalLibrary("System.Management", "Microsoft", "WMI access (root\\virtualization\\v2) for VM status/power", "MIT", "https://www.nuget.org/packages/System.Management"),
             new ExternalLibrary("TaskScheduler", "David Hall", "Typed Task Scheduler API behind the logon-at-startup task", "MIT", "https://github.com/dahall/taskscheduler"),
+            new ExternalLibrary("ZeroZero.Brand.WinUI", "ZeroZero Software", "The studio mark, this About window, the typeface and the palette", "MIT", "https://github.com/0z00z0/0z0-shared"),
+            new ExternalLibrary("ZeroZero.Mqtt.WinUI", "ZeroZero Software", "Broker connection, Home Assistant discovery and the MQTT settings panel", "MIT", "https://github.com/0z00z0/0z0-shared"),
+            new ExternalLibrary("ZeroZero.Lifecycle", "ZeroZero Software", "Single-instance lock and the limited relaunch after an unasked-for exit", "MIT", "https://github.com/0z00z0/0z0-shared"),
+            new ExternalLibrary("ZeroZero.Update.Win32", "ZeroZero Software", "Update check, and the download verified by checksum and signature before it runs", "MIT", "https://github.com/0z00z0/0z0-shared"),
         ],
     };
 }

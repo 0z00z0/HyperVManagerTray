@@ -172,30 +172,26 @@
     </Content>
   </ItemGroup>
 
-  <!-- AboutInfo / ExternalLibrary, required by the linked AppAbout.cs. ZeroZero.Brand.Core targets
-       plain net10.0 and references no packages, so this does NOT drag the Windows App SDK runtime
-       into the test assembly the way ZeroZero.Brand.WinUI would; the WinUI project stays referenced
-       by the app alone. Resolved the same way as the app's reference — the sibling 0z0-shared
-       folder locally, $(ZeroZeroSharedDir) in CI, which sets it job-wide so the test step sees it.
-       One level deeper than the app's default, since this project sits under Tests\. -->
-  <PropertyGroup>
-    <ZeroZeroSharedDir Condition="'$(ZeroZeroSharedDir)' == ''">..\..\0z0-shared</ZeroZeroSharedDir>
-  </PropertyGroup>
+  <!-- The shared components this assembly needs, from the studio's GitHub Packages feed. Names
+       only; the versions are in Directory.Packages.props at the repository root, so the test
+       assembly and the application can never resolve a component at two different versions.
+
+       Every one of these is plain net10.0, which is what keeps this test assembly runtime-free:
+       neither ZeroZero.Brand.WinUI nor ZeroZero.Mqtt.WinUI nor ZeroZero.Update.Win32 is referenced
+       here, so nothing drags in the Windows App SDK runtime. -->
   <ItemGroup>
-    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Brand.Core\ZeroZero.Brand.Core.csproj" />
+    <!-- AboutInfo / ExternalLibrary, required by the linked AppAbout.cs. -->
+    <PackageReference Include="ZeroZero.Brand.Core" />
     <!-- The MQTT entity and document layer, required by the linked MqttEntityTable.cs and
-         MqttConfigStore.cs. ZeroZero.Mqtt.Discovery and its dependencies (ZeroZero.Mqtt,
-         ZeroZero.Config) are plain net10.0, so this stays a runtime-free test assembly;
-         ZeroZero.Mqtt.WinUI — the panel — is deliberately NOT referenced. -->
-    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt.Discovery\ZeroZero.Mqtt.Discovery.csproj" />
-    <!-- SingleInstanceOutcome, required by the linked SingleInstanceLog.cs. Plain net10.0, so it
-         keeps this test assembly runtime-free. -->
-    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Lifecycle\ZeroZero.Lifecycle.csproj" />
+         MqttConfigStore.cs. It brings ZeroZero.Mqtt and ZeroZero.Config with it. -->
+    <PackageReference Include="ZeroZero.Mqtt.Discovery" />
+    <!-- SingleInstanceOutcome, required by the linked SingleInstanceLog.cs. -->
+    <PackageReference Include="ZeroZero.Lifecycle" />
     <!-- The update flow's headless half, required by the linked UpdateCheckDetail.cs,
          UpdateStatusUi.cs and ExpectedPublisher.cs — and driven directly, so the two outcomes this app
          splits back apart are read off the real GitHubReleaseSource rather than off a copy of its
-         wording. Plain net10.0; ZeroZero.Update.Win32 (the dialogs) is deliberately NOT referenced. -->
-    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Update\ZeroZero.Update.csproj" />
+         wording. -->
+    <PackageReference Include="ZeroZero.Update" />
   </ItemGroup>
 
   <!-- The same publisher certificate the app embeds, under the same logical resource name, so
