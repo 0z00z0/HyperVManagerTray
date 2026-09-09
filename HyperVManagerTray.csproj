@@ -94,6 +94,13 @@
     <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt.WinUI\ZeroZero.Mqtt.WinUI.csproj">
       <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
     </ProjectReference>
+    <!-- The single-instance lock, the relaunch on an exit nobody asked for and its three-in-ten-
+         minutes limit, behind Helpers\AppLifecycle.cs. Plain net10.0; it brings ZeroZero.Primitives
+         (already here through the MQTT module) and Microsoft.Win32.SystemEvents with it. Same
+         UndefineProperties reason as above. -->
+    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Lifecycle\ZeroZero.Lifecycle.csproj">
+      <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
+    </ProjectReference>
   </ItemGroup>
 
   <ItemGroup>

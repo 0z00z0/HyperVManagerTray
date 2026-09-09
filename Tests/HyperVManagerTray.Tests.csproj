@@ -57,6 +57,11 @@
     <Compile Include="..\Helpers\IconGenerator.cs"    Link="Linked\IconGenerator.cs" />
     <Compile Include="..\Helpers\NativeMethods.cs"    Link="Linked\NativeMethods.cs" />
     <Compile Include="..\Helpers\AppInfo.cs"          Link="Linked\AppInfo.cs" />
+    <!-- The sentence written for each single-instance outcome. Pure text over ZeroZero.Lifecycle's
+         enum, which is what makes the distinction the swap was for — a name this process may not
+         open is not another copy of the app — assertable without a WinUI host. Helpers\AppLifecycle.cs,
+         which takes the real mutex and hooks process exit, is deliberately NOT linked. -->
+    <Compile Include="..\Helpers\SingleInstanceLog.cs" Link="Linked\SingleInstanceLog.cs" />
     <!-- Pure config↔UI mapping for the Settings window (issue #18). Only depends on LogLevel; no WinUI. -->
     <Compile Include="..\Helpers\SettingsOptions.cs"  Link="Linked\SettingsOptions.cs" />
     <!-- Pure title-bar colour arithmetic (issue #36): theme→palette choice and the caption-button hover
@@ -174,6 +179,9 @@
          ZeroZero.Config) are plain net10.0, so this stays a runtime-free test assembly;
          ZeroZero.Mqtt.WinUI — the panel — is deliberately NOT referenced. -->
     <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Mqtt.Discovery\ZeroZero.Mqtt.Discovery.csproj" />
+    <!-- SingleInstanceOutcome, required by the linked SingleInstanceLog.cs. Plain net10.0, so it
+         keeps this test assembly runtime-free. -->
+    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Lifecycle\ZeroZero.Lifecycle.csproj" />
   </ItemGroup>
 
   <ItemGroup>
