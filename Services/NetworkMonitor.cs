@@ -203,7 +203,13 @@ public sealed class NetworkMonitor : IDisposable
         }
         finally
         {
-            _evalLock.Release();
+            // Dispose() can land between the acquire above and this release — a dock disconnect fires
+            // NetworkChange while the app is shutting down. The work the lock guarded is over by then,
+            // so releasing a semaphore that no longer exists has nothing left to protect. Unguarded, it
+            // throws on a timer/thread-pool thread inside an async void, which AppDomain.UnhandledException
+            // takes as fatal and kills the process. Every wait site already tolerates the same disposal.
+            try { _evalLock.Release(); }
+            catch (ObjectDisposedException) { }
         }
     }
 
@@ -241,7 +247,9 @@ public sealed class NetworkMonitor : IDisposable
         }
         finally
         {
-            _evalLock.Release();
+            // Same disposal race as OnDebounceElapsed — see the note there.
+            try { _evalLock.Release(); }
+            catch (ObjectDisposedException) { }
         }
     }
 
@@ -314,7 +322,10 @@ public sealed class NetworkMonitor : IDisposable
         }
         finally
         {
-            _evalLock.Release();
+            // Same disposal race as OnDebounceElapsed — see the note there. Fire-and-forget from the
+            // rename path, so an escaping throw here is unobserved rather than reported.
+            try { _evalLock.Release(); }
+            catch (ObjectDisposedException) { }
         }
     }
 
