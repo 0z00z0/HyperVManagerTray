@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net.Http;
 using H.NotifyIcon;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Dispatching;
@@ -27,8 +26,7 @@ public partial class App : Application
     private NetworkMonitor? _monitor;
     private MqttService?    _mqtt;     // broker session and discovery document (issue #75)
     private StartupManager  _startup = null!;
-    private HttpClient?     _httpClient;
-    private UpdateChecker?  _updateChecker;
+    private AppUpdate?      _update;    // the silent start-up check and the explicit download-and-run one
 
     private DispatcherQueue  _ui = null!;
     private TaskbarIcon?     _trayIcon;
@@ -180,8 +178,15 @@ public partial class App : Application
             // battery. Off the startup path — connecting to the scheduler costs tens of ms, and
             // nothing here waits on the result.
             _ = Task.Run(_startup.TryRepairPowerSettings);
-            _httpClient    = new HttpClient();
-            _updateChecker = new UpdateChecker(_httpClient, _loggerFactory.CreateLogger<UpdateChecker>());
+            // The running build is stated rather than left to the update component, which would
+            // otherwise read the entry assembly — this app today, but whatever host is running the
+            // code tomorrow. The comparison is this app's own decision.
+            _update = new AppUpdate(
+                System.Reflection.Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0),
+                _loggerFactory.CreateLogger<AppUpdate>());
+            // Directories a download left behind on an earlier run — an installer that never started,
+            // a run that ended mid-download. Off the startup path; nothing waits on the count.
+            _ = Task.Run(() => _update.SweepStaleDownloads());
 
             // Shared "vm-power" category logger → vm-power.log (issue #20): the begin+outcome audit
             // trail for every VM power action, from both the user (VmService) and automatic triggers
@@ -430,7 +435,7 @@ public partial class App : Application
         // OnLaunched than this (the tray must appear before the broker session is composed), so a
         // reference captured here would be null forever. Settings resolves it when the window is opened,
         // by which time it is set.
-        _menu = new TrayMenu(_config!, _monitor!, _hyperV!, _vm!, _startup, _updateChecker!, OnExit,
+        _menu = new TrayMenu(_config!, _monitor!, _hyperV!, _vm!, _startup, _update!, OnExit,
                              (title, message, isError) =>
                                  ShowBalloon(title, message, isError, suppressWhenDashboardVisible: false),
                              () => _mqtt);
@@ -855,16 +860,20 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Runs a silent update check in the background.  If a newer release exists on GitHub the
-    /// tray menu badge is set on the UI thread.  Network / parse failures are swallowed.
+    /// Runs a silent update check in the background. If a newer release exists on GitHub the tray
+    /// menu badge is set on the UI thread. Network / parse failures are swallowed.
+    ///
+    /// <para>A check and nothing else: no download, no dialog, no installer. The badge it raises
+    /// opens the release page, and the only path that fetches and runs an installer is the explicit
+    /// "Check for updates", which asks first. This app does not replace itself unattended.</para>
     /// </summary>
     private async Task CheckForUpdatesOnStartupAsync()
     {
-        if (_updateChecker is null || _menu is null) return;
+        if (_update is null || _menu is null) return;
         try
         {
-            var result = await _updateChecker.CheckAsync().ConfigureAwait(false);
-            if (result.UpdateAvailable)
+            var result = await _update.CheckAsync().ConfigureAwait(false);
+            if (result.Outcome == ZeroZero.Update.UpdateCheckOutcome.UpdateAvailable)
                 _ui.TryEnqueue(() => _menu.SetUpdateBadge(result));
         }
         catch { /* never surface a background check failure */ }
@@ -986,7 +995,7 @@ public partial class App : Application
         _vm?.Dispose();
         _config?.Dispose();
         _hyperV?.Dispose();
-        _httpClient?.Dispose();
+        _update?.Dispose();
         try { mqttTeardown?.Wait(MqttService.TeardownBudget); } catch { /* never hold the exit on it */ }
         _loggerFactory?.Dispose();
         Exit();
