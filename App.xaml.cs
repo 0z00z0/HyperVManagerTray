@@ -87,6 +87,11 @@ public partial class App : Application
         // termination (clean exit, crash, or kill).
         if (!SelfHealWatchdog.AcquireLock())
         {
+            // The crash log is the only reachable sink this early — the LoggerFactory is not built
+            // until after the config read below — and without this a refused launch left no trace
+            // anywhere on the machine.
+            AppInfo.AppendCrashLogLine("LIFECYCLE",
+                "Another instance already holds the single-instance lock — this launch is exiting.");
             ExitIntentionally();   // a duplicate exit must NOT trigger the self-heal relaunch
             return;
         }
