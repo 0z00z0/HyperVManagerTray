@@ -4,6 +4,7 @@ using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Services;
 using ZeroZero.Brand.Core;
 using ZeroZero.Brand.WinUI;
+using ZeroZero.Update;
 
 namespace HyperVManagerTray.UI;
 
@@ -38,7 +39,7 @@ internal sealed class TrayMenu
     private readonly ConfigManager  _config;
     private readonly VmService      _vm;       // VM discovery (WMI) — feeds the Manage VMs list
     private readonly StartupManager _startup;
-    private readonly UpdateChecker  _updateChecker;
+    private readonly AppUpdate      _update;
     private readonly NetworkActions _network;  // re-check / override (shared with Settings — issue #34)
     private readonly ManagedVmActions _managedVms;
 
@@ -70,7 +71,7 @@ internal sealed class TrayMenu
     public MenuFlyout Flyout { get; }
 
     public TrayMenu(ConfigManager config, NetworkMonitor monitor, HyperVManager hyperV, VmService vm,
-                    StartupManager startup, UpdateChecker updateChecker,
+                    StartupManager startup, AppUpdate update,
                     Action onExit, Action<string, string, bool> notify,
                     Func<MqttService?> mqtt)
     {
@@ -79,7 +80,7 @@ internal sealed class TrayMenu
         _hyperV        = hyperV;
         _vm            = vm;
         _startup       = startup;
-        _updateChecker = updateChecker;
+        _update        = update;
         _notify        = notify;
         _mqtt          = mqtt;
         _network       = new NetworkActions(config, monitor, hyperV, notify);
@@ -234,12 +235,12 @@ internal sealed class TrayMenu
     private async Task<bool> CheckForUpdatesAsync()
     {
         // Capture the foreground HWND now (tray flyout is open) so the update dialog has a parent
-        // even if the flyout is dismissed by the time the HTTP check completes. The shared flow
-        // must stay on the UI thread (comctl32 v6 activation context for TaskDialogIndirect).
+        // even if the flyout is dismissed by the time the HTTP check completes. The flow must stay on
+        // the UI thread (comctl32 v6 activation context for TaskDialogIndirect).
         var hwnd = NativeMethods.CaptureHwnd();
-        await UpdatePrompt.RunAsync(_updateChecker, hwnd);
-        // The installer (Inno Setup, CloseApplications=yes) closes and relaunches the app itself, so
-        // the shared About window never needs to own the exit — always report "no self-exit required".
+        await _update.RunManualAsync(hwnd);
+        // The installer (Inno Setup) closes and relaunches the app itself, so the shared About window
+        // never needs to own the exit — always report "no self-exit required".
         return false;
     }
 
@@ -249,18 +250,26 @@ internal sealed class TrayMenu
     /// Clicking the badge opens the GitHub releases page immediately; the full
     /// release-notes dialog is one item away, under "Check for updates" (issue #46).
     /// </summary>
-    public void SetUpdateBadge(UpdateChecker.CheckResult result)
+    public void SetUpdateBadge(UpdateCheckResult result)
     {
+        // The badge is the whole of what the silent check may produce, so it is gated on the one
+        // outcome that means a newer release exists — never on a result merely having a release in it.
+        if (result?.Outcome != UpdateCheckOutcome.UpdateAvailable || result.Release is not { } release) return;
+
+        var text = $"⬆  Update available: v{release.VersionText}";
         if (_updateBadge is not null)
         {
-            _updateBadge.Text = $"⬆  Update available: v{result.LatestVersion}";
+            _updateBadge.Text = text;
             return;
         }
 
+        // The badge opens the release page and nothing else. Downloading and running an installer is
+        // reachable only from "Check for updates", where the user asked for it.
+        var page = release.HtmlUri?.AbsoluteUri ?? string.Empty;
         _updateBadge = new MenuFlyoutItem
         {
-            Text    = $"⬆  Update available: v{result.LatestVersion}",
-            Command = new RelayCommand(() => { LogClick("Update badge → releases page"); Shell.Open(result.ReleasePageUrl); }),
+            Text    = text,
+            Command = new RelayCommand(() => { LogClick("Update badge → releases page"); Shell.Open(page); }),
         };
 
         // Badge + separator always sit above everything else in the menu.
@@ -288,7 +297,7 @@ internal sealed class TrayMenu
             }
 
             UiActivityLog.Logger.LogInformation("Window: Settings opened");
-            _settingsWindow = new SettingsWindow(_config, _startup, _updateChecker, _monitor, _hyperV,
+            _settingsWindow = new SettingsWindow(_config, _startup, _update, _monitor, _hyperV,
                                                  _notify, _mqtt());
             _settingsWindow.Closed += (_, _) =>
             {
@@ -318,10 +327,9 @@ internal sealed class TrayMenu
             var options = new BrandAboutOptions
             {
                 Info = AppAbout.CreateInfo(),
-                // The shared window's "Check for Updates" reuses this class's own flow (which wraps
-                // UpdatePrompt.RunAsync via NativeMethods.CaptureHwnd()); it returns false because the
-                // Inno installer restarts the app itself, so no self-exit is needed. No update
-                // machinery moved into the shared library.
+                // The shared window's "Check for Updates" reuses this class's own flow (which captures
+                // the HWND and runs the manual update flow); it returns false because the Inno installer
+                // restarts the app itself, so no self-exit is needed.
                 OnCheckForUpdates = CheckForUpdatesAsync,
             };
 

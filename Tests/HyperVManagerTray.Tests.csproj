@@ -99,13 +99,22 @@
          comparisons — no WinUI, no host, no registry — which is what makes the race it exists to prevent
          (a read that started before a change landing after it and being trusted) testable at all. -->
     <Compile Include="..\Helpers\HostReadGeneration.cs" Link="Linked\HostReadGeneration.cs" />
-    <!-- The GitHub-response → outcome classification, and the outcome → message decisions built on it.
-         UpdateChecker is HTTP and JSON only — no WinUI, no live host — so it links here and its branches
-         are driven through a stub HttpMessageHandler rather than a real call to api.github.com. That is
-         the point: the branch this pair exists for (a 403 that is a rate limit, not a forbidden) is one
-         that cannot be produced on demand against the real API. -->
-    <Compile Include="..\Services\UpdateChecker.cs"   Link="Linked\UpdateChecker.cs" />
-    <Compile Include="..\Helpers\UpdateStatusUi.cs"   Link="Linked\UpdateStatusUi.cs" />
+    <!-- The update flow's three pure parts. None touches WinUI or a live host, so they link here and
+         are driven against the REAL shared release source through a stub HttpMessageHandler rather than
+         a call to api.github.com — which is the point: the branches these exist for (a 403 that is a
+         rate limit and not a forbidden; a detail sentence that says which of two merged outcomes
+         happened) cannot be produced on demand against the real API.
+
+         Services\AppUpdate.cs and UI\TrayUpdatePrompts.cs are deliberately NOT linked: one owns the
+         HTTP clients and the flow, the other shows dialogs. Their wiring is asserted over the source
+         text in UpdateWiringSourceTests instead. -->
+    <Compile Include="..\Helpers\UpdateCheckDetail.cs"  Link="Linked\UpdateCheckDetail.cs" />
+    <Compile Include="..\Helpers\UpdateStatusUi.cs"     Link="Linked\UpdateStatusUi.cs" />
+    <!-- The signer an installer must carry, read from the embedded certificate below rather than from
+         a constant. Linked so the rules it enforces — one subject across every pin, a SHA-256 pin, and
+         a refusal to produce a signer nothing can match — are assertable. -->
+    <Compile Include="..\Helpers\ExpectedPublisher.cs"  Link="Linked\ExpectedPublisher.cs" />
+    <Compile Include="..\Helpers\AppUpdateOptions.cs"   Link="Linked\AppUpdateOptions.cs" />
     <Compile Include="..\Services\FileLogger.cs"      Link="Linked\FileLogger.cs" />
     <!-- Issue #55: repairs a log file whose head a power cut turned into NUL bytes. Required by the
          linked FileLogger.cs, which salvages each path before NLog opens a handle on it. Pure file IO
@@ -182,6 +191,17 @@
     <!-- SingleInstanceOutcome, required by the linked SingleInstanceLog.cs. Plain net10.0, so it
          keeps this test assembly runtime-free. -->
     <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Lifecycle\ZeroZero.Lifecycle.csproj" />
+    <!-- The update flow's headless half, required by the linked UpdateCheckDetail.cs,
+         UpdateStatusUi.cs and ExpectedPublisher.cs — and driven directly, so the two outcomes this app
+         splits back apart are read off the real GitHubReleaseSource rather than off a copy of its
+         wording. Plain net10.0; ZeroZero.Update.Win32 (the dialogs) is deliberately NOT referenced. -->
+    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Update\ZeroZero.Update.csproj" />
+  </ItemGroup>
+
+  <!-- The same publisher certificate the app embeds, under the same logical resource name, so
+       ExpectedPublisher reads it here exactly as it does in the app. -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\scripts\ZeroZeroSoftware.cer" LogicalName="ZeroZeroSoftware.cer" />
   </ItemGroup>
 
   <ItemGroup>

@@ -101,6 +101,27 @@
     <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Lifecycle\ZeroZero.Lifecycle.csproj">
       <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
     </ProjectReference>
+    <!-- The self-update flow behind Services\AppUpdate.cs: the release check, and the download that is
+         verified against the release's published SHA-256 and against the signer below before it is
+         allowed to run — twice, the second time at the moment of launch. The entry point is the Win32
+         project; it brings ZeroZero.Update with it, and ZeroZero.Win32 is already here through the
+         brand library. Same UndefineProperties reason as above. -->
+    <ProjectReference Include="$(ZeroZeroSharedDir)\src\ZeroZero.Update.Win32\ZeroZero.Update.Win32.csproj">
+      <UndefineProperties>WindowsAppSDKSelfContained</UndefineProperties>
+    </ProjectReference>
+  </ItemGroup>
+
+  <!-- The publisher certificate, as the pin an installer's signature is checked against. Embedded
+       rather than stated as a thumbprint constant: Helpers\ExpectedPublisher.cs reads the subject and
+       the SHA-256 thumbprint out of these bytes at runtime, so the app and the release workflow — which
+       verifies every produced binary against this same file — cannot drift apart, and there is no
+       thumbprint literal anywhere to update when the certificate is replaced.
+
+       Rotating the certificate means adding the new .cer here one release BEFORE it is first used to
+       sign, so copies already installed accept it. Every embedded .cer is a pin; the LogicalName is
+       explicit so the resource is named identically in the test assembly, which embeds the same file. -->
+  <ItemGroup>
+    <EmbeddedResource Include="scripts\ZeroZeroSoftware.cer" LogicalName="ZeroZeroSoftware.cer" />
   </ItemGroup>
 
   <ItemGroup>

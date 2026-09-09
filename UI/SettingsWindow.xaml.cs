@@ -46,7 +46,7 @@ internal sealed partial class SettingsWindow : Window
 
     private readonly ConfigManager    _config;
     private readonly StartupManager   _startup;
-    private readonly UpdateChecker    _updateChecker;
+    private readonly AppUpdate        _update;
     private readonly AdapterRenameFlow _renameFlow;
     private readonly DispatcherQueue  _ui;
 
@@ -177,14 +177,14 @@ internal sealed partial class SettingsWindow : Window
     /// single explanatory card instead of the panel: a settings category that silently disappears is
     /// harder to explain than one that says why it is empty.
     /// </param>
-    public SettingsWindow(ConfigManager config, StartupManager startup, UpdateChecker updateChecker,
+    public SettingsWindow(ConfigManager config, StartupManager startup, AppUpdate update,
                           NetworkMonitor monitor, HyperVManager hyperV,
                           Action<string, string, bool> notify, MqttService? mqtt)
     {
         _consumerSink  = _sectionConsumers;   // RebuildRuleCards swaps this while it builds
         _config        = config;
         _startup       = startup;
-        _updateChecker = updateChecker;
+        _update        = update;
         _monitor       = monitor;
         _mqtt          = mqtt;
 
@@ -1797,10 +1797,10 @@ internal sealed partial class SettingsWindow : Window
 
     private async Task CheckForUpdatesAsync()
     {
-        // Parent the dialog to this window so it isn't orphaned. UpdatePrompt.RunAsync must stay on
-        // the UI thread (comctl32 v6 activation context for the Task Dialog).
+        // Parent the dialog to this window so it isn't orphaned. The manual flow must stay on the UI
+        // thread (comctl32 v6 activation context for the Task Dialog).
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        try { await UpdatePrompt.RunAsync(_updateChecker, hwnd); }
+        try { await _update.RunManualAsync(hwnd); }
         catch (Exception ex) { AppInfo.AppendCrashLogLine("SettingsWindow", $"CheckForUpdates: {ex}"); }
     }
 
