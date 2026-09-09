@@ -281,7 +281,7 @@ HyperVManagerTray/
 dotnet test
 ```
 
-`Tests/` is an xUnit project (745 tests) covering the pure logic — CIDR/MAC matching
+`Tests/` is an xUnit project (1605 tests) covering the pure logic — CIDR/MAC matching
 (`AdapterMatcher`), the VM status maths (`VmStatus`), the `config.json` contract, the WMI
 classification helpers (`SwitchWmiHelpers`, `WmiVmMapper`), log routing (`FileLogger`), and the
 UI's text/state helpers. It **links** the relevant source files rather than referencing the WinUI

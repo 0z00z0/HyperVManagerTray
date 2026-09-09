@@ -47,24 +47,23 @@
     <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
 
+  <!-- Versions live in Directory.Packages.props at the repository root; these references carry the
+       package name alone so the app and the test project cannot drift apart. -->
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Logging" />
     <!-- The file sink behind Microsoft.Extensions.Logging, and the log rotation the hand-rolled
          StreamWriter never had (issue #55). Configured in code, not NLog.config — see
          Services\FileLogger.cs — so there is no config file for an unpackaged app to fail to find. -->
-    <PackageReference Include="NLog" Version="6.1.4" />
-    <!-- At or above 0z0-shared's pins (2.2.0 / 10.0.28000.2270). A direct reference BELOW a
-         transitive one is NU1605, an error: the shared pins are a floor a consumer must meet, not
-         one a lower local pin overrides. -->
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.2.0" />
-    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2270" />
-    <PackageReference Include="H.NotifyIcon.WinUI" Version="2.4.1" />
-    <PackageReference Include="System.Drawing.Common" Version="10.0.8" />
-    <PackageReference Include="System.Management" Version="10.0.8" />
+    <PackageReference Include="NLog" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" />
+    <PackageReference Include="H.NotifyIcon.WinUI" />
+    <PackageReference Include="System.Drawing.Common" />
+    <PackageReference Include="System.Management" />
     <!-- Typed Task Scheduler API behind Services\StartupManager.cs. schtasks /Create cannot set
          DisallowStartIfOnBatteries/StopIfGoingOnBatteries, and their defaults are what stopped the
          logon task ever starting the app on battery (issue #61). -->
-    <PackageReference Include="TaskScheduler" Version="2.12.2" />
+    <PackageReference Include="TaskScheduler" />
   </ItemGroup>
 
   <!-- Shared ZeroZero Software branding: the About window now comes from here instead of a
