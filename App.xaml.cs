@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml;
 using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Services;
 using HyperVManagerTray.UI;
+using ZeroZero.Lifecycle;
 
 namespace HyperVManagerTray;
 
@@ -34,6 +35,10 @@ public partial class App : Application
     private DashboardWindow? _dashboard;
     private TrayMenu?        _menu;
 
+    // Which of the four single-instance outcomes this launch got. Taken before any logger exists, so
+    // it is carried to the first line the log can actually receive.
+    private SingleInstanceOutcome _lockOutcome;
+
     private string _exeDir = AppContext.BaseDirectory;
     // The icon state currently posted. Null = not yet initialised, so the first apply always updates.
     // Holds the rendered STATE (not "is it bridged?") because a failed apply is now its own state that
@@ -57,11 +62,11 @@ public partial class App : Application
         // A tray app's lifetime is anchored to the tray icon (a Win32 construct), NOT to any XAML
         // window. With the default OnLastWindowClose policy, a GPU/compositor reset that destroys
         // all our windows from below tears the whole process down as a clean exit (the "vanished
-        // tray, zero trace" crash — see Helpers/SelfHealWatchdog.cs). OnExplicitShutdown keeps the
+        // tray, zero trace" crash — see Helpers/AppLifecycle.cs). OnExplicitShutdown keeps the
         // process alive through that; the dashboard recreates itself lazily on the next tray click
-        // (see ToggleDashboard). SelfHealWatchdog covers the case where the process dies anyway.
+        // (see ToggleDashboard). AppLifecycle covers the case where the process dies anyway; it is
+        // armed in OnLaunched, after the lock, not here.
         DispatcherShutdownMode = DispatcherShutdownMode.OnExplicitShutdown;
-        SelfHealWatchdog.Install();
     }
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
@@ -80,21 +85,27 @@ public partial class App : Application
         // Handled — the process survives instead of dying and tripping the self-heal relaunch.
         RegisterGlobalExceptionHandlers();
 
-        // Single-instance next — before any window or tray icon. A self-heal relaunch can spawn
-        // the new instance while the old one is still milliseconds from terminating, and a
-        // resume-from-standby can double-launch via the logon task; two tray processes would both
-        // bind virtual switches and race. Held for the process lifetime; the OS releases it on
-        // termination (clean exit, crash, or kill).
-        if (!SelfHealWatchdog.AcquireLock())
+        // Single-instance next — before any window or tray icon, and before the relaunch hook is
+        // armed. A self-heal relaunch can spawn the new instance while the old one is still
+        // milliseconds from terminating, and a resume-from-standby can double-launch via the logon
+        // task; two tray processes would both bind virtual switches and race. Held for the process
+        // lifetime; the OS releases it on termination (clean exit, crash, or kill).
+        _lockOutcome = AppLifecycle.AcquireLock();
+        if (!_lockOutcome.IsTaken())
         {
             // The crash log is the only reachable sink this early — the LoggerFactory is not built
             // until after the config read below — and without this a refused launch left no trace
-            // anywhere on the machine.
-            AppInfo.AppendCrashLogLine("LIFECYCLE",
-                "Another instance already holds the single-instance lock — this launch is exiting.");
-            ExitIntentionally();   // a duplicate exit must NOT trigger the self-heal relaunch
+            // anywhere on the machine. Which of the two refusals it was is part of the line: a name
+            // this process may not open is not another copy of the app.
+            AppInfo.AppendCrashLogLine("LIFECYCLE", SingleInstanceLog.Message(_lockOutcome));
+            Exit();   // nothing is armed on this path, so this exit relaunches nothing
             return;
         }
+
+        // Only now that this process is established as the instance: the relaunch hook. Arming it
+        // ahead of the lock would turn the refusal above into an unmarked clean exit, which starts a
+        // third instance, which is refused in turn, until the relaunch limiter stops it.
+        AppLifecycle.Arm();
 
         // Opt native Win32 elements (tray context menu, etc.) into system dark mode.
         // Must run before any UI is created so the menu HWND inherits the setting.
@@ -103,7 +114,7 @@ public partial class App : Application
         // When resurrected after a GPU-reset teardown, the display subsystem may still be
         // recovering — wait a beat before creating windows/the tray icon so the fresh instance
         // doesn't die to the same reset it was born from.
-        if (SelfHealWatchdog.IsAutoRelaunch)
+        if (AppLifecycle.IsRelaunch)
             await Task.Delay(TimeSpan.FromSeconds(5));
 
         _ui = DispatcherQueue.GetForCurrentThread();
@@ -150,6 +161,13 @@ public partial class App : Application
             // lands even when the update check (the only other version-bearing line) never
             // completes, and before anything below can fail.
             _loggerFactory.CreateLogger("startup").LogWarning("{Event}", AppInfo.StartupVersionLine);
+
+            // Which acquisition happened, said at the first point there is a log to say it in — the
+            // lock is taken long before this. Warning for the abandoned case: it means the previous
+            // instance died without releasing, which is the teardown the relaunch exists for.
+            _loggerFactory.CreateLogger("startup").Log(
+                _lockOutcome == SingleInstanceOutcome.TakenAbandoned ? LogLevel.Warning : LogLevel.Information,
+                "{Event}", SingleInstanceLog.Message(_lockOutcome));
 
             // Capture a minidump if the app dies from a NATIVE fault (GDI+, comctl32, the
             // WinUI/Mica compositor during a dock/display/power transition, …).  Those bypass
@@ -336,10 +354,10 @@ public partial class App : Application
         }
     }
 
-    /// <summary>Exits after telling <see cref="SelfHealWatchdog"/> this teardown is deliberate, so it doesn't relaunch.</summary>
+    /// <summary>Exits after telling <see cref="AppLifecycle"/> this teardown is deliberate, so it doesn't relaunch.</summary>
     private void ExitIntentionally()
     {
-        SelfHealWatchdog.MarkLegitimateExit();
+        AppLifecycle.MarkDeliberateExit();
         Exit();
     }
 
@@ -517,7 +535,7 @@ public partial class App : Application
             using var self   = Process.GetCurrentProcess();
             var elapsed      = (measuredAt ?? DateTime.Now) - self.StartTime;
             UiActivityLog.Logger.LogInformation("{Event}", LatencyLog.StartupLine(
-                milestone, elapsed.TotalMilliseconds, SelfHealWatchdog.IsAutoRelaunch));
+                milestone, elapsed.TotalMilliseconds, AppLifecycle.IsRelaunch));
         }
         catch { /* instrumentation must never affect the thing it measures, least of all fatally */ }
     }
@@ -952,8 +970,8 @@ public partial class App : Application
 
     private void OnExit()
     {
-        // User-initiated exit is legitimate — the self-heal watchdog must NOT relaunch it.
-        SelfHealWatchdog.MarkLegitimateExit();
+        // User-initiated exit is deliberate — the relaunch hook must NOT bring the app back.
+        AppLifecycle.MarkDeliberateExit();
         // Let the persistent dashboard actually close now (it otherwise cancels close → hide).
         if (_dashboard is not null) _dashboard.AllowClose = true;
 

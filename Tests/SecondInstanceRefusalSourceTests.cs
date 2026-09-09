@@ -6,7 +6,8 @@ namespace HyperVManagerTray.Tests;
 
 /// <summary>
 /// Guards the refusal path in <c>App.OnLaunched</c>: a launch blocked by the single-instance lock
-/// must leave a line in the crash log.
+/// must leave a line in the crash log, that line must say which refusal it was, and the relaunch
+/// hook must still be armed only after the lock is taken.
 ///
 /// <para>The lock is taken before the LoggerFactory exists — that is built after the config read,
 /// far below — so the crash log is the only sink reachable at that point, and a refusal that skips
@@ -34,18 +35,24 @@ public class SecondInstanceRefusalSourceTests
     /// <summary>Comments stripped: the surrounding prose names the helper it explains.</summary>
     private static string AppCode() => Regex.Replace(AppSource(), @"//[^\n]*", "");
 
+    /// <summary>Where the lock is taken. Everything this class asserts is positioned against it.</summary>
+    private static int AcquisitionIndex(string code)
+    {
+        var acquire = code.IndexOf("AppLifecycle.AcquireLock()", StringComparison.Ordinal);
+        Assert.True(acquire >= 0,
+            "AppLifecycle.AcquireLock() is gone from App.xaml.cs — this test anchors on it; fix the anchor, don't skip it.");
+        return acquire;
+    }
+
     /// <summary>The refusal branch: everything from the failed acquisition to the exit it ends in.</summary>
     private static string RefusalBranch()
     {
-        var code = AppCode();
+        var code    = AppCode();
+        var acquire = AcquisitionIndex(code);
 
-        var acquire = code.IndexOf("SelfHealWatchdog.AcquireLock()", StringComparison.Ordinal);
-        Assert.True(acquire >= 0,
-            "SelfHealWatchdog.AcquireLock() is gone from App.xaml.cs — this test anchors on it; fix the anchor, don't skip it.");
-
-        var exit = code.IndexOf("ExitIntentionally()", acquire, StringComparison.Ordinal);
+        var exit = code.IndexOf("Exit();", acquire, StringComparison.Ordinal);
         Assert.True(exit > acquire,
-            "The refusal branch no longer ends in ExitIntentionally() — this test anchors on it; fix the anchor, don't skip it.");
+            "The refusal branch no longer ends in an Exit() call — this test anchors on it; fix the anchor, don't skip it.");
 
         return code[acquire..exit];
     }
@@ -70,5 +77,39 @@ public class SecondInstanceRefusalSourceTests
         Assert.False(Regex.IsMatch(RefusalBranch(), @"File\.(Append|Write)"),
             "The refusal path writes to a file directly instead of going through AppInfo.AppendCrashLogLine. "
           + "The helper never throws; a raw write on this path can take down the launch it was added to record.");
+    }
+
+    /// <summary>
+    /// The lock reports four outcomes, and the two refusals are different facts: another copy of the
+    /// app is running, versus a mutex name this process may not open at all. A hard-coded sentence
+    /// collapses them back to the boolean the component was taken to replace.
+    /// </summary>
+    [Fact]
+    public void RefusedLaunch_SaysWhichRefusalItWas()
+    {
+        Assert.True(Regex.IsMatch(RefusalBranch(), @"SingleInstanceLog\.Message\("),
+            "The refusal line no longer comes from SingleInstanceLog.Message, so the crash log cannot say "
+          + "which refusal happened. A name this process may not open reads as an ordinary second launch, "
+          + "and a mutex name the app can never take stays hidden.");
+    }
+
+    /// <summary>
+    /// The refusal path must reach no exit hook. Armed ahead of the lock, a refused launch becomes an
+    /// unmarked clean exit: the hook starts a third instance, which is refused in turn, and so on
+    /// until the relaunch limiter stops it.
+    /// </summary>
+    [Fact]
+    public void TheRelaunchHook_IsArmedOnlyAfterTheLockIsTaken()
+    {
+        var code = AppCode();
+        var arm  = code.IndexOf("AppLifecycle.Arm()", StringComparison.Ordinal);
+        Assert.True(arm >= 0,
+            "AppLifecycle.Arm() is gone from App.xaml.cs — nothing brings the tray back after a teardown "
+          + "nobody asked for; fix the anchor if it merely moved, don't skip it.");
+
+        Assert.True(arm > AcquisitionIndex(code),
+            "The relaunch hook is armed before the single-instance lock is taken. A refused launch then "
+          + "exits into its own hook and relaunches itself into the same refusal, over and over, until the "
+          + "limiter stops it.");
     }
 }

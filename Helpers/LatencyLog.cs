@@ -92,7 +92,7 @@ public static class LatencyLog
     /// point: it is most of the number and it is not ours to fix.
     /// </param>
     /// <param name="autoRelaunch">
-    /// True when this process is a <c>SelfHealWatchdog</c> relaunch, which deliberately sleeps 5 s before
+    /// True when this process is an <c>AppLifecycle</c> relaunch, which deliberately sleeps 5 s before
     /// creating any UI. Said in the line because it otherwise silently inflates every milestone after it
     /// by 5 s, and a reader comparing a relaunch's numbers against a normal boot's would conclude the app
     /// had regressed by exactly the amount of a delay it was designed to take.

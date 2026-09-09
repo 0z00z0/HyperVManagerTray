@@ -77,7 +77,7 @@ Every open issue carries **one `type`**, **one or more `area:`**, and optionally
   `Services/VmService.cs`).
 - `area:core` — app core / services: config, logging, startup, updates
   (`Services/ConfigManager.cs`, `Services/FileLogger.cs`, `Services/StartupManager.cs`,
-  `Services/UpdateChecker.cs`, `Helpers/SelfHealWatchdog.cs`).
+  `Services/UpdateChecker.cs`, `Helpers/AppLifecycle.cs`).
 - `area:installer` — installer / release packaging (`installer/`).
 - `area:mqtt` — MQTT / Home Assistant integration: the broker connection, the topics published and
   subscribed, and the settings behind them.
