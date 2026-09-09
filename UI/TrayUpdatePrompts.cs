@@ -62,7 +62,8 @@ internal sealed class TrayUpdatePrompts : IUpdatePrompts
             rateLimitResetsAt: null, AppInfo.Version, DateTimeOffset.Now));
 
     public void SayCheckFailed(UpdateCheckResult result) =>
-        Say(UpdateStatusUi.ReportFor(result, AppInfo.Version, DateTimeOffset.Now));
+        Say(UpdateStatusUi.ReportFor(result, AppInfo.FormatVersion(result?.RunningVersion),
+                                     DateTimeOffset.Now));
 
     public void SayCannotInstall(PreparedUpdate update)
     {

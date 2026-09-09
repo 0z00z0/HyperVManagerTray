@@ -5,8 +5,8 @@ namespace HyperVManagerTray.Helpers;
 /// <summary>
 /// Single source of truth for the app's display name and the per-user data locations under
 /// <c>%APPDATA%</c>.  Previously the folder name "HyperVManagerTray" and the display name
-/// "Hyper-V Manager Tray" were hard-coded in App, TrayMenu, StartupManager, UpdateChecker,
-/// etc.; centralising them here keeps the log/crash paths consistent and makes a
+/// "Hyper-V Manager Tray" were hard-coded in App, TrayMenu, StartupManager and the update
+/// path; centralising them here keeps the log/crash paths consistent and makes a
 /// rename a one-line change.
 /// </summary>
 internal static class AppInfo
