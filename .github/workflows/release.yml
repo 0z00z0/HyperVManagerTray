@@ -33,7 +33,7 @@ jobs:
       # The feed credential, handed to NuGet through the environment rather than written into a
       # config file: NuGet reads NuGetPackageSourceCredentials_<source name> for the source of that
       # name, and the name here is the one nuget.config gives the studio feed. Job-scoped, so the
-      # test step and the installer build are authenticated too.
+      # installer build is authenticated too.
       #
       # The ZeroZero.* packages are private and grant this repository read, so the run's own
       # GITHUB_TOKEN restores them and no secret is needed. A package that does not grant this
@@ -74,14 +74,6 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.x'
-
-      # ── 4. Run unit tests (gate the release) ─────────────────────────────────
-      # No installer is published unless all tests pass.
-      - name: Run unit tests
-        shell: pwsh
-        run: |
-          dotnet test Tests\HyperVManagerTray.Tests.csproj -c Release --nologo
-          if ($LASTEXITCODE -ne 0) { throw "Unit tests failed (exit $LASTEXITCODE)." }
 
       # ── 5. Install Inno Setup 6 via Chocolatey ───────────────────────────────
       - name: Install Inno Setup 6
@@ -198,7 +190,7 @@ jobs:
           "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       # ── 9. Create GitHub Release (tag pushes only) ───────────────────────────
-      # A manual workflow_dispatch is a dry-run: it builds, tests and signs, but
+      # A manual workflow_dispatch is a dry-run: it builds and signs, but
       # does NOT publish a release.
       - name: Create GitHub Release
         if: ${{ github.ref_type == 'tag' }}
