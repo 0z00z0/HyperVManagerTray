@@ -49,26 +49,26 @@ public enum UpdateCheckReason
 /// <summary>
 /// The shared check result read at this app's grain.
 ///
-/// <para>The shared module reports six outcomes where this app writes eight sentences: its
-/// <c>Unreachable</c> covers both a timeout and an unreachable host, and its <c>InvalidResponse</c>
-/// covers both an unsuccessful HTTP status and a release whose metadata will not parse. The two
-/// splits are recovered from evidence the shared result carries — the exception type for the first,
-/// the shape of the detail sentence for the second — and both are pinned by tests driving the real
-/// shared release source, so a reword there fails here rather than silently collapsing two
-/// sentences into one.</para>
+/// <para>The shared module names an outcome for every sentence this app writes, so the reason is a
+/// straight mapping. Two of those sentences quote a value the result carries only inside its own
+/// detail sentence — the status a failed request was answered with, and the tag that would not
+/// parse — and those two readings are what this type is for. Both are pinned by tests driving the
+/// real shared release source, so a reword there fails here rather than silently dropping a number
+/// or a tag from a message.</para>
 ///
 /// <para>A detail sentence that matches neither shape degrades to
 /// <see cref="UpdateCheckReason.UnreadableRelease"/> with no tag, whose wording is true of every
-/// invalid response and — the property that matters — still refuses to blame the network.</para>
+/// answer that yielded no version and — the property that matters — still refuses to blame the
+/// network.</para>
 /// </summary>
 /// <param name="StatusCode">The HTTP status the response carried. Zero unless
 /// <see cref="Reason"/> is <see cref="UpdateCheckReason.HttpError"/>.</param>
 /// <param name="ReleaseTag">The tag that would not parse. Empty when the detail named none.</param>
 internal readonly record struct UpdateCheckDetail(UpdateCheckReason Reason, int StatusCode, string ReleaseTag)
 {
-    /// <summary>Written by <c>GitHubReleaseSource</c> for an unsuccessful status.</summary>
+    /// <summary>Written by <c>GitHubReleaseSource</c> for a failure status.</summary>
     private static readonly Regex HttpStatusDetail =
-        new(@"^HTTP (?<status>\d{3}) from ", RegexOptions.CultureInvariant);
+        new(@"answered HTTP (?<status>\d{3}) rather than a release$", RegexOptions.CultureInvariant);
 
     /// <summary>Written by <c>GitHubReleaseSource</c> for a tag that is not a version.</summary>
     private static readonly Regex UnparseableTagDetail =
@@ -88,32 +88,35 @@ internal readonly record struct UpdateCheckDetail(UpdateCheckReason Reason, int 
             UpdateCheckOutcome.UpToDate        => new(UpdateCheckReason.UpToDate, 0, string.Empty),
             UpdateCheckOutcome.NoReleases      => new(UpdateCheckReason.NoReleases, 0, string.Empty),
             UpdateCheckOutcome.RateLimited     => new(UpdateCheckReason.RateLimited, 0, string.Empty),
-            UpdateCheckOutcome.Unreachable     => Unreachable(result),
+            UpdateCheckOutcome.Unreachable     => new(UpdateCheckReason.NetworkUnavailable, 0, string.Empty),
+            UpdateCheckOutcome.TimedOut        => new(UpdateCheckReason.TimedOut, 0, string.Empty),
+            UpdateCheckOutcome.RequestFailed   => RequestFailed(result),
 
-            // Every remaining outcome, named and unnamed, is something the app could not read. It must
-            // never fall through to a reason that blames the network.
-            _ => InvalidResponse(result),
+            // InvalidResponse, and every outcome a later shared version may add. Neither may fall
+            // through to a reason that blames the network.
+            _ => UnreadableRelease(result),
         };
     }
 
     /// <summary>
-    /// The shared source raises a cancellation when its own request budget expires and an HTTP
-    /// request failure when nothing answered, so the exception type — a typed value, not prose —
-    /// is what separates a slow GitHub from an unreachable one.
+    /// The status is the whole difference between a service that is broken and one that is refusing
+    /// this app, and it is carried only inside the detail sentence. A sentence it cannot be read
+    /// from leaves an answer that yielded no version, which is still true and still not the network.
     /// </summary>
-    private static UpdateCheckDetail Unreachable(UpdateCheckResult result) =>
-        result.Error is OperationCanceledException
-            ? new(UpdateCheckReason.TimedOut, 0, string.Empty)
-            : new(UpdateCheckReason.NetworkUnavailable, 0, string.Empty);
-
-    private static UpdateCheckDetail InvalidResponse(UpdateCheckResult result)
+    private static UpdateCheckDetail RequestFailed(UpdateCheckResult result)
     {
         var status = HttpStatusDetail.Match(result.Detail);
-        if (status.Success
+        return status.Success
             && int.TryParse(status.Groups["status"].ValueSpan, NumberStyles.Integer,
-                            CultureInfo.InvariantCulture, out var code))
-            return new(UpdateCheckReason.HttpError, code, string.Empty);
+                            CultureInfo.InvariantCulture, out var code)
+            ? new(UpdateCheckReason.HttpError, code, string.Empty)
+            : new(UpdateCheckReason.UnreadableRelease, 0, string.Empty);
+    }
 
+    /// <summary>The tag is carried only inside the detail sentence, and a body that never parsed
+    /// names none. An unnamed tag must not be invented.</summary>
+    private static UpdateCheckDetail UnreadableRelease(UpdateCheckResult result)
+    {
         var tag = UnparseableTagDetail.Match(result.Detail);
         return new(UpdateCheckReason.UnreadableRelease, 0, tag.Success ? tag.Groups["tag"].Value : string.Empty);
     }

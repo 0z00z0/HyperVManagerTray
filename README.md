@@ -28,7 +28,7 @@ It also includes a **WinUI 3 dashboard** (left-click the tray icon) that shows t
 - The user account must be a member of the **Hyper-V Administrators** group (or run as Administrator)
 - The virtual switches your rules and fallback name must exist in Hyper-V Virtual Switch Manager (a fresh install references only the built-in **Default Switch**)
 - To **run** the installed app: the **.NET 10 Desktop Runtime**. The app is published **framework-dependent** — the installer checks for the runtime and offers to install it if missing. The Windows App SDK is bundled, so no separate Windows App Runtime install is needed.
-- To **build** from source: the .NET 10 SDK.
+- To **build** from source: the .NET 10 SDK, and a credential for the studio's GitHub Packages feed, which the shared ZeroZero components restore from and which authenticates every read. Register it once against the user-level NuGet configuration — `dotnet nuget add source https://nuget.pkg.github.com/0z00z0/index.json --name 0z00z0 --username <github-user> --password <token with read:packages> --store-password-in-clear-text` — and every restore on the machine picks it up. No token belongs in this repository. See [Shared components](#shared-components).
 
 ---
 
@@ -303,7 +303,9 @@ the app talks to Hyper-V or the host network.
 
 ## External libraries
 
-Every third-party package the app references (`HyperVManagerTray.csproj`):
+Every third-party package the app references (`HyperVManagerTray.csproj`). The studio's own shared
+components are packages too and are listed under [Shared components](#shared-components); the About
+window shows both lists together.
 
 | Name | Version | Author / Publisher | Purpose | License |
 |---|---|---|---|---|
@@ -340,24 +342,24 @@ additionally uses, at **test time only** (nothing ships in the app):
 
 ## Shared components
 
-Three projects come from [0z0-shared](https://github.com/0z00z0/0z0-shared), the shared components
-library used across ZeroZero Software apps, referenced as sibling-folder `ProjectReference`s (no
-NuGet package yet):
+Four components come from [0z0-shared](https://github.com/0z00z0/0z0-shared), the shared components
+library used across ZeroZero Software apps, taken as packages from the studio's GitHub Packages feed:
 
-| Project | What it provides |
-|---|---|
-| `ZeroZero.Brand.WinUI` | The **About** window (`BrandAboutWindow`) |
-| `ZeroZero.Mqtt.WinUI` | The MQTT module — broker connection, Home Assistant discovery and the settings panel. Delivers `ZeroZero.Config`, `ZeroZero.Mqtt` and `ZeroZero.Mqtt.Discovery` with it |
-| `ZeroZero.Lifecycle` | The single-instance lock and its four outcomes, and the relaunch after a clean exit nobody asked for, limited to three in ten minutes. Wired up in `Helpers/AppLifecycle.cs` |
+| Package | Version | What it provides |
+|---|---|---|
+| [ZeroZero.Brand.WinUI](https://github.com/0z00z0/0z0-shared) | 0.7.0 | The **About** window (`BrandAboutWindow`), the studio mark, the typeface and the palette |
+| [ZeroZero.Mqtt.WinUI](https://github.com/0z00z0/0z0-shared) | 0.7.2 | The MQTT module — broker connection, Home Assistant discovery and the settings panel. Delivers `ZeroZero.Config`, `ZeroZero.Mqtt` and `ZeroZero.Mqtt.Discovery` with it |
+| [ZeroZero.Lifecycle](https://github.com/0z00z0/0z0-shared) | 0.7.1 | The single-instance lock and its four outcomes, and the relaunch after a clean exit nobody asked for, limited to three in ten minutes. Wired up in `Helpers/AppLifecycle.cs` |
+| [ZeroZero.Update.Win32](https://github.com/0z00z0/0z0-shared) | 0.7.1 | The self-update flow behind `Services/AppUpdate.cs` — the release check, and the download verified against its published SHA-256 and against the publisher certificate before it is allowed to run. Delivers `ZeroZero.Update` with it |
 
-Local builds resolve the library as the sibling `..\0z0-shared` folder; CI checks the repo out into a
-workspace subfolder and points the `ZeroZeroSharedDir` MSBuild property at it (see
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+The versions live in [`Directory.Packages.props`](Directory.Packages.props); the project files carry
+package names alone, so the app and the test project cannot resolve a component at two different
+versions. [`nuget.config`](nuget.config) names the feed and maps `ZeroZero.*` to it.
 
-The reference is **unpinned**: local builds compile whatever the sibling working tree holds, and CI
-and releases take the 0z0-shared default branch. That library is pre-1.0, where a minor bump may
-break the API, so a shared-side change reaches this build without warning and at a time this repo
-does not choose. A build failing on a shared type is read there first.
+**The feed authenticates every read**, so a restore needs a token carrying `read:packages` — see
+[Requirements](#requirements). Each component is pre-1.0, where a minor bump may break the API and a patch never
+does, so raising one of these numbers means reading that component's release notes under
+`docs/release-notes/<key>/` in the 0z0-shared repository first.
 
 ## Credits & acknowledgements
 

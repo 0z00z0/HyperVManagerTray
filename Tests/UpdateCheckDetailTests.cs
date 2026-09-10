@@ -13,17 +13,15 @@ namespace HyperVManagerTray.Tests;
 ///
 /// <para><b>What these tests exist for.</b> A spent GitHub quota, a 500, a DNS failure, a timeout and
 /// an unparseable tag are five different things, and reporting all five as "Check your internet
-/// connection" is the failure this split exists to prevent. The shared component reports six outcomes
-/// where this app writes eight sentences — its <c>Unreachable</c> covers both a timeout and an
-/// unreachable host, and its <c>InvalidResponse</c> covers both an unsuccessful status and a release
-/// that will not parse — and <see cref="UpdateCheckDetail"/> reads the two splits back out.</para>
+/// connection" is the failure this split exists to prevent. The shared component names an outcome for
+/// each, and two of the five messages additionally quote a value it carries only inside its detail
+/// sentence: the status a failed request was answered with, and the tag that would not parse.</para>
 ///
-/// <para><b>Why the real release source.</b> The evidence those two splits are read from belongs to
-/// the shared component: the exception type it attaches, and the shape of the detail sentence it
-/// writes. Asserting against a copy of that wording would prove only that the copy still matches
-/// itself, so every case here drives the actual <see cref="GitHubReleaseSource"/> through a stub
-/// transport. A reword on the shared side turns these red instead of silently collapsing two
-/// sentences into one.</para>
+/// <para><b>Why the real release source.</b> Those two values are read out of wording the shared
+/// component writes. Asserting against a copy of that wording would prove only that the copy still
+/// matches itself, so every case here drives the actual <see cref="GitHubReleaseSource"/> through a
+/// stub transport. A reword on the shared side turns these red instead of silently dropping a status
+/// code or a tag from a message the user reads.</para>
 ///
 /// <para>The load-bearing one is <see cref="OnlyANewerReleaseEverReportsAnUpdateAvailable"/>: the
 /// silent startup check raises the tray badge on that flag alone, so no failure may set it.</para>
@@ -178,6 +176,23 @@ public class UpdateCheckDetailTests
         var detail = UpdateCheckDetail.Of(await service.CheckAsync());
 
         Assert.Equal(UpdateCheckReason.TimedOut, detail.Reason);
+    }
+
+    /// <summary>
+    /// A cancellation the caller asked for is a third thing beside the two above: it ends the check by
+    /// throwing and never arrives as an outcome. Were it to arrive as one, shutting the app down during
+    /// a check would tell the user GitHub was slow.
+    /// </summary>
+    [Fact]
+    public async Task ACallerCancellationThrowsRatherThanReportingAnOutcome()
+    {
+        var options = AppUpdateOptions.For(Running, NullLogSink.Instance);
+        using var http = new HttpClient(new HangingHandler());
+        using var service = new UpdateService(options, new GitHubReleaseSource(http, options));
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.CheckAsync(cancelled.Token));
     }
 
     /// <summary>The number the timeout message quotes is the budget the check actually runs under.</summary>

@@ -23,6 +23,31 @@
     <PackageVersion Include="TaskScheduler" Version="2.12.2" />
   </ItemGroup>
 
+  <!-- The shared ZeroZero Software components, from the studio's GitHub Packages feed named in
+       nuget.config. One version per component, and a component's entry point carries its own other
+       assemblies transitively — ZeroZero.Config, ZeroZero.Mqtt and ZeroZero.Primitives all arrive
+       that way and are pinned nowhere here.
+
+       Every component is pre-1.0, where a minor bump may break the API and a patch never does.
+       Raising one of these numbers is a deliberate step: read that component's release notes under
+       docs/release-notes/<key>/ in the 0z0-shared repository first. -->
+  <ItemGroup>
+    <PackageVersion Include="ZeroZero.Brand.Core" Version="0.7.0" />
+    <PackageVersion Include="ZeroZero.Brand.WinUI" Version="0.7.0" />
+    <PackageVersion Include="ZeroZero.Lifecycle" Version="0.7.1" />
+    <!-- 0.7.2 closes the disposal race on the connection's reconcile gate and the discovery
+         publisher's announcement gate: a settings change applied after teardown, or a reconnect
+         still in flight at exit, could each end the process. Never go below it. -->
+    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.7.2" />
+    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.7.2" />
+    <!-- 0.8.0 reports a timeout, an unreachable host, a failure status and an unreadable release as
+         four outcomes rather than two, which is the split every message about a failed check is
+         written to. It also keeps UpdateScheduler.Dispose idempotent: this app stops the schedule
+         before handing over to an installer and disposes again on the way out. -->
+    <PackageVersion Include="ZeroZero.Update" Version="0.8.0" />
+    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.8.0" />
+  </ItemGroup>
+
   <!-- Test project only. -->
   <ItemGroup>
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
