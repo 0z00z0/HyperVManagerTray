@@ -40,10 +40,12 @@
          still in flight at exit, could each end the process. Never go below it. -->
     <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.7.2" />
     <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.7.2" />
-    <!-- 0.7.1 makes UpdateScheduler.Dispose idempotent; this app stops the schedule before handing
-         over to an installer and disposes again on the way out, which is the pair that threw. -->
-    <PackageVersion Include="ZeroZero.Update" Version="0.7.1" />
-    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.7.1" />
+    <!-- 0.8.0 reports a timeout, an unreachable host, a failure status and an unreadable release as
+         four outcomes rather than two, which is the split every message about a failed check is
+         written to. It also keeps UpdateScheduler.Dispose idempotent: this app stops the schedule
+         before handing over to an installer and disposes again on the way out. -->
+    <PackageVersion Include="ZeroZero.Update" Version="0.8.0" />
+    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.8.0" />
   </ItemGroup>
 
   <!-- Test project only. -->
