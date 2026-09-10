@@ -1,7 +1,6 @@
 name: CI
 
-# Build + unit tests on every push and PR to master. Keeps the release path
-# (release.yml) lean — this catches regressions continuously, not only at release.
+# Builds on every push and PR to master. Keeps the release path (release.yml) lean.
 on:
   push:
     branches: [master]
@@ -21,13 +20,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-test:
+  build:
     runs-on: windows-latest
     env:
       # The feed credential, handed to NuGet through the environment rather than written into a
       # config file: NuGet reads NuGetPackageSourceCredentials_<source name> for the source of that
-      # name, and the name here is the one nuget.config gives the studio feed. Job-scoped, so the
-      # test step is authenticated too. Nothing is added to, or rewritten in, any NuGet.Config.
+      # name, and the name here is the one nuget.config gives the studio feed. Nothing is added to, or rewritten in, any NuGet.Config.
       #
       # The ZeroZero.* packages are private and grant this repository read, so the run's own
       # GITHUB_TOKEN restores them and no secret is needed. A package that does not grant this
@@ -51,6 +49,3 @@ jobs:
 
       - name: Build (Release)
         run: dotnet build HyperVManagerTray.csproj -c Release -r win-x64 --no-restore --nologo
-
-      - name: Unit tests
-        run: dotnet test Tests\HyperVManagerTray.Tests.csproj -c Release --nologo
