@@ -35,12 +35,11 @@ jobs:
       # name, and the name here is the one nuget.config gives the studio feed. Job-scoped, so the
       # test step and the installer build are authenticated too.
       #
-      # The run's own GITHUB_TOKEN is the default and needs no secret, but it can read the feed only
-      # where the ZeroZero.* packages admit this repository — measured: while they are published
-      # private and granted to 0z0-shared alone, every request returns 403 with a valid token.
-      # PACKAGES_READ_TOKEN is the way out that needs no change on the publishing side: set it to a
-      # token carrying read:packages and it is taken instead. An absent secret is an empty string,
-      # so the fallback below picks the run token.
+      # The ZeroZero.* packages are private and grant this repository read, so the run's own
+      # GITHUB_TOKEN restores them and no secret is needed. A package that does not grant this
+      # repository answers 403 rather than 401; PACKAGES_READ_TOKEN covers that case without a
+      # change here — set it to a token carrying read:packages and it is taken instead. An absent
+      # secret is an empty string, so the fallback below picks the run token.
       NuGetPackageSourceCredentials_0z00z0: Username=${{ github.actor }};Password=${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}
 
     outputs:
