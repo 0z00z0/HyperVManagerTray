@@ -121,4 +121,75 @@ public class AboutCreditsTests
         Assert.True(missing.Length == 0,
             $"Referenced but absent from the README \"External libraries\" table: {string.Join(", ", missing)}.");
     }
+
+    /// <summary>Every version this repository declares, keyed by package name, read from
+    /// <c>Directory.Packages.props</c> — the one place a version is meant to be set.</summary>
+    private static Dictionary<string, string> DeclaredVersions()
+    {
+        var xml = Regex.Replace(ReadRepoFile("Directory.Packages.props"), "<!--.*?-->", string.Empty,
+                                RegexOptions.Singleline);
+        var versions = Regex.Matches(xml, @"<PackageVersion\s+Include=""([^""]+)""\s+Version=""([^""]+)""")
+                            .ToDictionary(m => m.Groups[1].Value, m => m.Groups[2].Value,
+                                          StringComparer.OrdinalIgnoreCase);
+
+        // A parse that silently matched nothing would make every assertion below vacuously true.
+        Assert.NotEmpty(versions);
+        return versions;
+    }
+
+    /// <summary>Every README table row of the shape <c>| [Name](url) | Version | ... |</c> — the
+    /// three README tables that carry a version column (External libraries, the test-only table,
+    /// Shared components) all use it, and nothing else in the README does.</summary>
+    private static (string Name, string Version)[] ReadmeLibraryRows()
+    {
+        var readme = ReadRepoFile("README.md");
+        var rows = Regex.Matches(readme, @"^\|\s*\[([^\]]+)\]\([^)]+\)\s*\|\s*([^|]+?)\s*\|", RegexOptions.Multiline)
+                        .Select(m => (Name: m.Groups[1].Value, Version: m.Groups[2].Value))
+                        .ToArray();
+
+        Assert.NotEmpty(rows);
+        return rows;
+    }
+
+    /// <summary>The comparison both version facts below share: a README row is only checked
+    /// against a version when its name is one <paramref name="declared"/> actually has. A row
+    /// naming something that is not a NuGet package — nothing in the README today, but the table
+    /// shape does not forbid it — carries no declared version to check against, so it is skipped
+    /// rather than failed. <see cref="ReadmeRowWithNoDeclaredVersionIsNotForcedToMatch"/> pins that
+    /// decision down by running this same method, not a copy of it.</summary>
+    private static string[] MismatchedReadmeVersions(
+        Dictionary<string, string> declared, IEnumerable<(string Name, string Version)> rows) =>
+        rows.Where(r => declared.ContainsKey(r.Name))
+            .Where(r => r.Version != declared[r.Name])
+            .Select(r => $"{r.Name} (README {r.Version}, Directory.Packages.props {declared[r.Name]})")
+            .ToArray();
+
+    /// <summary>THE test for the version half of the defect: a README row whose version is out of
+    /// step with <c>Directory.Packages.props</c>, the repository's one source of version numbers.
+    /// The README table is the only place a version can go stale with no other reader to catch
+    /// it.</summary>
+    [Fact]
+    public void EveryReadmeLibraryVersionMatchesDirectoryPackagesProps()
+    {
+        var mismatched = MismatchedReadmeVersions(DeclaredVersions(), ReadmeLibraryRows());
+
+        Assert.True(mismatched.Length == 0,
+            $"README version does not match Directory.Packages.props: {string.Join(", ", mismatched)}.");
+    }
+
+    /// <summary>Decision, pinned down rather than left incidental: a README row for something that
+    /// is not a NuGet package carries no declared version, so the guard above must not fail over
+    /// it. Proven against the real filter with a synthetic, deliberately undeclared package name —
+    /// not a re-implementation of the filter's logic.</summary>
+    [Fact]
+    public void ReadmeRowWithNoDeclaredVersionIsNotForcedToMatch()
+    {
+        var declared = DeclaredVersions();
+        var syntheticRow = new[] { (Name: "Not A Real Package", Version: "999.0.0") };
+        Assert.False(declared.ContainsKey(syntheticRow[0].Name));
+
+        var mismatched = MismatchedReadmeVersions(declared, syntheticRow);
+
+        Assert.Empty(mismatched);
+    }
 }
