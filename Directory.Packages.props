@@ -11,15 +11,15 @@
 
   <ItemGroup>
     <PackageVersion Include="H.NotifyIcon.WinUI" Version="2.4.1" />
-    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.12" />
     <!-- At or above 0z0-shared's pins. A direct reference BELOW a transitive one is NU1605, an
          error: the shared pins are a floor a consumer must meet, not one a lower local pin
          overrides. -->
-    <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2270" />
-    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.2.0" />
-    <PackageVersion Include="NLog" Version="6.1.4" />
-    <PackageVersion Include="System.Drawing.Common" Version="10.0.8" />
-    <PackageVersion Include="System.Management" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
+    <PackageVersion Include="NLog" Version="6.2.0" />
+    <PackageVersion Include="System.Drawing.Common" Version="10.0.12" />
+    <PackageVersion Include="System.Management" Version="10.0.12" />
     <PackageVersion Include="TaskScheduler" Version="2.12.2" />
   </ItemGroup>
 
@@ -50,7 +50,7 @@
 
   <!-- Test project only. -->
   <ItemGroup>
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.10.0" />
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.0" />
   </ItemGroup>
