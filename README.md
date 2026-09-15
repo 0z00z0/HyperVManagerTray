@@ -338,7 +338,7 @@ additionally uses, at **test time only** (nothing ships in the app):
 |---|---|---|---|---|
 | [xunit](https://github.com/xunit/xunit) | 2.9.3 | .NET Foundation & contributors | Unit-test framework | Apache-2.0 |
 | [xunit.runner.visualstudio](https://github.com/xunit/visualstudio.xunit) | 4.0.0 | .NET Foundation & contributors | VSTest adapter so `dotnet test` discovers xUnit tests | Apache-2.0 |
-| [Microsoft.NET.Test.Sdk](https://github.com/microsoft/vstest) | 18.10.0 | Microsoft | .NET test host / VSTest platform | MIT |
+| [Microsoft.NET.Test.Sdk](https://github.com/microsoft/vstest) | 18.10.1 | Microsoft | .NET test host / VSTest platform | MIT |
 
 ## Shared components
 
