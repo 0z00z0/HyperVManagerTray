@@ -101,9 +101,6 @@ public static class MqttEntityTable
     /// there is no installed base to carry across and nothing retained under this topic root that a
     /// declaration could reach. A guessed key would be worse than none: the publisher empties exactly
     /// what is named, once, and writes the fact down permanently.</para>
-    ///
-    /// <para>The entity ids below are the ones the removed pre-release integration used, so a broker a
-    /// development build published to is taken over rather than orphaned.</para>
     /// </summary>
     public static IReadOnlyList<MigratingEntity> Migrating => [];
 
