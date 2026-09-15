@@ -85,11 +85,13 @@ public sealed class MqttConfigStore : IMqttSettingsStore, IDisposable
     /// <summary>What counts as the broker settings having moved. Serialised rather than field-compared,
     /// so a field the module adds later is covered without this file being touched — with the password
     /// reduced to the module's own non-reversible stand-in first, because this string is retained for
-    /// the life of the store and compared on every reload.</summary>
+    /// the life of the store and compared on every reload. The group state is left out: a toggle is
+    /// announced by the group set's own event, which republishes without a reconcile pass.</summary>
     internal static string Fingerprint(MqttSettings settings)
     {
         var scrubbed = settings.Copy();
         scrubbed.Password = MqttConnectParameters.Fingerprint(scrubbed.Password);
+        scrubbed.Groups   = new(StringComparer.Ordinal);
         return JsonSerializer.Serialize(scrubbed);
     }
 }
