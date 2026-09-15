@@ -347,7 +347,7 @@ library used across ZeroZero Software apps, taken as packages from the studio's 
 
 | Package | Version | What it provides |
 |---|---|---|
-| [ZeroZero.Brand.WinUI](https://github.com/0z00z0/0z0-shared) | 0.7.0 | The **About** window (`BrandAboutWindow`), the studio mark, the typeface and the palette |
+| [ZeroZero.Brand.WinUI](https://github.com/0z00z0/0z0-shared) | 0.9.1 | The **About** window (`BrandAboutWindow`), the studio mark, the typeface and the palette |
 | [ZeroZero.Mqtt.WinUI](https://github.com/0z00z0/0z0-shared) | 0.7.2 | The MQTT module — broker connection, Home Assistant discovery and the settings panel. Delivers `ZeroZero.Config`, `ZeroZero.Mqtt` and `ZeroZero.Mqtt.Discovery` with it |
 | [ZeroZero.Lifecycle](https://github.com/0z00z0/0z0-shared) | 0.7.1 | The single-instance lock and its four outcomes, and the relaunch after a clean exit nobody asked for, limited to three in ten minutes. Wired up in `Helpers/AppLifecycle.cs` |
 | [ZeroZero.Update.Win32](https://github.com/0z00z0/0z0-shared) | 0.8.0 | The self-update flow behind `Services/AppUpdate.cs` — the release check, and the download verified against its published SHA-256 and against the publisher certificate before it is allowed to run. Delivers `ZeroZero.Update` with it |
