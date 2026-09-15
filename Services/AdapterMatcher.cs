@@ -796,13 +796,14 @@ public static class AdapterMatcher
 
     internal static bool IsInCidr(IPAddress address, string cidr)
     {
-        var parts = cidr.Split('/');
-        // Invariant: the prefix comes out of config.json, so it is a protocol value, not typed input.
-        if (parts.Length != 2
-            || !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int prefixLen))
-            return false;
+        // The check Settings applies on save. A hand-edited config.json reaches here unchecked, and a
+        // prefix outside 0-32 would otherwise shift into a different, valid mask instead of failing.
+        if (string.IsNullOrWhiteSpace(cidr) || !SettingsOptions.IsValidCidr(cidr)) return false;
 
-        var network = IPAddress.Parse(parts[0]);
+        var parts = cidr.Trim().Split('/');
+        // Invariant: the prefix comes out of config.json, so it is a protocol value, not typed input.
+        int prefixLen = int.Parse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture);
+        var network   = IPAddress.Parse(parts[0]);
         uint mask = prefixLen == 0 ? 0u : ~((1u << (32 - prefixLen)) - 1u);
         return (ToUInt32(network) & mask) == (ToUInt32(address) & mask);
     }

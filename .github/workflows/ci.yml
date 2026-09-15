@@ -22,6 +22,9 @@ concurrency:
 jobs:
   build:
     runs-on: windows-latest
+    # About three times the longest successful run, so a hung restore or build fails instead of
+    # holding a runner for the six-hour default.
+    timeout-minutes: 15
     env:
       # The feed credential, handed to NuGet through the environment rather than written into a
       # config file: NuGet reads NuGetPackageSourceCredentials_<source name> for the source of that

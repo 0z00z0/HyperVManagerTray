@@ -167,6 +167,10 @@ public partial class App : Application
                 _lockOutcome == SingleInstanceOutcome.TakenAbandoned ? LogLevel.Warning : LogLevel.Information,
                 "{Event}", SingleInstanceLog.Message(_lockOutcome));
 
+            // Issue #90: which parent started this process and how long passed before OnLaunched, so a
+            // slow logon start can be told apart from a slow start of the application's own code.
+            _loggerFactory.CreateLogger("startup").LogInformation("{Event}", StartupOrigin.Line(onLaunchedAt));
+
             // Capture a minidump if the app dies from a NATIVE fault (GDI+, comctl32, the
             // WinUI/Mica compositor during a dock/display/power transition, …).  Those bypass
             // the managed handlers below, so without this a crash leaves no trace at all.

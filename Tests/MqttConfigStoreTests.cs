@@ -491,9 +491,10 @@ public class MqttConfigStoreTests : IDisposable
 
     /// <summary>What counts as the settings having moved is decided by serialising them, not by
     /// comparing a field list — a field the module adds later is covered without this app being touched.
-    /// The two halves are asserted together because either alone passes for the wrong reason.</summary>
+    /// The two halves are asserted together because either alone passes for the wrong reason. The group
+    /// state is the one field that must not move it (issue #85): a toggle is the group set's event.</summary>
     [Fact]
-    public void Fingerprint_MovesWithEveryFieldAndWithNothingElse()
+    public void Fingerprint_MovesWithEveryConnectionFieldAndNotWithTheGroups()
     {
         var settings = new MqttSettings();
         var baseline = MqttConfigStore.Fingerprint(settings);
@@ -513,13 +514,16 @@ public class MqttConfigStoreTests : IDisposable
                      s => s.DeviceId = "hvmt-host",
                      s => s.DeviceName = "Hyper-V host",
                      s => s.DiscoveryPrefix = "ha",
-                     s => s.Groups["metrics"] = true,
                  })
         {
             var moved = settings.Copy();
             edit(moved);
             Assert.NotEqual(baseline, MqttConfigStore.Fingerprint(moved));
         }
+
+        var toggled = settings.Copy();
+        toggled.Groups["metrics"] = true;
+        Assert.Equal(baseline, MqttConfigStore.Fingerprint(toggled));
     }
 
     /// <summary>The fingerprint is retained for the life of the store and compared on every config

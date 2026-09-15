@@ -57,12 +57,21 @@ public class AdapterMatcherTests
     public void IsInCidr_Works(string ip, string cidr, bool expected)
         => Assert.Equal(expected, AdapterMatcher.IsInCidr(IPAddress.Parse(ip), cidr));
 
+    /// <summary>A CIDR Settings would refuse matches nothing (issue #78). 10.0.0.1 sits inside the mask a
+    /// masked shift makes of /33 (/1) and of /-1 (/31), so either prefix slipping past the range check
+    /// matches here; a malformed address must answer false rather than throw.</summary>
     [Theory]
     [InlineData("not-a-cidr")]
     [InlineData("10.0.0.0/")]
     [InlineData("10.0.0.0/abc")]
+    [InlineData("10.0.0.0/33")]
+    [InlineData("10.0.0.0/-1")]
+    [InlineData("not-an-ip/24")]
     public void IsInCidr_InvalidCidr_ReturnsFalse(string cidr)
-        => Assert.False(AdapterMatcher.IsInCidr(IPAddress.Parse("10.0.0.1"), cidr));
+    {
+        Assert.False(Helpers.SettingsOptions.IsValidCidr(cidr));
+        Assert.False(AdapterMatcher.IsInCidr(IPAddress.Parse("10.0.0.1"), cidr));
+    }
 
     [Theory]
     [InlineData("aa:bb:cc:dd:ee:ff", "AABBCCDDEEFF")]

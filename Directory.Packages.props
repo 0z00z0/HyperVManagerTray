@@ -32,8 +32,10 @@
        Raising one of these numbers is a deliberate step: read that component's release notes under
        docs/release-notes/<key>/ in the 0z0-shared repository first. -->
   <ItemGroup>
-    <PackageVersion Include="ZeroZero.Brand.Core" Version="0.7.0" />
-    <PackageVersion Include="ZeroZero.Brand.WinUI" Version="0.7.0" />
+    <!-- 0.9.0 is the first release whose typeface lands where its markup asks for it, in the build
+         output and in the published application alike. -->
+    <PackageVersion Include="ZeroZero.Brand.Core" Version="0.9.1" />
+    <PackageVersion Include="ZeroZero.Brand.WinUI" Version="0.9.1" />
     <PackageVersion Include="ZeroZero.Lifecycle" Version="0.7.1" />
     <!-- 0.7.2 closes the disposal race on the connection's reconcile gate and the discovery
          publisher's announcement gate: a settings change applied after teardown, or a reconnect

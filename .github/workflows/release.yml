@@ -24,6 +24,9 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   release:
     runs-on: windows-latest
+    # About three times the longest successful run, so a hung build or signing step fails instead of
+    # holding a runner for the six-hour default.
+    timeout-minutes: 20
 
     # Secrets surfaced as job-level env so step `if:` conditions can test them
     # (a step's own `env:` block is NOT visible to that step's `if:`).

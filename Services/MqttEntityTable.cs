@@ -101,9 +101,6 @@ public static class MqttEntityTable
     /// there is no installed base to carry across and nothing retained under this topic root that a
     /// declaration could reach. A guessed key would be worse than none: the publisher empties exactly
     /// what is named, once, and writes the fact down permanently.</para>
-    ///
-    /// <para>The entity ids below are the ones the removed pre-release integration used, so a broker a
-    /// development build published to is taken over rather than orphaned.</para>
     /// </summary>
     public static IReadOnlyList<MigratingEntity> Migrating => [];
 
@@ -434,9 +431,13 @@ public static class MqttEntityTable
                 // A verb is an event, not a state: there is no "current power verb" to report, and
                 // announcing the last one requested would read as the VM being in it.
                 Read     = () => null,
-                Apply    = option => MqttCommandGate.ParseVerb(option) is { } kind
-                    ? MqttCommandGate.Power(state.Vm(vmName)?.State, kind, ct => spec.Power(vmName, kind, ct))
-                    : MqttCommandVerdict.NotAnOption($"'{option}' is not a power verb."),
+                // The module hands over only one of Options(), each a verb's own name, so the parse
+                // cannot miss.
+                Apply    = option =>
+                {
+                    var kind = Enum.Parse<VmOpKind>(option);
+                    return MqttCommandGate.Power(state.Vm(vmName)?.State, kind, ct => spec.Power(vmName, kind, ct));
+                },
             };
         }
 
@@ -452,9 +453,14 @@ public static class MqttEntityTable
             // moment a rule names a switch.
             Include  = () => spec.RuleSwitches().Count > 0,
             Options  = spec.RuleSwitches,
-            Read     = () => Text(state.Vm(vmName)?.Switch),
-            Apply    = option => MqttCommandGate.Override(
-                spec.RuleSwitches(), option, (name, ct) => spec.OverrideSwitch(vmName, name, ct)),
+            // Only a switch the options carry, in the options' own spelling: a VM on a switch no rule
+            // names reads as no current value rather than as a choice the list does not offer. The
+            // diagnostics switch sensor still reports the actual switch.
+            Read     = () => Text(state.Vm(vmName)?.Switch) is { } current
+                ? spec.RuleSwitches().FirstOrDefault(s => string.Equals(s, current, StringComparison.OrdinalIgnoreCase))
+                : null,
+            // Only reached for one of Options(): the module refuses a switch no rule names before this.
+            Apply    = option => MqttCommandVerdict.Accept(ct => spec.OverrideSwitch(vmName, option, ct)),
         };
     }
 
