@@ -32,7 +32,7 @@ $root         = Split-Path $installerDir -Parent
 $proj         = Join-Path $root "HyperVManagerTray.csproj"
 $publishDir   = Join-Path $root "publish"
 $iss          = Join-Path $installerDir "HyperVManagerTray.iss"
-$shelfDir     = "C:\Users\EspenLaget\Nextcloud\Projects\Installers"   # local dev shelf; see step 6
+$shelfDir     = Join-Path $env:USERPROFILE "Nextcloud\Projects\Installers"   # local dev shelf; see step 6
 
 # -- 0. Resolve / bump version ------------------------------------------------
 $projContent = Get-Content $proj -Raw
