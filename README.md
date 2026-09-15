@@ -407,6 +407,14 @@ One setting governs all three: the log level in **Settings → General** (or `lo
 additionally writes `crash.log` in the same folder. All of them are reachable from
 **Settings → Maintenance**.
 
+**A crash at a native boundary leaves nothing in these logs.** A fault inside a native component —
+a stowed Windows Runtime exception, an access violation, a fail-fast raised by the operating system —
+ends the process without passing through any managed exception handler, so no crash entry is written.
+The evidence is then a full memory dump under `%APPDATA%\HyperVManagerTray\dumps\` and the
+application error record in the Windows Application event log. `crash.log` also receives start and
+exit lines, so it is seldom empty: the sign of such a crash is a vanished tray icon with no crash
+entry at that time, not an empty file.
+
 **Rotation** (issue #55). Each log rotates at **2 MB**, keeping **5** archives beside it
 (`switcher_00.log`, `switcher_01.log`, …), oldest discarded first. The live file always keeps its own
 name, so the Maintenance links always open the current log. That bounds each log at ~12 MB and the set
