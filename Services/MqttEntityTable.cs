@@ -453,7 +453,12 @@ public static class MqttEntityTable
             // moment a rule names a switch.
             Include  = () => spec.RuleSwitches().Count > 0,
             Options  = spec.RuleSwitches,
-            Read     = () => Text(state.Vm(vmName)?.Switch),
+            // Only a switch the options carry, in the options' own spelling: a VM on a switch no rule
+            // names reads as no current value rather than as a choice the list does not offer. The
+            // diagnostics switch sensor still reports the actual switch.
+            Read     = () => Text(state.Vm(vmName)?.Switch) is { } current
+                ? spec.RuleSwitches().FirstOrDefault(s => string.Equals(s, current, StringComparison.OrdinalIgnoreCase))
+                : null,
             // Only reached for one of Options(): the module refuses a switch no rule names before this.
             Apply    = option => MqttCommandVerdict.Accept(ct => spec.OverrideSwitch(vmName, option, ct)),
         };

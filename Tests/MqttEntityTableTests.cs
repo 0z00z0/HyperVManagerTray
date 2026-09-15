@@ -833,6 +833,26 @@ public class MqttEntityTableTests
         Assert.Equal(("Dev", "Bridged"), Assert.Single(spy.Overrides));
     }
 
+    /// <summary>The shown selection is always one of the options (issue #84): a VM on a switch no rule
+    /// names reads as no current value, and a rule-named switch reads in the options' own spelling, so
+    /// a receiver sending the shown value back is never refused.</summary>
+    [Fact]
+    public void TheSwitchOverrideShowsOnlyASwitchItOffers()
+    {
+        var spy = new Spy();
+        spy.Switches = ["Bridged"];
+        var set = MqttEntityTable.Build(spy.Spec("Dev"));
+        var entity = Get(set, "vm_dev_switch_override");
+
+        spy.State.SetVms([new VmStatus { Name = "Dev", State = "Running", Switch = "Default Switch" }]);
+        Assert.Equal(MqttPayload.None, entity.ReadState());
+        Assert.Equal("Default Switch", Get(set, "vm_dev_switch").ReadState());   // the actual switch stays readable
+
+        spy.State.SetVms([new VmStatus { Name = "Dev", State = "Running", Switch = "bridged" }]);
+        Assert.Equal("Bridged", entity.ReadState());
+        Assert.True(Send(entity, entity.ReadState()!).IsAccepted);
+    }
+
     /// <summary>A receiver holding a stale option list must not be able to bind a switch no rule names.
     /// Sent through the entity's own Accept, which is the only way a command reaches the table.</summary>
     [Fact]
