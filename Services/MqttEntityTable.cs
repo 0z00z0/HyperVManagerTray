@@ -431,9 +431,13 @@ public static class MqttEntityTable
                 // A verb is an event, not a state: there is no "current power verb" to report, and
                 // announcing the last one requested would read as the VM being in it.
                 Read     = () => null,
-                Apply    = option => MqttCommandGate.ParseVerb(option) is { } kind
-                    ? MqttCommandGate.Power(state.Vm(vmName)?.State, kind, ct => spec.Power(vmName, kind, ct))
-                    : MqttCommandVerdict.NotAnOption($"'{option}' is not a power verb."),
+                // The module hands over only one of Options(), each a verb's own name, so the parse
+                // cannot miss.
+                Apply    = option =>
+                {
+                    var kind = Enum.Parse<VmOpKind>(option);
+                    return MqttCommandGate.Power(state.Vm(vmName)?.State, kind, ct => spec.Power(vmName, kind, ct));
+                },
             };
         }
 
@@ -450,8 +454,8 @@ public static class MqttEntityTable
             Include  = () => spec.RuleSwitches().Count > 0,
             Options  = spec.RuleSwitches,
             Read     = () => Text(state.Vm(vmName)?.Switch),
-            Apply    = option => MqttCommandGate.Override(
-                spec.RuleSwitches(), option, (name, ct) => spec.OverrideSwitch(vmName, name, ct)),
+            // Only reached for one of Options(): the module refuses a switch no rule names before this.
+            Apply    = option => MqttCommandVerdict.Accept(ct => spec.OverrideSwitch(vmName, option, ct)),
         };
     }
 

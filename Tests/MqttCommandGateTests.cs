@@ -8,8 +8,8 @@ namespace HyperVManagerTray.Tests;
 /// <summary>
 /// What an inbound MQTT command is allowed to do (issue #75). Two things are asserted throughout: a
 /// remote write reaches nothing <see cref="VmStateUi.AllowedVerbs"/> would not offer the dashboard's own
-/// buttons, and a refusal carries the APPLICATION's wording — the module composes none, so an empty
-/// <see cref="MqttCommandVerdict.Detail"/> reaches the broker as a refusal with no reason in it.
+/// buttons, and a state refusal carries the APPLICATION's wording — the module composes none for it, so an
+/// empty <see cref="MqttCommandVerdict.Detail"/> reaches the broker as a refusal with no reason in it.
 /// </summary>
 public class MqttCommandGateTests
 {
@@ -19,11 +19,9 @@ public class MqttCommandGateTests
     {
         public int Calls;
         public VmOpKind? Kind;
-        public string? SwitchName;
 
         public Task Power(CancellationToken _) { Calls++; return Task.CompletedTask; }
         public Task Power(VmOpKind kind, CancellationToken _) { Calls++; Kind = kind; return Task.CompletedTask; }
-        public Task Override(string name, CancellationToken _) { Calls++; SwitchName = name; return Task.CompletedTask; }
     }
 
     /// <summary>Runs an accepted verdict's work, so "accepted" is asserted by what it DOES rather than
@@ -151,7 +149,7 @@ public class MqttCommandGateTests
     // ── The announced power verbs ───────────────────────────────────────────────
 
     /// <summary>The options are the verb names, in the declared order: the receiver renders them in it,
-    /// and <see cref="MqttCommandGate.ParseVerb"/> has to read back exactly what was announced.</summary>
+    /// and the power select parses an option back to its verb by that name.</summary>
     [Fact]
     public void PowerOptions_AreTheVerbNamesInTheDeclaredOrder()
         => Assert.Equal(["Start", "Shutdown", "Pause", "Save", "Resume"], MqttCommandGate.PowerOptions);
@@ -163,77 +161,9 @@ public class MqttCommandGateTests
         Assert.All(offered, kind => Assert.Contains(kind, MqttCommandGate.PowerVerbs));
     }
 
-    [Theory]
-    [InlineData("Start",    VmOpKind.Start)]
-    [InlineData("shutdown", VmOpKind.Shutdown)]
-    [InlineData("  Pause ", VmOpKind.Pause)]
-    [InlineData("SAVE",     VmOpKind.Save)]
-    [InlineData("Resume",   VmOpKind.Resume)]
-    public void ParseVerb_ReadsAnAnnouncedOption(string payload, VmOpKind expected)
-        => Assert.Equal(expected, MqttCommandGate.ParseVerb(payload));
-
-    [Theory]
-    [InlineData("Reboot")]
-    [InlineData("")]
-    [InlineData(null)]
-    [InlineData("None")]
-    public void ParseVerb_ReturnsNullForAPayloadThatNamesNoVerb(string? payload)
-        => Assert.Null(MqttCommandGate.ParseVerb(payload));
-
-    // ── The switch override ─────────────────────────────────────────────────────
-
-    /// <summary>Only a switch this host announced may be bound: a receiver holding a stale option list
-    /// must not be able to move a VM onto a switch no rule names.</summary>
-    [Fact]
-    public void Override_AcceptsAConfiguredSwitch()
-    {
-        var runner = new Runner();
-        var verdict = MqttCommandGate.Override(["Bridged", "Default Switch"], "Bridged", runner.Override);
-
-        Assert.True(verdict.IsAccepted);
-        Run(verdict);
-        Assert.Equal("Bridged", runner.SwitchName);
-    }
-
-    /// <summary>Matched case-insensitively and trimmed, and the TRIMMED name is what reaches the host —
-    /// a switch name with a stray space binds nothing.</summary>
-    [Fact]
-    public void Override_TrimsAndMatchesCaseInsensitively()
-    {
-        var runner = new Runner();
-        var verdict = MqttCommandGate.Override(["Bridged"], "  bridged  ", runner.Override);
-
-        Assert.True(verdict.IsAccepted);
-        Run(verdict);
-        Assert.Equal("bridged", runner.SwitchName);
-    }
-
-    [Theory]
-    [InlineData("Guest Only", "'Guest Only' is not one of the configured rule switches.")]
-    [InlineData("",           "'' is not one of the configured rule switches.")]
-    [InlineData(null,         "'' is not one of the configured rule switches.")]
-    public void Override_RefusesASwitchNoRuleNames(string? name, string expected)
-    {
-        var runner = new Runner();
-        var verdict = MqttCommandGate.Override(["Bridged"], name, runner.Override);
-
-        Assert.Equal(MqttCommandOutcome.NotAnOption, verdict.Outcome);
-        Assert.Equal(expected, verdict.Detail);
-        Assert.Equal(0, runner.Calls);
-    }
-
-    [Fact]
-    public void Override_RefusesEverythingWhenNoRuleNamesASwitch()
-    {
-        var runner = new Runner();
-        var verdict = MqttCommandGate.Override([], "Bridged", runner.Override);
-
-        Assert.Equal(MqttCommandOutcome.NotAnOption, verdict.Outcome);
-        Assert.Equal(0, runner.Calls);
-    }
-
     /// <summary>Every refusal this gate can produce says why. The module carries the sentence and
-    /// composes nothing, so a blank here reaches the operator as a bare outcome name.</summary>
+    /// composes nothing for a state refusal, so a blank here reaches the operator as a bare outcome
+    /// name.</summary>
     [Fact]
     public void EveryRefusalCarriesAReason()
     {
@@ -242,7 +172,6 @@ public class MqttCommandGateTests
             MqttCommandGate.Power("Off", VmOpKind.Shutdown, _ => Task.CompletedTask),
             MqttCommandGate.Power(null, VmOpKind.Start, _ => Task.CompletedTask),
             MqttCommandGate.Running("Starting", true, (_, _) => Task.CompletedTask),
-            MqttCommandGate.Override(["Bridged"], "Guest Only", (_, _) => Task.CompletedTask),
         ];
 
         Assert.All(refusals, v =>
