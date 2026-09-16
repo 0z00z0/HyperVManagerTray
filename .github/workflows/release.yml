@@ -78,10 +78,22 @@ jobs:
         with:
           dotnet-version: '10.x'
 
-      # ── 5. Install Inno Setup 6 via Chocolatey ───────────────────────────────
+      # ── 5. Install Inno Setup 6 ───────────────────────────────────────────────
+      # Pinned to an exact version, at least as new as the Inno Setup used for
+      # local builds, so a release build never lags a hand build (issue #91).
+      # Installed from the publisher directly: Chocolatey's innosetup package
+      # lags the official release and cannot reach this version.
       - name: Install Inno Setup 6
         shell: pwsh
-        run: choco install innosetup -y --no-progress
+        run: |
+          $innoVersion = '6.7.3'
+          $tag = "is-$($innoVersion -replace '\.', '_')"
+          $url = "https://github.com/jrsoftware/issrc/releases/download/$tag/innosetup-$innoVersion.exe"
+          $exe = Join-Path $env:RUNNER_TEMP 'innosetup-setup.exe'
+          Invoke-WebRequest -Uri $url -OutFile $exe
+          $proc = Start-Process -FilePath $exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-' -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "Inno Setup install failed ($($proc.ExitCode))." }
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { throw "ISCC.exe not found after install." }
 
       # ── 6. Build installer (publish + ISCC) ──────────────────────────────────
       # build-installer.ps1 runs dotnet publish internally and compiles the .iss.
