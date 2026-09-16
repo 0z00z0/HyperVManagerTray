@@ -81,8 +81,8 @@ Every open issue carries **one `type`**, **one or more `area:`**, and optionally
 - `area:installer` — installer / release packaging (`installer/`).
 - `area:mqtt` — MQTT / Home Assistant integration: the broker connection, the topics published and
   subscribed, and the settings behind them.
-- `area:brand` — shared ZeroZero brand integration: the About box and the `0z0-shared` sibling
-  dependency it pulls in.
+- `area:brand` — shared ZeroZero brand integration: the About box and the `ZeroZero.Brand.WinUI`
+  and `ZeroZero.Brand.Core` packages it pulls in from the studio's GitHub Packages feed.
 
 **Status** (optional)
 - `blocked` — waiting on an external dependency or an explicit go-ahead.
