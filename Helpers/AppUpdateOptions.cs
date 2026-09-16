@@ -39,19 +39,38 @@ internal static class AppUpdateOptions
 
         return new UpdateOptions
         {
-            RepositoryOwner   = RepositoryOwner,
-            RepositoryName    = RepositoryName,
-            ProductName       = AppInfo.Id,
-            RunningVersion    = runningVersion,
-            ExpectedSigner    = ExpectedPublisher.Load(),
-            DirectoryPrefix   = DownloadDirectoryPrefix,
-            InstallerFileName = InstallerFileName,
-            RequestTimeout    = TimeSpan.FromSeconds(RequestTimeoutSeconds),
-            Log               = log,
+            RepositoryOwner    = RepositoryOwner,
+            RepositoryName     = RepositoryName,
+            ProductName        = AppInfo.Id,
+            RunningVersion     = runningVersion,
+            ExpectedSigner     = ExpectedPublisher.Load(),
+            DirectoryPrefix    = DownloadDirectoryPrefix,
+            InstallerFileName  = InstallerFileName,
+            InstallerArguments = InstallerArgumentsFor(runningVersion),
+            RequestTimeout     = TimeSpan.FromSeconds(RequestTimeoutSeconds),
+            Log                = log,
         };
     }
 
     /// <summary>The installer asset's name for one release, as the release publishes it.</summary>
     public static string InstallerFileNameFor(string versionText) =>
         InstallerFileName.Replace("{version}", versionText, StringComparison.Ordinal);
+
+    /// <summary>Asks the installer to log the run it makes (issue #91: diagnosing why the update
+    /// flow's installer run does not always rewrite the uninstall entry). Named for the version
+    /// running before the update, so the folder holds one log per version rather than growing
+    /// without bound. Never throws — a log that cannot be arranged must not stop an update.</summary>
+    private static string InstallerArgumentsFor(Version runningVersion)
+    {
+        try
+        {
+            Directory.CreateDirectory(AppInfo.DataDir);
+            var path = Path.Combine(AppInfo.DataDir, $"installer-{AppInfo.FormatVersion(runningVersion)}.log");
+            return $"/LOG=\"{path}\"";
+        }
+        catch
+        {
+            return "";
+        }
+    }
 }
