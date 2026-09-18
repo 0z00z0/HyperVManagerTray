@@ -1,4 +1,5 @@
 using HyperVManagerTray.Helpers;
+using HyperVManagerTray.Models;
 using HyperVManagerTray.Services;
 using Xunit;
 using static HyperVManagerTray.Helpers.NetworkStatusUi;
@@ -322,10 +323,11 @@ public class NetworkStatusUiTests
     /// </summary>
     private static MatchResult Result(
         SwitchApplyStatus status, IReadOnlyList<string>? failedVms = null, string rule = "Office LAN") =>
-        new(rule, "Bridged", ["vDev"])
+        new(rule, rule, "SW-BRIDGED", "Bridged", [new VmRef("VM-DEV", "vDev")])
         {
             HostAdapterName          = "Realtek USB GbE Family Controller",
-            HostAdapterInterfaceName = "Ethernet 5",
+            HostAdapterAlias         = "Ethernet 5",
+            HostAdapterInterfaceId   = "{IF-5}",
             ApplyStatus              = status,
             FailedVms                = failedVms ?? [],
         };
@@ -500,7 +502,7 @@ public class NetworkStatusUiTests
     [Fact]
     public void MatchResult_DefaultsToNotEvaluatedAndNoFailedVms()
     {
-        var result = new MatchResult("Office LAN", "Bridged", ["vDev"]);
+        var result = new MatchResult("office", "Office LAN", "SW-BRIDGED", "Bridged", [new VmRef("VM-DEV", "vDev")]);
 
         Assert.Equal(SwitchApplyStatus.NotEvaluated, result.ApplyStatus);
         Assert.Empty(result.FailedVms);
@@ -515,7 +517,7 @@ public class NetworkStatusUiTests
     [Fact]
     public void MatchResult_CarriesTheStampedOutcome()
     {
-        var evaluated = new MatchResult("Office LAN", "Bridged", ["vDev"]) { HostAdapterName = "Realtek USB GbE" };
+        var evaluated = new MatchResult("office", "Office LAN", "SW-BRIDGED", "Bridged", [new VmRef("VM-DEV", "vDev")]) { HostAdapterName = "Realtek USB GbE" };
 
         var applied = evaluated with { ApplyStatus = SwitchApplyStatus.BindFailed, FailedVms = ["vDev"] };
 
@@ -532,16 +534,18 @@ public class NetworkStatusUiTests
     // ONLY, which was unsound in two opposite directions; both are pinned below.
 
     /// <summary>An applied outcome for a rule on a given host adapter — the "last confirmed" state.</summary>
+    /// <remarks>Each argument stands for the identifier the predicate compares — the rule ID, the
+    /// adapter's interface GUID, the switch ID and the VM ID — spelled readably.</remarks>
     private static MatchResult Applied(string rule, string adapter, string sw = "Bridged", string vm = "vDev") =>
-        new(rule, sw, [vm])
+        new(rule, rule, sw, sw, [new VmRef(vm, vm)])
         {
-            HostAdapterInterfaceName = adapter,
-            ApplyStatus              = SwitchApplyStatus.Applied,
+            HostAdapterInterfaceId = adapter,
+            ApplyStatus            = SwitchApplyStatus.Applied,
         };
 
     /// <summary>A freshly evaluated result (no outcome of its own yet) — what a NetworkChange produces.</summary>
     private static MatchResult Evaluated(string rule, string adapter, string sw = "Bridged", string vm = "vDev") =>
-        new(rule, sw, [vm]) { HostAdapterInterfaceName = adapter };
+        new(rule, rule, sw, sw, [new VmRef(vm, vm)]) { HostAdapterInterfaceId = adapter };
 
     // The baseline: genuinely nothing changed, so the pass is skippable.
     [Fact]
@@ -621,9 +625,9 @@ public class NetworkStatusUiTests
             .ConfirmsSameOutcomeFor(Evaluated("Office LAN", "Ethernet 5", vm: "vBuild")));
 
     /// <summary>
-    /// Casing must NOT force a re-apply. Hyper-V switch names, Windows interface aliases and VM names
-    /// are all case-insensitive, so an ordinal guard would rebind — a real VM network drop — over
-    /// nothing but a casing difference between the config and the host.
+    /// Casing must NOT force a re-apply. WMI and the network stack spell the same GUID in different
+    /// cases, so an ordinal guard would rebind — a real VM network drop — over nothing but a casing
+    /// difference between the config and the host.
     /// </summary>
     [Fact]
     public void ConfirmsSameOutcomeFor_IgnoresCasingOnEveryField() =>

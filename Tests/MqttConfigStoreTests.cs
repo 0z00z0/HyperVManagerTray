@@ -73,12 +73,12 @@ public class MqttConfigStoreTests : IDisposable
     /// <summary>A config with something in every section, so a write that drops one is visible.</summary>
     private static AppConfig PopulatedConfig() => new()
     {
-        VirtualMachines = [new VmTarget { Name = "Dev", NicName = "Network Adapter",
+        VirtualMachines = [new VmTarget { Id = "Dev", Name = "Dev", NicName = "Network Adapter",
                                           OnBridgeLostAction = "pause", OnBridgeLostDelaySeconds = 30 }],
-        Rules           = [new NetworkRule { Name = "Office", Priority = 1, VirtualSwitch = "Bridged",
-                                             TargetVms = ["Dev"], AutoStart = true,
+        Rules           = [new NetworkRule { Name = "Office", Priority = 1, SwitchId = "Bridged",
+                                             TargetVmIds = ["Dev"], AutoStart = true,
                                              Conditions = new RuleConditions { IpCidr = "10.0.0.0/24" } }],
-        Fallback        = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Dev"] },
+        Fallback        = new FallbackAction { SwitchId = "Default Switch", TargetVmIds = ["Dev"] },
         AdapterNames    = [new AdapterNameOverride { DeviceInstanceId = "USB\\VID_0BDA&PID_8153\\0001",
                                                      OriginalFriendlyName = "Realtek USB GbE",
                                                      CurrentFriendlyName = "Dock LAN" }],
@@ -101,13 +101,13 @@ public class MqttConfigStoreTests : IDisposable
 
         var rule = Assert.Single(saved.Rules);
         Assert.Equal("Office", rule.Name);
-        Assert.Equal("Bridged", rule.VirtualSwitch);
-        Assert.Equal(["Dev"], rule.TargetVms);
+        Assert.Equal("Bridged", rule.SwitchId);
+        Assert.Equal(["Dev"], rule.TargetVmIds);
         Assert.True(rule.AutoStart);
         Assert.Equal("10.0.0.0/24", rule.Conditions?.IpCidr);
 
-        Assert.Equal("Default Switch", saved.Fallback.VirtualSwitch);
-        Assert.Equal(["Dev"], saved.Fallback.TargetVms);
+        Assert.Equal("Default Switch", saved.Fallback.SwitchId);
+        Assert.Equal(["Dev"], saved.Fallback.TargetVmIds);
 
         Assert.Equal("Dock LAN", Assert.Single(saved.AdapterNames).CurrentFriendlyName);
 
@@ -175,7 +175,7 @@ public class MqttConfigStoreTests : IDisposable
 
         config.UpdateLogLevel(LogLevel.Error);
         config.SaveSettingsWindowRect(new WindowRect(10, 20, 900, 700));
-        config.AddBridgedRule(new NetworkRule { Name = "Home", Priority = 2, VirtualSwitch = "Bridged2" });
+        config.AddBridgedRule(new NetworkRule { Name = "Home", Priority = 2, SwitchId = "Bridged2" });
 
         var saved = ReadConfig(path);
         Assert.True(saved.Mqtt.Settings.Enabled);
@@ -424,7 +424,7 @@ public class MqttConfigStoreTests : IDisposable
 
         config.UpdateLogLevel(LogLevel.Error);
         config.SaveSettingsWindowRect(new WindowRect(10, 20, 900, 700));
-        config.AddBridgedRule(new NetworkRule { Name = "Home", Priority = 2, VirtualSwitch = "Bridged2" });
+        config.AddBridgedRule(new NetworkRule { Name = "Home", Priority = 2, SwitchId = "Bridged2" });
 
         Assert.Equal(0, changes);
     }
@@ -557,7 +557,7 @@ public class MqttConfigStoreTests : IDisposable
     {
         static AppConfig Base() => new()
         {
-            Rules = [new NetworkRule { Name = "Office", Priority = 1, VirtualSwitch = "Bridged" }],
+            Rules = [new NetworkRule { Name = "Office", Priority = 1, SwitchId = "Bridged" }],
         };
 
         var before = Base();
@@ -569,7 +569,7 @@ public class MqttConfigStoreTests : IDisposable
 
         Assert.False(ConfigManager.AffectsNetwork(before, after));
 
-        after.Rules[0].VirtualSwitch = "Bridged2";
+        after.Rules[0].SwitchId = "Bridged2";
         Assert.True(ConfigManager.AffectsNetwork(before, after));
     }
 
@@ -591,7 +591,7 @@ public class MqttConfigStoreTests : IDisposable
         Assert.Equal([false, false], affected);
 
         // …while a change the monitor actually acts on still says so, from the same subscription.
-        config.AddBridgedRule(new NetworkRule { Name = "Home", Priority = 2, VirtualSwitch = "Bridged2" });
+        config.AddBridgedRule(new NetworkRule { Name = "Home", Priority = 2, SwitchId = "Bridged2" });
         Assert.Equal([false, false, true], affected);
     }
 
@@ -616,7 +616,7 @@ public class MqttConfigStoreTests : IDisposable
         Assert.Equal([false], affected);
 
         // …and one the monitor must act on, through the same path.
-        edited.Rules[0].VirtualSwitch = "Bridged2";
+        edited.Rules[0].SwitchId = "Bridged2";
         File.WriteAllText(path, JsonSerializer.Serialize(edited, WriteOpts));
         Assert.True(await seen.WaitAsync(TimeSpan.FromSeconds(10)), "the file watcher never fired");
         Assert.Equal([false, true], affected);
@@ -662,14 +662,14 @@ public class MqttConfigStoreTests : IDisposable
     {
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [new VmTarget { Name = "vm1", NicName = "Network Adapter" }],
+            VirtualMachines = [new VmTarget { Id = "vm1", Name = "vm1", NicName = "Network Adapter" }],
         });
 
         ConfigManager? config = null;
         Task? mqttWrite = null;
 
-        // Fires inside SetVmNicName's lock: file written, _config NOT yet reloaded.
-        var logger = new HookLogger("NIC name for VM 'vm1'", () =>
+        // Fires inside SetVmNic's lock: file written, _config NOT yet reloaded.
+        var logger = new HookLogger("Network adapter for VM 'vm1'", () =>
         {
             mqttWrite = Task.Run(() => config!.UpdateMqtt(s => s.Settings.Host = "broker.lan"));
             // Long enough for the MQTT write to reach its snapshot/lock. If it snapshots here it
@@ -679,7 +679,7 @@ public class MqttConfigStoreTests : IDisposable
 
         using (config = new ConfigManager(path, logger))
         {
-            config.SetVmNicName("vm1", "Ethernet 2");
+            config.SetVmNic("vm1", null, "Ethernet 2");
             await mqttWrite!.WaitAsync(TimeSpan.FromSeconds(10));
         }
 

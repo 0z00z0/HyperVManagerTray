@@ -178,7 +178,7 @@ Right-click the tray icon → **Settings…**. Seven sections in a sidebar; ever
 | Section | What's there |
 |---|---|
 | **General** | Run on startup (the elevated scheduled task); log level for all of the app's log files |
-| **Managed VMs** | The VMs this app looks after: add or remove one, the NIC name each is reconnected through, and an optional action (pause / save / shutdown, after a configurable delay) when the bridged network is lost |
+| **Managed VMs** | The VMs this app looks after: add one from the host's VMs or remove one, the network adapter each is reconnected through, and an optional action (pause / save / shutdown, after a configurable delay) when the bridged network is lost. Settings that name something not identified on this host are listed here as needing attention |
 | **Network** | The rules editor — add, edit, remove and re-prioritise rules; **Add current network** captures the live adapter's MAC and subnet in one step; the fallback switch and target VMs; the transient per-VM switch override. Each rule can also start or stop each Hyper-V service when it becomes active: a start runs before any VM starts, and a stop waits for the rule's delay, is dropped if the network changes first, saves every running VM on the host before stopping, and is skipped while the rule auto-starts VMs |
 | **Adapters** | Rename a physical adapter. Note this renames the adapter's **description** (what Device Manager, Hyper-V Manager and this app show) — not its Windows connection name/alias. Renaming briefly drops that adapter's connection; only real physical NICs are listed, and a rename can be reset to the factory name |
 | **Maintenance** | Open `config.json`, open any of the three log files or the logs folder, reload the config from disk (a reload that can't parse says so and changes nothing), re-check the network, repair host networking (for the "host offline but VM online" duplicate-vNIC state after a dock cycle), check for updates |
@@ -190,7 +190,9 @@ Right-click the tray icon → **Settings…**. Seven sections in a sidebar; ever
 
 `config.json` is loaded from `%APPDATA%\HyperVManagerTray\`, beside the log files. Upgrading from a build that kept it next to the `.exe` copies the old file across on first run and leaves the original where it was, so a rollback to that build still finds it. Everything in it can be edited from the Settings window, so hand-editing is a choice, not a requirement. It is watched for changes — edits take effect immediately without a restart. If the file is missing the app writes the blank-slate default below and carries on; if an edit doesn't parse, the app keeps the last good config, says so in a tray balloon, and re-reads the file on your next save.
 
-The default the app ships (and self-heals to) is just this — a fallback switch and nothing else:
+**Identifiers, not names.** Every VM, virtual switch, network adapter and rule is identified by the identifier its platform assigns — the VM ID, the switch ID, the adapter ID, a rule ID the app generates — and a name is kept beside it only to be shown. Two VMs sharing a name are two VMs. A file written by an earlier version names things instead; on the first start that can read Hyper-V, each name that matches exactly one object on the host is replaced by that object's identifier and the file is rewritten. A name that matches no object, or several, is kept as it is, reported once in the log and in a tray balloon, and listed in Settings as needing attention; nothing acts on it until it is fixed or forgotten there. A file migrated this way is not understood by an earlier version.
+
+The default the app ships (and self-heals to) is just this — a fallback switch and nothing else. It names the Default Switch, which the first start that can read Hyper-V turns into that host's switch ID:
 
 ```json
 {
@@ -199,7 +201,7 @@ The default the app ships (and self-heals to) is just this — a fallback switch
   "rules": [],
   "fallback": {
     "virtualSwitch": "Default Switch",
-    "targetVms": []
+    "targetVmIds": []
   }
 }
 ```
@@ -211,8 +213,11 @@ Everything below is the annotated **reference** for the full format — copy fro
   "logLevel": "Debug",                     // Minimum severity for ALL log files; "None" disables logging
   "virtualMachines": [
     {
-      "name":                     "MyVM",             // Hyper-V VM name (exact)
-      "nicName":                  "Network Adapter",  // NIC name inside Hyper-V Manager
+      "id":                       "00000000-0000-0000-0000-000000000001", // VM ID — identifies the VM
+      "name":                     "MyVM",             // the VM's name as last seen; shown only
+      "nicId":                    "00000000-0000-0000-0000-00000000000a", // adapter ID; omitted = the
+                                                      // VM's only adapter
+      "nicName":                  "Network Adapter",  // the adapter's name as last seen; shown only
       "onBridgeLostAction":       "pause",            // optional: "pause" | "save" | "shutdown" when the
                                                       // bridged network is lost; null/"none" = do nothing
       "onBridgeLostDelaySeconds": 30                  // wait before acting; cancelled if the bridge returns
@@ -220,26 +225,33 @@ Everything below is the annotated **reference** for the full format — copy fro
   ],
   "rules": [
     {
+      "id":            "0123456789abcdef0123456789abcdef", // generated by the app; identifies the rule
       "name":          "Office LAN",       // Shown in the tray status
       "priority":      1,                  // Lower = evaluated first
       "conditions": {
         "adapterMac":  "AA:BB:CC:DD:EE:FF", // Host NIC MAC (optional)
         "ipCidr":      "10.0.0.0/23"         // Host IP must fall in this range (optional)
       },
-      "virtualSwitch": "Bridged",          // Hyper-V switch to connect to
-      "targetVms":     ["MyVM"],           // VMs to reconnect
-      "autoStart":     false,              // start/resume targetVms when this rule activates;
+      "switchId":    "00000000-0000-0000-0000-0000000000b1", // virtual switch ID to connect to
+      "switchName":  "Bridged",            // the switch's name as last seen; shown only
+      "targetVmIds": ["00000000-0000-0000-0000-000000000001"], // VM IDs of managed VMs to reconnect
+      "autoStart":     false,              // start/resume the target VMs when this rule activates;
                                            // a stopped Hyper-V service is started first
-      "vmManagementService":     "Start",  // optional: "Start" | "Stop" for Hyper-V Virtual Machine
-      "hostComputeService":      "Stop",   // Management / the Host Compute Service when this rule
-                                           // activates; omitted = left alone. A stop saves every
-                                           // running VM first and is ignored while autoStart is on
+      "vmManagementService":     "Stop",   // optional: "Start" | "Stop" for Hyper-V Virtual Machine
+                                           // Management when this rule activates; omitted = left
+                                           // alone. A stop saves every running VM first and is
+                                           // ignored while autoStart is on
+      "hostComputeService":      "Start",  // optional: "Start" only. The Host Compute Service is
+                                           // stopped only from the dashboard, since stopping it also
+                                           // stops WSL 2, Windows Sandbox and Docker; a stored "Stop"
+                                           // is read as left alone
       "serviceStopDelaySeconds": 30        // wait before a stop; cancelled if the network changes
     }
   ],
   "fallback": {
-    "virtualSwitch": "Default Switch",     // Used when no rule matches
-    "targetVms":     ["MyVM"]
+    "switchId":    "00000000-0000-0000-0000-0000000000b2", // used when no rule matches
+    "switchName":  "Default Switch",
+    "targetVmIds": ["00000000-0000-0000-0000-000000000001"]
   }
 }
 ```

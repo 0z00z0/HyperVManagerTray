@@ -387,21 +387,21 @@ public sealed class MqttService : IDisposable
     private MqttEntitySet BuildEntities(AppConfig config) =>
         MqttEntityTable.Build(new MqttEntitySpec
         {
-            VmNames              = [.. config.VirtualMachines.Select(v => v.Name)],
+            Vms                  = config.IdentifiedVms,
             // Read per announcement pass, so a rule edit reaches the options with no rebuild.
             RuleSwitches         = () => [.. _config.Current.RuleSwitches],
             State                = _state,
             VmIp                 = _vm.GetCachedVmIp,
             ReCheckNetwork       = _reCheckNetwork,
             RepairHostNetworking = _repairHostNetworking,
-            Power                = (name, kind, _) =>
+            Power                = (vm, kind, _) =>
             {
                 // BeginPowerAction is the same entry point the dashboard's buttons use, and returns
                 // as soon as the WMI job is requested; its outcome arrives on OperationProgress.
-                _vm.BeginPowerAction(name, kind, VmOpOrigin.Mqtt);
+                _vm.BeginPowerAction(vm, kind, VmOpOrigin.Mqtt);
                 return Task.CompletedTask;
             },
-            OverrideSwitch       = (name, switchName, _) => _monitor.ManualOverrideAsync(name, switchName),
+            OverrideSwitch       = (vmId, sw, _) => _monitor.ManualOverrideAsync(vmId, sw),
             // Read once here, not per pass: the two shapes are different entities, so a flip has to
             // reach SetEntities for the shape being left behind to be evicted.
             PowerButtons         = config.Mqtt.PowerButtons,
@@ -415,9 +415,9 @@ public sealed class MqttService : IDisposable
             },
             AnyServiceDown       = () => _services.AnyServiceDown,
             VmmsDown             = () => _services.VmmsDown,
-            StartViaServices     = (name, ct) =>
+            StartViaServices     = (vm, ct) =>
             {
-                _ = RunStartViaServicesAsync(name);
+                _ = RunStartViaServicesAsync(vm);
                 return Task.CompletedTask;
             },
         });
@@ -449,15 +449,15 @@ public sealed class MqttService : IDisposable
     }
 
     /// <summary>An MQTT start of a VM while a service is down: the services first, then the VM. Never throws.</summary>
-    private async Task RunStartViaServicesAsync(string vmName)
+    private async Task RunStartViaServicesAsync(VmRef vm)
     {
         try
         {
-            _log.LogInformation("MQTT: start '{Vm}' with a Hyper-V service down — starting the services first", vmName);
-            if (await _services.StartServicesThenVmAsync(vmName, VmOpOrigin.Mqtt).ConfigureAwait(false) is { } error)
-                _log.LogWarning("MQTT: start '{Vm}' — {Error}", vmName, error);
+            _log.LogInformation("MQTT: start '{Vm}' ({Id}) with a Hyper-V service down — starting the services first", vm.Shown, vm.Id);
+            if (await _services.StartServicesThenVmAsync(vm, VmOpOrigin.Mqtt).ConfigureAwait(false) is { } error)
+                _log.LogWarning("MQTT: start '{Vm}' ({Id}) — {Error}", vm.Shown, vm.Id, error);
         }
-        catch (Exception ex) { _log.LogError(ex, "MQTT: starting '{Vm}' through the services failed", vmName); }
+        catch (Exception ex) { _log.LogError(ex, "MQTT: starting '{Vm}' ({Id}) through the services failed", vm.Shown, vm.Id); }
     }
 
     /// <summary>Whether each VM's power verbs are published as one button per verb rather than as one
@@ -488,8 +488,7 @@ public sealed class MqttService : IDisposable
     /// is linked into the test assembly — a rule that decides whether the document is re-announced is
     /// not one to leave in this file, which nothing tests.</summary>
     private static string TableSignature(AppConfig config) =>
-        MqttEntityTable.Signature(
-            config.VirtualMachines.Select(v => v.Name), config.Mqtt.PowerButtons);
+        MqttEntityTable.Signature(config.IdentifiedVms, config.Mqtt.PowerButtons);
 
     // ── Lifecycle ───────────────────────────────────────────────────────────────
 

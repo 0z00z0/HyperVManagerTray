@@ -7,9 +7,11 @@ namespace HyperVManagerTray.Models;
 /// </summary>
 public sealed class VmStatus
 {
-    public string  Name        { get; set; } = "";
+    public string  Id          { get; set; } = "";          // VM ID (GUID) — what identifies the VM
+    public string  Name        { get; set; } = "";          // shown only
     public string  State       { get; set; } = "Unknown";  // Running, Off, Paused, Saved, …
-    public string  Switch      { get; set; } = "";          // current virtual switch name
+    public string  Switch      { get; set; } = "";          // current virtual switch name, shown only
+    public string  SwitchId    { get; set; } = "";          // current virtual switch ID
     // Transient verb+percent from the VM's active Msvm_ConcreteJob, mirroring Hyper-V Manager's
     // Status column (e.g. "Restoring (10%)"). Empty when no operation is in flight. Supersedes the
     // coarse EnabledState-derived State in the UI label while set; colour still comes from State.

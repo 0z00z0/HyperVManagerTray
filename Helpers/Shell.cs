@@ -32,14 +32,17 @@ internal static class Shell
     }
 
     /// <summary>
-    /// Opens Hyper-V's VM Connection (<c>vmconnect.exe</c>) for the given VM on the local host,
-    /// warning the user (once) if the Hyper-V tools aren't installed.
+    /// Opens Hyper-V's VM Connection (<c>vmconnect.exe</c>) for the VM with <paramref name="vmId"/> on the
+    /// local host — by its ID (<c>-G</c>), since a name may be shared by two VMs — warning the user if the
+    /// Hyper-V tools aren't installed.
     /// </summary>
-    public static void OpenVmConnect(string vmName)
+    public static void OpenVmConnect(string vmId)
     {
+        // Only a well-formed GUID reaches the command line.
+        if (!Guid.TryParse(HostIdentity.Bare(vmId), out var guid)) return;
         try
         {
-            Process.Start(new ProcessStartInfo("vmconnect.exe", $"localhost \"{vmName}\"")
+            Process.Start(new ProcessStartInfo("vmconnect.exe", $"localhost -G {guid:D}")
                 { UseShellExecute = true });
         }
         catch

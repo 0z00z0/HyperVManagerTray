@@ -31,5 +31,7 @@ public enum VmOpPhase { Requested, Running, Succeeded, Failed }
 /// Human-readable status/failure text for the UI (e.g. "Requesting start…", "Saving (47%)…",
 /// "Failed: not enough memory") — built by <see cref="Helpers.WmiVmMapper.ProgressMessage"/>.
 /// </param>
+/// <param name="VmId">The VM ID the operation acts on — what every listener keys by.</param>
+/// <param name="VmName">The VM's name, for balloons and logs only.</param>
 public readonly record struct VmOperationProgress(
-    string VmName, VmOpKind Kind, VmOpPhase Phase, int? Percent, string? Message);
+    string VmId, VmOpKind Kind, VmOpPhase Phase, int? Percent, string? Message, string VmName = "");

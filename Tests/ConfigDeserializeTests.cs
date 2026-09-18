@@ -16,7 +16,7 @@ public class ConfigDeserializeTests
     };
 
     [Fact]
-    public void Deserializes_FullConfig()
+    public void Deserializes_AnOlderConfig_WithItsNamesWaitingForIdentifiers()
     {
         const string json = """
         {
@@ -32,9 +32,13 @@ public class ConfigDeserializeTests
 
         var cfg = JsonSerializer.Deserialize<AppConfig>(json, Opts)!;
 
+        // An older document names things; the names are read as names, and no identifier is invented —
+        // the identity migration turns them into identifiers against the host.
         var vm = Assert.Single(cfg.VirtualMachines);
         Assert.Equal("MyVM", vm.Name);
+        Assert.Equal("", vm.Id);
         Assert.Equal("Network Adapter", vm.NicName);
+        Assert.Null(vm.NicId);
 
         var rule = Assert.Single(cfg.Rules);
         Assert.Equal("Office LAN", rule.Name);
@@ -42,10 +46,13 @@ public class ConfigDeserializeTests
         Assert.True(rule.AutoStart);
         Assert.Equal("AA:BB:CC:DD:EE:FF", rule.Conditions.AdapterMac);
         Assert.Equal("10.0.0.0/23", rule.Conditions.IpCidr);
-        Assert.Equal("Bridged", rule.VirtualSwitch);
-        Assert.Equal(["MyVM"], rule.TargetVms);
+        Assert.Equal("Bridged", rule.LegacyVirtualSwitch);
+        Assert.Equal("", rule.SwitchId);
+        Assert.Equal(["MyVM"], rule.LegacyTargetVms);
+        Assert.Empty(rule.TargetVmIds);
 
-        Assert.Equal("Default Switch", cfg.Fallback.VirtualSwitch);
+        Assert.Equal("Default Switch", cfg.Fallback.LegacyVirtualSwitch);
+        Assert.Equal(["MyVM"], cfg.Fallback.LegacyTargetVms);
     }
 
     [Fact]

@@ -170,6 +170,8 @@ public sealed class ConfigManager : IDisposable
             // "configured, disabled" rather than crashing every consumer of it.
             loaded.Mqtt ??= new MqttSection();
             loaded.Mqtt.Settings ??= new MqttSettings();
+            DropHostComputeStops(loaded);
+            GiveRulesIds(loaded);
             _config = loaded;
             // The file parsed, so the next failure is news again. This is the ONE place every successful
             // load flows through — the constructor, the debounce tick, SaveAndReload's read-back and the
@@ -191,6 +193,71 @@ public sealed class ConfigManager : IDisposable
             _logger.LogError(ex, "Failed to load config from {Path} — keeping the previously loaded config", _configPath);
             return LastLoad = ConfigLoadOutcome.Failure(ex.Message);
         }
+    }
+
+    // Set once a load has turned a rule's Host Compute Service stop into "leave alone", so the change is
+    // logged once per run rather than on every reload of a file that still says Stop.
+    private volatile bool _hostComputeStopDropLogged;
+
+    /// <summary>
+    /// Reads a rule's stored Host Compute Service stop as "leave alone": that service is stopped only from
+    /// the dashboard. The file keeps saying Stop until the next write, so the change is logged once.
+    /// </summary>
+    private void DropHostComputeStops(AppConfig loaded)
+    {
+        var rules = loaded.Rules.Where(r => r.HostComputeService == RuleServiceAction.Stop).ToList();
+        if (rules.Count == 0) return;
+        foreach (var rule in rules) rule.HostComputeService = null;
+
+        if (_hostComputeStopDropLogged) return;
+        _hostComputeStopDropLogged = true;
+        _logger.LogWarning("Rule(s) {Rules} asked to stop the Hyper-V Host Compute Service; that service is "
+                           + "stopped only from the dashboard, so the setting now reads as leave alone",
+                           string.Join(", ", rules.Select(r => $"'{r.Name}'")));
+    }
+
+    /// <summary>
+    /// Gives every rule without an ID — or with one another rule already carries — a fresh one, flagged so
+    /// the identity migration writes it down. A rule is found by its ID alone, so two rules must never
+    /// share one; the file is not written here, because a load has no business writing.
+    /// </summary>
+    internal static void GiveRulesIds(AppConfig loaded)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rule in loaded.Rules)
+        {
+            if (!string.IsNullOrWhiteSpace(rule.Id) && seen.Add(rule.Id.Trim())) continue;
+            rule.Id = ConfigIdentityMigration.NewRuleId();
+            rule.IdGeneratedOnLoad = true;
+            seen.Add(rule.Id);
+        }
+    }
+
+    /// <summary>
+    /// Runs the identity migration against the config as it stands inside the save lock, and writes its
+    /// result when it changed anything. <paramref name="plan"/> is handed the live config and must not
+    /// change it. Returns what the plan decided, or null when the config has never loaded.
+    /// </summary>
+    public IdentityMigrationResult? ApplyIdentityMigration(Func<AppConfig, IdentityMigrationResult> plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        IdentityMigrationResult? result = null;
+        if (!_everLoaded) return null;
+        SaveAndReload(
+            () =>
+            {
+                result = plan(_config);
+                return result.Changed
+                    ? new SaveRequest(With(
+                          vms:      result.Config.VirtualMachines,
+                          rules:    result.Config.Rules,
+                          fallback: result.Config.Fallback),
+                          $"Settings migrated to identifiers ({result.Resolved.Count} resolved, "
+                          + $"{result.Unresolved.Count} needing attention) and saved to {_configPath}")
+                    : null;
+            },
+            "Failed to save the settings migrated to identifiers");
+        return result;
     }
 
     private void OnDebounceElapsed(object? _)
@@ -232,49 +299,56 @@ public sealed class ConfigManager : IDisposable
         $"Failed to save new rule '{rule.Name}'");
 
     /// <summary>
-    /// Appends a new <see cref="VmTarget"/> to config.json and reloads.
-    /// Does nothing if a VM with the same name is already present.
+    /// Appends a new <see cref="VmTarget"/> for the host VM <paramref name="vm"/> to config.json and reloads.
+    /// Does nothing if that VM ID is already managed.
     /// </summary>
-    public void AddVmToConfig(string name, string nicName) => SaveAndReload(
+    public void AddVmToConfig(DiscoveredVm vm) => SaveAndReload(
         () =>
         {
-            if (_config.VirtualMachines.Any(v => v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            ArgumentNullException.ThrowIfNull(vm);
+            if (string.IsNullOrWhiteSpace(vm.Id) || _config.FindVm(vm.Id) is not null)
             {
-                _logger.LogInformation("AddVmToConfig: '{Name}' is already in config — skipping.", name);
+                _logger.LogInformation("AddVmToConfig: '{Name}' ({Id}) is already in config — skipping.", vm.Name, vm.Id);
                 return null;
             }
 
             var newVm = new VmTarget
             {
-                Name    = name,
-                NicName = SettingsOptions.NormalizeNicName(nicName),
+                Id      = HostIdentity.Bare(vm.Id),
+                Name    = vm.Name,
+                NicId   = vm.NicId is null ? null : HostIdentity.Bare(vm.NicId),
+                NicName = SettingsOptions.NormalizeNicName(vm.NicName),
             };
 
             return new SaveRequest(
                 With(vms: [.. _config.VirtualMachines, newVm]),
-                $"VM '{name}' added and saved to {_configPath}");
+                $"VM '{vm.Name}' ({newVm.Id}) added and saved to {_configPath}");
         },
-        $"Failed to save new VM '{name}'");
+        $"Failed to save new VM '{vm?.Name}'");
 
     /// <summary>
-    /// Removes the named VM from config.json and reloads.
-    /// Does nothing if no VM with that name exists.
+    /// Removes a managed VM from config.json and reloads: the one with <paramref name="vmId"/>, or — for an
+    /// entry not identified yet, which has no ID — the first unidentified entry labelled
+    /// <paramref name="unidentifiedName"/>. Does nothing when there is no such entry.
     /// </summary>
-    public void RemoveVmFromConfig(string name) => SaveAndReload(
+    public void RemoveVmFromConfig(string vmId, string? unidentifiedName = null) => SaveAndReload(
         () =>
         {
-            if (!_config.VirtualMachines.Any(v => v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            VmTarget? target = string.IsNullOrWhiteSpace(vmId)
+                ? _config.VirtualMachines.FirstOrDefault(v =>
+                      string.IsNullOrWhiteSpace(v.Id) && string.Equals(v.Name, unidentifiedName, StringComparison.Ordinal))
+                : _config.FindVm(vmId);
+            if (target is null)
             {
-                _logger.LogInformation("RemoveVmFromConfig: '{Name}' not found in config — skipping.", name);
+                _logger.LogInformation("RemoveVmFromConfig: '{Id}' not found in config — skipping.", vmId);
                 return null;
             }
 
             return new SaveRequest(
-                With(vms: [.. _config.VirtualMachines.Where(v =>
-                    !v.Name.Equals(name, StringComparison.OrdinalIgnoreCase))]),
-                $"VM '{name}' removed and saved to {_configPath}");
+                With(vms: [.. _config.VirtualMachines.Where(v => !ReferenceEquals(v, target))]),
+                $"VM '{target.Name}' ({target.Id}) removed and saved to {_configPath}");
         },
-        $"Failed to remove VM '{name}'");
+        $"Failed to remove VM '{vmId}'");
 
     /// <summary>
     /// Persists a new <see cref="AppConfig.LogLevel"/> to config.json and reloads (issue #18 —
@@ -299,10 +373,10 @@ public sealed class ConfigManager : IDisposable
         $"Failed to save log level {level}");
 
     /// <summary>
-    /// Updates the "when the bridged network is lost" action and delay for a managed VM (issue #18 —
-    /// surfaced in the Settings window; previously config.json-only).  <paramref name="action"/> is the
-    /// canonical string (null = do nothing); <paramref name="delaySeconds"/> is clamped to a sane range.
-    /// Does nothing if no VM with that name is present, or if the value is already what's stored.
+    /// Updates the "when the bridged network is lost" action and delay for the managed VM with
+    /// <paramref name="vmId"/> (issue #18).  <paramref name="action"/> is the canonical string (null = do
+    /// nothing); <paramref name="delaySeconds"/> is clamped to a sane range. Does nothing if no such VM is
+    /// managed, or if the value is already what's stored.
     /// </summary>
     /// <remarks>
     /// The live <see cref="VmTarget"/> is NOT mutated: a fresh copy carrying the new values replaces the
@@ -310,14 +384,13 @@ public sealed class ConfigManager : IDisposable
     /// so a failed save (e.g. an OneDrive/AV file lock) can't leave <c>_config</c> diverged from disk
     /// with a possibly-destructive action armed (the NetworkMonitor reads these values live).
     /// </remarks>
-    public void SetVmBridgeLostAction(string vmName, string? action, int delaySeconds) => SaveAndReload(
+    public void SetVmBridgeLostAction(string vmId, string? action, int delaySeconds) => SaveAndReload(
         () =>
         {
-            var vm = _config.VirtualMachines.FirstOrDefault(v =>
-                v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase));
+            var vm = _config.FindVm(vmId);
             if (vm is null)
             {
-                _logger.LogInformation("SetVmBridgeLostAction: '{Name}' not found in config — skipping.", vmName);
+                _logger.LogInformation("SetVmBridgeLostAction: '{Id}' not found in config — skipping.", vmId);
                 return null;
             }
 
@@ -328,77 +401,81 @@ public sealed class ConfigManager : IDisposable
             if (vm.OnBridgeLostAction == normalizedAction && vm.OnBridgeLostDelaySeconds == normalizedDelay)
             {
                 _logger.LogInformation("SetVmBridgeLostAction: '{Name}' already {Action} ({Delay}s) — skipping.",
-                    vmName, normalizedAction ?? "none", normalizedDelay);
+                    vm.Name, normalizedAction ?? "none", normalizedDelay);
                 return null;
             }
 
             return new SaveRequest(
-                With(vms:
-                [
-                    .. _config.VirtualMachines.Select(v =>
-                        v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase)
-                            ? new VmTarget
-                              {
-                                  Name                     = v.Name,
-                                  NicName                  = v.NicName,
-                                  OnBridgeLostAction       = normalizedAction,
-                                  OnBridgeLostDelaySeconds = normalizedDelay,
-                              }
-                            : v)
-                ]),
-                $"Bridge-lost action for VM '{vmName}' set to {normalizedAction ?? "none"} ({normalizedDelay}s) and saved to {_configPath}");
+                With(vms: ReplaceVm(vm, CopyVm(vm, v =>
+                {
+                    v.OnBridgeLostAction       = normalizedAction;
+                    v.OnBridgeLostDelaySeconds = normalizedDelay;
+                }))),
+                $"Bridge-lost action for VM '{vm.Name}' set to {normalizedAction ?? "none"} ({normalizedDelay}s) and saved to {_configPath}");
         },
-        $"Failed to save bridge-lost action for VM '{vmName}'");
+        $"Failed to save bridge-lost action for VM '{vmId}'");
 
     /// <summary>
-    /// Updates which of a managed VM's network adapters the app reconnects
-    /// (<see cref="VmTarget.NicName"/>) — issue #41. This was previously reachable ONLY by hand-editing
-    /// config.json: a VM with a renamed or second synthetic adapter silently never reconnected, and the
-    /// file was the only fix. Blank restores the Hyper-V default ("Network Adapter") rather than
-    /// persisting an empty name that would match no adapter at all. No-op when the VM is absent or the
-    /// value is already stored.
+    /// Sets which of a managed VM's network adapters the app reconnects — issue #41 — by the adapter's ID.
+    /// A null <paramref name="nicId"/> means the VM's only adapter. <paramref name="nicName"/> is the label
+    /// shown for it. No-op when the VM is absent or the adapter is already the stored one.
     /// </summary>
     /// <remarks>
     /// Follows the same discipline as <see cref="SetVmBridgeLostAction"/>: the live <see cref="VmTarget"/>
-    /// is never mutated — a fresh copy carrying the new NIC name (and every other field verbatim, so a
-    /// hand-edited bridge-lost action can't be dropped by a NIC edit) replaces the target in a new list,
-    /// swapped in only via <see cref="Load"/> after a successful write.
+    /// is never mutated — a fresh copy carrying the new adapter (and every other field verbatim, so a
+    /// hand-edited bridge-lost action can't be dropped by an adapter edit) replaces the target in a new
+    /// list, swapped in only via <see cref="Load"/> after a successful write.
     /// </remarks>
-    public void SetVmNicName(string vmName, string? nicName) => SaveAndReload(
+    public void SetVmNic(string vmId, string? nicId, string? nicName) => SaveAndReload(
         () =>
         {
-            var vm = _config.VirtualMachines.FirstOrDefault(v =>
-                v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase));
+            var vm = _config.FindVm(vmId);
             if (vm is null)
             {
-                _logger.LogInformation("SetVmNicName: '{Name}' not found in config — skipping.", vmName);
+                _logger.LogInformation("SetVmNic: '{Id}' not found in config — skipping.", vmId);
                 return null;
             }
 
-            var normalized = SettingsOptions.NormalizeNicName(nicName);
-            if (string.Equals(vm.NicName, normalized, StringComparison.Ordinal))
+            var id    = string.IsNullOrWhiteSpace(nicId) ? null : HostIdentity.Bare(nicId);
+            var label = SettingsOptions.NormalizeNicName(nicName);
+            if (string.Equals(vm.NicId, id, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(vm.NicName, label, StringComparison.Ordinal))
             {
-                _logger.LogInformation("SetVmNicName: '{Name}' already uses '{Nic}' — skipping.", vmName, normalized);
+                _logger.LogInformation("SetVmNic: '{Name}' already uses '{Nic}' — skipping.", vm.Name, label);
                 return null;
             }
 
             return new SaveRequest(
-                With(vms:
-                [
-                    .. _config.VirtualMachines.Select(v =>
-                        v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase)
-                            ? new VmTarget
-                              {
-                                  Name                     = v.Name,
-                                  NicName                  = normalized,
-                                  OnBridgeLostAction       = v.OnBridgeLostAction,
-                                  OnBridgeLostDelaySeconds = v.OnBridgeLostDelaySeconds,
-                              }
-                            : v)
-                ]),
-                $"NIC name for VM '{vmName}' set to '{normalized}' and saved to {_configPath}");
+                With(vms: ReplaceVm(vm, CopyVm(vm, v =>
+                {
+                    v.NicId   = id;
+                    v.NicName = label;
+                }))),
+                $"Network adapter for VM '{vm.Name}' set to '{label}' ({id ?? "its only adapter"}) and saved to {_configPath}");
         },
-        $"Failed to save the NIC name for VM '{vmName}'");
+        $"Failed to save the network adapter for VM '{vmId}'");
+
+    /// <summary>A copy of <paramref name="vm"/> with <paramref name="change"/> applied. Every field is
+    /// carried, so an edit to one setting cannot drop another.</summary>
+    private static VmTarget CopyVm(VmTarget vm, Action<VmTarget> change)
+    {
+        var copy = new VmTarget
+        {
+            Id                       = vm.Id,
+            Name                     = vm.Name,
+            NicId                    = vm.NicId,
+            NicName                  = vm.NicName,
+            OnBridgeLostAction       = vm.OnBridgeLostAction,
+            OnBridgeLostDelaySeconds = vm.OnBridgeLostDelaySeconds,
+        };
+        change(copy);
+        return copy;
+    }
+
+    /// <summary>The managed VM list with <paramref name="old"/> swapped for <paramref name="replacement"/>.
+    /// Call only inside the save lock.</summary>
+    private List<VmTarget> ReplaceVm(VmTarget old, VmTarget replacement) =>
+        [.. _config.VirtualMachines.Select(v => ReferenceEquals(v, old) ? replacement : v)];
 
     /// <summary>
     /// Replaces the entire rules list (issue #23 — the Network editor). Each rule is sanitised through a
@@ -431,37 +508,70 @@ public sealed class ConfigManager : IDisposable
     }
 
     /// <summary>
-    /// Updates the fallback switch and its target VMs (issue #23 — previously config.json-only). The
-    /// switch is trimmed (blank keeps the current value rather than writing an empty switch that would
-    /// break binding); the target-VM list is cleaned. No-op when nothing changed.
+    /// Updates the fallback switch and its target VMs (issue #23), by identifier. A null
+    /// <paramref name="virtualSwitch"/> keeps the current switch; a switch that is set replaces any name an
+    /// older document left unidentified. The target list is the managed VMs' IDs. No-op when nothing changed.
     /// </summary>
-    public void SetFallback(string virtualSwitch, IEnumerable<string> targetVms)
+    public void SetFallback(SwitchRef? virtualSwitch, IEnumerable<string> targetVmIds)
     {
-        var targets = SettingsOptions.CleanVmList(targetVms ?? []);
+        var targets = CleanIds(targetVmIds);
 
         SaveAndReload(
             () =>
             {
-                // Blank keeps the CURRENT switch, so this read of _config.Fallback belongs inside the lock
-                // with the comparison it feeds — otherwise a blank save could resolve against a fallback
-                // another mutator is concurrently replacing.
-                var sw = string.IsNullOrWhiteSpace(virtualSwitch)
-                    ? _config.Fallback.VirtualSwitch
-                    : virtualSwitch.Trim();
+                // Read inside the lock with the comparison it feeds — otherwise a keep-the-switch save could
+                // resolve against a fallback another mutator is concurrently replacing.
+                var current = _config.Fallback;
+                var next = new FallbackAction
+                {
+                    SwitchId            = virtualSwitch is null ? current.SwitchId : HostIdentity.Bare(virtualSwitch.Id),
+                    SwitchName          = virtualSwitch is null ? current.SwitchName : virtualSwitch.Name,
+                    LegacyVirtualSwitch = virtualSwitch is null ? current.LegacyVirtualSwitch : null,
+                    TargetVmIds         = targets,
+                    LegacyTargetVms     = current.LegacyTargetVms,
+                };
 
-                if (sw.Equals(_config.Fallback.VirtualSwitch, StringComparison.Ordinal)
-                    && targets.SequenceEqual(_config.Fallback.TargetVms, StringComparer.Ordinal))
+                if (Json(next) == Json(current))
                 {
                     _logger.LogInformation("SetFallback: unchanged — skipping.");
                     return null;
                 }
 
                 return new SaveRequest(
-                    With(fallback: new FallbackAction { VirtualSwitch = sw, TargetVms = targets }),
-                    $"Fallback switch set to '{sw}' ({targets.Count} target VM(s)) and saved to {_configPath}");
+                    With(fallback: next),
+                    $"Fallback switch set to '{next.SwitchName}' ({next.SwitchId}) with {targets.Count} target VM(s) and saved to {_configPath}");
             },
             "Failed to save fallback switch");
     }
+
+    /// <summary>
+    /// Drops every name an older document left unidentified: the rules' and the fallback's unidentified
+    /// switch and VM names, and managed VMs that were never identified. What the settings window's
+    /// "forget" does once the person has decided those names refer to nothing on this host.
+    /// </summary>
+    public void ForgetUnresolvedNames() => SaveAndReload(
+        () =>
+        {
+            if (ConfigIdentityMigration.Outstanding(_config).Count == 0) return null;
+            var rules = _config.Rules.Select(r =>
+            {
+                var copy = CleanRule(r);
+                copy.LegacyVirtualSwitch = null;
+                copy.LegacyTargetVms     = null;
+                return copy;
+            }).ToList();
+            var fallback = new FallbackAction
+            {
+                SwitchId    = _config.Fallback.SwitchId,
+                SwitchName  = _config.Fallback.SwitchName,
+                TargetVmIds = [.. _config.Fallback.TargetVmIds],
+            };
+            return new SaveRequest(
+                With(vms: [.. _config.VirtualMachines.Where(v => !string.IsNullOrWhiteSpace(v.Id))],
+                     rules: rules, fallback: fallback),
+                $"Unidentified names forgotten and saved to {_configPath}");
+        },
+        "Failed to forget the unidentified names");
 
     /// <summary>
     /// Returns a sanitised deep copy of a rule (see <see cref="SaveRules"/>). This is the persistence
@@ -469,15 +579,21 @@ public sealed class ConfigManager : IDisposable
     /// dropped to <c>null</c> ("don't match on it") rather than persisted verbatim, so a malformed
     /// hand-edited value can't survive an unrelated edit-and-save (the UI already blocks committing an
     /// invalid value, but this enforces it even for a value that reached here another way). A valid MAC
-    /// is canonicalised; blanks become null.
+    /// is canonicalised; blanks become null. A rule without an ID is given one here, so every rule the
+    /// editor writes can be told apart from every other.
     /// </summary>
     internal static NetworkRule CleanRule(NetworkRule r) => new()
     {
-        Name          = r.Name?.Trim() ?? string.Empty,
-        Priority      = SettingsOptions.NormalizePriority(r.Priority),
-        VirtualSwitch = r.VirtualSwitch?.Trim() ?? string.Empty,
-        TargetVms     = SettingsOptions.CleanVmList(r.TargetVms ?? []),
-        AutoStart     = r.AutoStart,
+        Id                  = string.IsNullOrWhiteSpace(r.Id) ? ConfigIdentityMigration.NewRuleId() : r.Id.Trim(),
+        IdGeneratedOnLoad   = r.IdGeneratedOnLoad,
+        Name                = r.Name?.Trim() ?? string.Empty,
+        Priority            = SettingsOptions.NormalizePriority(r.Priority),
+        SwitchId            = HostIdentity.Bare(r.SwitchId),
+        SwitchName          = r.SwitchName?.Trim() ?? string.Empty,
+        LegacyVirtualSwitch = string.IsNullOrWhiteSpace(r.LegacyVirtualSwitch) ? null : r.LegacyVirtualSwitch.Trim(),
+        TargetVmIds         = CleanIds(r.TargetVmIds),
+        LegacyTargetVms     = r.LegacyTargetVms is { Count: > 0 } legacy ? SettingsOptions.CleanVmList(legacy) : null,
+        AutoStart           = r.AutoStart,
         // "None" is stored as absent, so a rule that never used the setting round-trips unchanged.
         VmManagementService     = r.VmManagementService is RuleServiceAction.None ? null : r.VmManagementService,
         HostComputeService      = r.HostComputeService  is RuleServiceAction.None ? null : r.HostComputeService,
@@ -495,28 +611,21 @@ public sealed class ConfigManager : IDisposable
         },
     };
 
-    /// <summary>Structural equality of two rule lists — used to skip a redundant write.</summary>
-    private static bool RulesEqual(IReadOnlyList<NetworkRule> a, IReadOnlyList<NetworkRule> b)
-    {
-        if (a.Count != b.Count) return false;
-        for (int i = 0; i < a.Count; i++)
-        {
-            var x = a[i];
-            var y = b[i];
-            if (!string.Equals(x.Name, y.Name, StringComparison.Ordinal)
-                || x.Priority != y.Priority
-                || !string.Equals(x.VirtualSwitch, y.VirtualSwitch, StringComparison.Ordinal)
-                || x.AutoStart != y.AutoStart
-                || x.VmManagementService != y.VmManagementService
-                || x.HostComputeService != y.HostComputeService
-                || x.ServiceStopDelaySeconds != y.ServiceStopDelaySeconds
-                || !string.Equals(x.Conditions?.AdapterMac, y.Conditions?.AdapterMac, StringComparison.Ordinal)
-                || !string.Equals(x.Conditions?.IpCidr, y.Conditions?.IpCidr, StringComparison.Ordinal)
-                || !x.TargetVms.SequenceEqual(y.TargetVms, StringComparer.Ordinal))
-                return false;
-        }
-        return true;
-    }
+    /// <summary>Identifiers trimmed of braces and blanks, each once, in the order given.</summary>
+    private static List<string> CleanIds(IEnumerable<string>? ids) =>
+        [.. (ids ?? []).Where(i => !string.IsNullOrWhiteSpace(i))
+                       .Select(HostIdentity.Bare)
+                       .Distinct(StringComparer.OrdinalIgnoreCase)];
+
+    /// <summary>A value as it would reach the file — the shape a change is judged on.</summary>
+    private static string Json<T>(T value) => JsonSerializer.Serialize(value, WriteOptions);
+
+    /// <summary>
+    /// Structural equality of two rule lists — used to skip a redundant write. Compared as the file would
+    /// hold them, so a field added to the rule tomorrow cannot be forgotten here.
+    /// </summary>
+    private static bool RulesEqual(IReadOnlyList<NetworkRule> a, IReadOnlyList<NetworkRule> b) =>
+        Json(a) == Json(b);
 
     /// <summary>
     /// Inserts or updates the saved-original-name record for a renamed adapter (issue #15), keyed by

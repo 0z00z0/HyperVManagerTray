@@ -1,4 +1,5 @@
 using HyperVManagerTray.Helpers;
+using HyperVManagerTray.Models;
 using HyperVManagerTray.Services;
 using Xunit;
 
@@ -19,23 +20,23 @@ namespace HyperVManagerTray.Tests;
 public class VmConnectFlowTests
 {
     private const string Vm     = "vDev";
-    private const string Switch = "Bridged";
+    private static readonly SwitchRef Switch = new("SW-BRIDGED", "Bridged");
 
     /// <summary>Records what the flow did to the outside world, so ordering can be asserted and not assumed.</summary>
     private sealed class Recorder
     {
         public readonly List<string> Events = [];
         public readonly List<string> Warnings = [];
-        public string? BoundTo;
+        public SwitchRef? BoundTo;
 
-        public Func<string, Task<bool>> Apply(bool result) => sw =>
+        public Func<SwitchRef, Task<bool>> Apply(bool result) => sw =>
         {
             BoundTo = sw;
             Events.Add("apply");
             return Task.FromResult(result);
         };
 
-        public Func<string, Task<bool>> ApplyThrows(Exception ex) => _ =>
+        public Func<SwitchRef, Task<bool>> ApplyThrows(Exception ex) => _ =>
         {
             Events.Add("apply");
             return Task.FromException<bool>(ex);
@@ -97,7 +98,7 @@ public class VmConnectFlowTests
         Assert.Equal(VmConnectFlow.BindStep.Failed, result.Bind);
         var warning = Assert.Single(r.Warnings);
         Assert.Contains(Vm, warning);
-        Assert.Contains(Switch, warning);
+        Assert.Contains(Switch.Name, warning);
         Assert.Equal(warning, result.Warning);
     }
 
@@ -212,15 +213,15 @@ public class VmConnectFlowTests
     /// <summary>
     /// No switch applied yet (<c>LastApplied</c> null — startup, before the first evaluation): bind
     /// nothing, claim nothing, connect. Asserting that apply is never CALLED matters — binding to a null
-    /// or empty switch name would be a WMI error, and the old code guarded this with
-    /// <c>!string.IsNullOrEmpty(sw)</c>. That guard is preserved here.
+    /// or unidentified switch would be a WMI error, so a switch with no ID is treated as none.
     /// </summary>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
-    public async Task RunAsync_NoAppliedSwitchConnectsWithoutBinding(string? applied)
+    public async Task RunAsync_NoAppliedSwitchConnectsWithoutBinding(string? appliedId)
     {
         var r = new Recorder();
+        var applied = appliedId is null ? null : new SwitchRef(appliedId, "Bridged");
         var result = await VmConnectFlow.RunAsync(Vm, applied, r.Apply(false), r.Warn, r.Launch);
 
         Assert.Equal(VmConnectFlow.BindStep.NotAttempted, result.Bind);
@@ -272,7 +273,7 @@ public class VmConnectFlowTests
         var r = new Recorder();
         await VmConnectFlow.RunAsync(Vm, Switch, r.Apply(false), r.Warn, r.Launch);
 
-        Assert.Equal(NetworkStatusUi.ConnectBindFailedMessage(Vm, Switch), r.Warnings[0]);
+        Assert.Equal(NetworkStatusUi.ConnectBindFailedMessage(Vm, Switch.Name), r.Warnings[0]);
     }
 
     /// <summary>
@@ -284,7 +285,7 @@ public class VmConnectFlowTests
     [Fact]
     public void ConnectBindFailedMessage_ReportsTheFailureAndTheConnectAnywayDecision()
     {
-        var msg = NetworkStatusUi.ConnectBindFailedMessage(Vm, Switch);
+        var msg = NetworkStatusUi.ConnectBindFailedMessage(Vm, Switch.Name);
 
         Assert.Contains($"'{Vm}'", msg);
         Assert.Contains($"'{Switch}'", msg);
@@ -311,13 +312,13 @@ public class VmConnectFlowTests
     {
         // The same fact from the automatic side: one VM, same switch, VM-connect failed.
         var applyReport = NetworkStatusUi.FailureMessage(
-            new MatchResult("Office LAN", Switch, [Vm])
+            new MatchResult("office", "Office LAN", Switch.Id, Switch.Name, [new VmRef("VM-DEV", Vm)])
             {
                 ApplyStatus = NetworkStatusUi.SwitchApplyStatus.VmConnectFailed,
                 FailedVms   = [Vm],
             });
 
         Assert.NotNull(applyReport);
-        Assert.StartsWith(applyReport, NetworkStatusUi.ConnectBindFailedMessage(Vm, Switch), StringComparison.Ordinal);
+        Assert.StartsWith(applyReport, NetworkStatusUi.ConnectBindFailedMessage(Vm, Switch.Name), StringComparison.Ordinal);
     }
 }

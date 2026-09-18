@@ -49,9 +49,6 @@ public sealed class VmService : IDisposable
     // switch map on every tick; a longer fallback is safe now that real changes push a re-read.
     private static readonly TimeSpan SwitchFallbackInterval = TimeSpan.FromSeconds(60);
 
-    /// <summary>Identity of a VM as seen through <c>Msvm_ComputerSystem</c>: its live power state and
-    /// the GUID used to correlate it against every other Msvm_* class (settings, storage, network).</summary>
-    private readonly record struct VmIdentity(ushort EnabledState, string Guid);
 
     private readonly ILogger<VmService> _logger;
     // Dedicated "vm-power" category logger → vm-power.log (issue #20). Carries the begin+outcome
@@ -98,7 +95,8 @@ public sealed class VmService : IDisposable
     private bool _recovering;         // guarded by _subLock — one recovery in flight at a time
     private bool _disposed;           // set in Dispose so a teardown-time watcher Stop doesn't self-recover
 
-    // Caches (whole-object replacement on refresh → readers see a consistent snapshot).
+    // Caches (whole-object replacement on refresh → readers see a consistent snapshot). Every one is keyed
+    // by VM ID: two VMs may share a name, and a map keyed by name kept only one of them.
     private volatile IReadOnlyDictionary<string, string> _vmIps =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     private volatile List<DiscoveredVm>? _discovered;
@@ -108,7 +106,7 @@ public sealed class VmService : IDisposable
     private volatile IReadOnlyList<VmStatus>? _statuses;
     private readonly Dictionary<string, long> _memMax = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (long Bytes, DateTime At)> _vhd = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, string> _switchByVm = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, (string Id, string Name)> _switchByVm = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _switchCacheAt = DateTime.MinValue;
     // Set by the state watcher (VM start/stop) and by InvalidateSwitchCache (app rebind) so the next
     // RefreshCore re-reads the VM→switch map instead of waiting on SwitchFallbackInterval. Volatile:
@@ -141,8 +139,9 @@ public sealed class VmService : IDisposable
 
     // ── Sync cache reads (UI-thread safe, no WMI) ────────────────────────────────
 
-    public string? GetCachedVmIp(string vmName) =>
-        _vmIps.TryGetValue(vmName, out var ip) ? ip : null;
+    /// <summary>The VM's cached guest IPv4 address, by VM ID, or null when none is known.</summary>
+    public string? GetCachedVmIp(string vmId) =>
+        vmId is not null && _vmIps.TryGetValue(vmId, out var ip) ? ip : null;
 
     /// <summary>
     /// Every VM discovered on the host (managed or not), or null before the first refresh. Read from the
@@ -340,7 +339,7 @@ public sealed class VmService : IDisposable
     }
 
     /// <summary>
-    /// Waits until <paramref name="vmName"/> reports the "Running" state (mapped via
+    /// Waits until the VM with <paramref name="vmId"/> reports the "Running" state (mapped via
     /// <see cref="WmiVmMapper.MapState"/>), or the Start action reports a Failed phase, or
     /// <paramref name="timeout"/> elapses — whichever comes first. Event-driven, not a new polling loop:
     /// <see cref="SubscribeMetrics"/> (ref-counted, safe to call even when the dashboard already has its
@@ -354,20 +353,20 @@ public sealed class VmService : IDisposable
     /// connecting to a dead VM (issue #30, finding 6). Never throws; genuinely async (no blocking
     /// waits) — safe to await from the UI thread.
     /// </summary>
-    public Task<StartReadiness> WaitUntilRunningAsync(string vmName, TimeSpan timeout) =>
-        WaitUntilAsync(vmName, s => s.IsRunning, VmOpKind.Start, timeout);
+    public Task<StartReadiness> WaitUntilRunningAsync(string vmId, TimeSpan timeout) =>
+        WaitUntilAsync(vmId, s => s.IsRunning, VmOpKind.Start, timeout);
 
     /// <summary>
-    /// Waits until <paramref name="vmName"/> reads Saved, its Save action fails, or
+    /// Waits until the VM with <paramref name="vmId"/> reads Saved, its Save action fails, or
     /// <paramref name="timeout"/> elapses — the same mechanism as <see cref="WaitUntilRunningAsync"/>, with
     /// <see cref="StartReadiness.Running"/> meaning the target state was reached. Used by the save-first
     /// stop of a Hyper-V service (issue #114). Never throws.
     /// </summary>
-    public Task<StartReadiness> WaitUntilSavedAsync(string vmName, TimeSpan timeout) =>
-        WaitUntilAsync(vmName, s => s.IsSaved, VmOpKind.Save, timeout);
+    public Task<StartReadiness> WaitUntilSavedAsync(string vmId, TimeSpan timeout) =>
+        WaitUntilAsync(vmId, s => s.IsSaved, VmOpKind.Save, timeout);
 
     private async Task<StartReadiness> WaitUntilAsync(
-        string vmName, Func<VmStatus, bool> reached, VmOpKind kind, TimeSpan timeout)
+        string vmId, Func<VmStatus, bool> reached, VmOpKind kind, TimeSpan timeout)
     {
         SubscribeMetrics();
         try
@@ -376,14 +375,13 @@ public sealed class VmService : IDisposable
 
             void OnStatuses(IReadOnlyList<VmStatus> statuses)
             {
-                var s = statuses.FirstOrDefault(x => x.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase));
+                var s = statuses.FirstOrDefault(x => HostIdentity.Same(x.Id, vmId));
                 if (s is not null && reached(s)) tcs.TrySetResult(StartReadiness.Running);
             }
 
             void OnProgress(VmOperationProgress p)
             {
-                if (p.Phase == VmOpPhase.Failed && p.Kind == kind &&
-                    p.VmName.Equals(vmName, StringComparison.OrdinalIgnoreCase))
+                if (p.Phase == VmOpPhase.Failed && p.Kind == kind && HostIdentity.Same(p.VmId, vmId))
                     tcs.TrySetResult(StartReadiness.Failed);
             }
 
@@ -619,19 +617,21 @@ public sealed class VmService : IDisposable
                 if (_switchCacheDirty || DateTime.UtcNow - _switchCacheAt > SwitchFallbackInterval)
                 {
                     _switchCacheDirty = false;
-                    foreach (var (name, sw) in ReadSwitchNames(scope, vms)) _switchByVm[name] = sw;
+                    foreach (var (id, sw) in ReadSwitches(scope, vms)) _switchByVm[id] = sw;
                     _switchCacheAt = DateTime.UtcNow;
                 }
 
                 var list = new List<VmStatus>(vms.Count);
-                foreach (var (name, id) in vms)
+                foreach (var (id, row) in vms)
                 {
-                    summaries.TryGetValue(name, out var m);
-                    _memMax.TryGetValue(name, out var memMax);
-                    _switchByVm.TryGetValue(name, out var switchName);
+                    summaries.TryGetValue(id, out var m);
+                    _memMax.TryGetValue(id, out var memMax);
+                    _switchByVm.TryGetValue(id, out var sw);
                     var st = WmiVmMapper.BuildStatus(
-                        name, id.EnabledState, m.Cpu, m.MemMb, m.UptimeMs, memMax, switchName ?? "", m.JobStatus);
-                    if (_vhd.TryGetValue(name, out var v)) st.VhdBytes = v.Bytes;
+                        row.Name, row.EnabledState, m.Cpu, m.MemMb, m.UptimeMs, memMax, sw.Name ?? "", m.JobStatus);
+                    st.Id       = id;
+                    st.SwitchId = sw.Id ?? "";
+                    if (_vhd.TryGetValue(id, out var v)) st.VhdBytes = v.Bytes;
                     list.Add(st);
                 }
 
@@ -670,32 +670,31 @@ public sealed class VmService : IDisposable
         }
     }
 
-    private Dictionary<string, VmIdentity> ReadComputerSystems(ManagementScope scope)
+    /// <summary>Every VM on the host keyed by VM ID — see <see cref="HostIdentity.IndexVms"/> for why never
+    /// by name.</summary>
+    private static IReadOnlyDictionary<string, VmRow> ReadComputerSystems(ManagementScope scope)
     {
-        var map = new Dictionary<string, VmIdentity>(StringComparer.OrdinalIgnoreCase);
+        var rows = new List<VmRow>();
         using var searcher = new ManagementObjectSearcher(scope,
             new ObjectQuery("SELECT ElementName, EnabledState, Name FROM Msvm_ComputerSystem WHERE Caption='Virtual Machine'"),
             WmiLimits.Enumeration());
         foreach (ManagementObject vm in searcher.Get())
             using (vm)
-            {
-                var name = vm["ElementName"] as string ?? "";
-                if (name.Length == 0) continue;
-                map[name] = new VmIdentity(Convert.ToUInt16(vm["EnabledState"]), vm["Name"] as string ?? "");
-            }
-        return map;
+                rows.Add(new VmRow(vm["Name"] as string ?? "", vm["ElementName"] as string ?? "",
+                                   Convert.ToUInt16(vm["EnabledState"])));
+        return HostIdentity.IndexVms(rows);
     }
 
     /// <summary>
-    /// Looks up which VM a settings-class InstanceID belongs to. Per-VM child settings (memory,
-    /// storage, network port allocation, …) embed the owning VM's GUID inside their InstanceID, so
-    /// matching is a substring test against each VM's GUID — the same pattern every read below needs.
+    /// Looks up which VM a settings-class InstanceID belongs to, by VM ID. Per-VM child settings (memory,
+    /// storage, network port allocation, …) embed the owning VM's ID inside their InstanceID, so matching
+    /// is a substring test against each VM's ID — the same pattern every read below needs.
     /// </summary>
-    private static string? MatchVm(string instanceId, Dictionary<string, VmIdentity> vms)
+    private static string? MatchVm(string instanceId, IReadOnlyDictionary<string, VmRow> vms)
     {
-        foreach (var (name, id) in vms)
-            if (id.Guid.Length > 0 && instanceId.Contains(id.Guid, StringComparison.OrdinalIgnoreCase))
-                return name;
+        foreach (var id in vms.Keys)
+            if (id.Length > 0 && instanceId.Contains(id, StringComparison.OrdinalIgnoreCase))
+                return id;
         return null;
     }
 
@@ -711,12 +710,13 @@ public sealed class VmService : IDisposable
             using var inParams = mgmt.GetMethodParameters("GetSummaryInformation");
             inParams["SettingData"] = Array.Empty<string>();
             // Msvm_SummaryInformationRequestType (Microsoft Learn, confirmed live 2026-07-03):
-            // 1=ElementName, 101=ProcessorLoad, 103=MemoryUsage, 105=Uptime. 108=AsynchronousTasks
+            // 0=Name (the VM ID, which keys the result), 1=ElementName, 101=ProcessorLoad,
+            // 103=MemoryUsage, 105=Uptime. 108=AsynchronousTasks
             // returns each VM's active Msvm_ConcreteJob(s) already correlated by Hyper-V — this is
             // how MMC populates its Status column, and (issue #13) the only place a resume-from-Saved's
             // "Restoring (n%)" verb lives (StatusDescriptions was captured EMPTY during that transition,
             // so it is no longer requested).
-            inParams["RequestedInformation"] = new uint[] { 1, 101, 103, 105, 108 };
+            inParams["RequestedInformation"] = new uint[] { 0, 1, 101, 103, 105, 108 };
             using var outParams = mgmt.InvokeMethod("GetSummaryInformation", inParams, WmiLimits.Method());
 
             uint rv = Convert.ToUInt32(outParams["ReturnValue"]);
@@ -730,9 +730,9 @@ public sealed class VmService : IDisposable
                 foreach (var info in infos)
                     using (info)
                     {
-                        var name = info["ElementName"] as string ?? "";
-                        if (name.Length == 0) continue;
-                        result[name] = (
+                        var id = HostIdentity.Bare(info["Name"] as string);
+                        if (id.Length == 0) continue;
+                        result[id] = (
                             SafeInt(info["ProcessorLoad"]),
                             SafeLong(info["MemoryUsage"]),
                             SafeULong(info["Uptime"]),
@@ -796,7 +796,7 @@ public sealed class VmService : IDisposable
     // GUID (see MatchVm) — true in practice on current Hyper-V, but if a host is ever seen where a
     // VM's fields stay empty, verify this assumption first (e.g. log a raw InstanceID and compare).
 
-    private void RefreshMemMax(ManagementScope scope, Dictionary<string, VmIdentity> vms)
+    private void RefreshMemMax(ManagementScope scope, IReadOnlyDictionary<string, VmRow> vms)
     {
         if (vms.Keys.All(_memMax.ContainsKey)) return;   // configured max rarely changes — cache forever
         try
@@ -806,16 +806,16 @@ public sealed class VmService : IDisposable
             foreach (ManagementObject o in mem.Get())
                 using (o)
                 {
-                    if (MatchVm(o["InstanceID"] as string ?? "", vms) is not { } name) continue;
+                    if (MatchVm(o["InstanceID"] as string ?? "", vms) is not { } id) continue;
                     long mb = SafeLong(o["Limit"]);
                     if (mb <= 0) mb = SafeLong(o["VirtualQuantity"]);
-                    _memMax[name] = WmiVmMapper.BytesFromMb(mb);
+                    _memMax[id] = WmiVmMapper.BytesFromMb(mb);
                 }
         }
         catch (Exception ex) { _logger.LogWarning(ex, "MemMax read failed"); }
     }
 
-    private void RefreshVhd(ManagementScope scope, Dictionary<string, VmIdentity> vms)
+    private void RefreshVhd(ManagementScope scope, IReadOnlyDictionary<string, VmRow> vms)
     {
         try
         {
@@ -826,30 +826,31 @@ public sealed class VmService : IDisposable
             foreach (ManagementObject o in s.Get())
                 using (o)
                 {
-                    if (MatchVm(o["InstanceID"] as string ?? "", vms) is not { } name) continue;
+                    if (MatchVm(o["InstanceID"] as string ?? "", vms) is not { } id) continue;
                     if (o["HostResource"] is not string[] paths) continue;
                     foreach (var path in paths)
-                        try { if (File.Exists(path)) sums[name] = sums.GetValueOrDefault(name) + new FileInfo(path).Length; }
+                        try { if (File.Exists(path)) sums[id] = sums.GetValueOrDefault(id) + new FileInfo(path).Length; }
                         catch { /* skip unreadable vhd */ }
                 }
 
-            foreach (var (name, bytes) in sums) _vhd[name] = (bytes, now);
+            foreach (var (id, bytes) in sums) _vhd[id] = (bytes, now);
         }
         catch (Exception ex) { _logger.LogWarning(ex, "VHD size read failed"); }
     }
 
-    /// <summary>Friendly name of the virtual switch each VM's primary NIC is connected to (empty if none/disconnected).</summary>
-    private Dictionary<string, string> ReadSwitchNames(ManagementScope scope, Dictionary<string, VmIdentity> vms)
+    /// <summary>The virtual switch each VM's primary NIC is connected to, by VM ID: the switch's ID and its
+    /// name (absent if none/disconnected).</summary>
+    private Dictionary<string, (string Id, string Name)> ReadSwitches(ManagementScope scope, IReadOnlyDictionary<string, VmRow> vms)
     {
-        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, (string Id, string Name)>(StringComparer.OrdinalIgnoreCase);
         try
         {
             // Same __PATH pitfall as ReadSummaries above (see DEVELOPMENT_NOTES.md "Flagged
             // assumptions") — SELECT * avoids it; the path comes from ManagementObject.Path.Path.
-            var switchNameByPath = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var switchByPath = new Dictionary<string, (string Id, string Name)>(StringComparer.OrdinalIgnoreCase);
             using (var sw = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT * FROM Msvm_VirtualEthernetSwitch"), WmiLimits.Enumeration()))
                 foreach (ManagementObject o in sw.Get())
-                    using (o) switchNameByPath[o.Path.Path] = o["ElementName"] as string ?? "";
+                    using (o) switchByPath[o.Path.Path] = (HostIdentity.Bare(o["Name"] as string), o["ElementName"] as string ?? "");
 
             // A NIC's connection to a switch is recorded on its EthernetPortAllocationSettingData;
             // HostResource holds the path to the Msvm_VirtualEthernetSwitch it's plugged into.
@@ -858,10 +859,10 @@ public sealed class VmService : IDisposable
             foreach (ManagementObject o in eps.Get())
                 using (o)
                 {
-                    if (MatchVm(o["InstanceID"] as string ?? "", vms) is not { } name) continue;
+                    if (MatchVm(o["InstanceID"] as string ?? "", vms) is not { } id) continue;
                     if (o["HostResource"] is not string[] paths) continue;
                     foreach (var path in paths)
-                        if (switchNameByPath.TryGetValue(path, out var swName)) { result[name] = swName; break; }
+                        if (switchByPath.TryGetValue(path, out var sw)) { result[id] = sw; break; }
                 }
 
             // Empty result despite having VMs to match means either every VM is switch-less, or the
@@ -876,13 +877,12 @@ public sealed class VmService : IDisposable
         return result;
     }
 
-    private List<DiscoveredVm> ReadDiscovered(ManagementScope scope, Dictionary<string, VmIdentity> vms)
+    private List<DiscoveredVm> ReadDiscovered(ManagementScope scope, IReadOnlyDictionary<string, VmRow> vms)
     {
-        // ALL of each VM's synthetic NIC names, not just the last row WMI happened to return: the pick
-        // among them is VmConfigUi.SeedNicName's, shared with Settings' add-a-VM picker so the two
-        // surfaces cannot seed a new managed VM with different adapters (see that method's remarks).
-        // Collecting every name is what lets the choice be made by a rule rather than by row order.
-        var nicsByVm = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        // ALL of each VM's synthetic adapters, not just the last row WMI happened to return: the pick
+        // among them is VmConfigUi.SeedNic's, shared with Settings' add-a-VM picker so the two surfaces
+        // cannot seed a new managed VM with different adapters (see that method's remarks).
+        var nicsByVm = new Dictionary<string, List<HostNic>>(StringComparer.OrdinalIgnoreCase);
         try
         {
             using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
@@ -891,22 +891,27 @@ public sealed class VmService : IDisposable
             foreach (ManagementObject o in results)
                 using (o)
                 {
-                    if (MatchVm(o["InstanceID"] as string ?? "", vms) is not { } name) continue;
-                    var nic = (o["ElementName"] as string)?.Trim();
-                    if (string.IsNullOrEmpty(nic)) continue;
+                    var instanceId = o["InstanceID"] as string ?? "";
+                    if (MatchVm(instanceId, vms) is not { } id) continue;
+                    if (HostIdentity.NicIdFromInstanceId(instanceId) is not { } nicId) continue;
+                    var nicName = (o["ElementName"] as string ?? "").Trim();
 
-                    var list = nicsByVm.TryGetValue(name, out var existing) ? existing : nicsByVm[name] = [];
-                    if (!list.Contains(nic, StringComparer.OrdinalIgnoreCase)) list.Add(nic);
+                    var list = nicsByVm.TryGetValue(id, out var existing) ? existing : nicsByVm[id] = [];
+                    if (!list.Any(n => HostIdentity.Same(n.Id, nicId))) list.Add(new HostNic(nicId, nicName));
                 }
         }
         catch (Exception ex) { _logger.LogWarning(ex, "Discovered-VM NIC read failed"); }
 
-        return vms.Keys
-            .Select(name => new DiscoveredVm(name, VmConfigUi.SeedNicName(nicsByVm.GetValueOrDefault(name))))
+        return vms.Values
+            .Select(row =>
+            {
+                var nic = VmConfigUi.SeedNic(nicsByVm.GetValueOrDefault(row.Id));
+                return new DiscoveredVm(row.Id, row.Name, nic?.Id, nic?.Name ?? SettingsOptions.DefaultNicName);
+            })
             .ToList();
     }
 
-    private Dictionary<string, string> ReadIps(ManagementScope scope, Dictionary<string, VmIdentity> vms)
+    private Dictionary<string, string> ReadIps(ManagementScope scope, IReadOnlyDictionary<string, VmRow> vms)
     {
         var ips = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         try
@@ -919,8 +924,8 @@ public sealed class VmService : IDisposable
                     if (o["IPAddresses"] is not string[] addrs) continue;
                     var ipv4 = addrs.FirstOrDefault(a => a.Contains('.') && !a.Contains(':'));
                     if (ipv4 is null) continue;
-                    if (MatchVm(o["InstanceID"] as string ?? "", vms) is { } name)
-                        ips.TryAdd(name, ipv4);
+                    if (MatchVm(o["InstanceID"] as string ?? "", vms) is { } id)
+                        ips.TryAdd(id, ipv4);
                 }
         }
         catch (Exception ex) { _logger.LogWarning(ex, "Guest IP read failed"); }
@@ -934,14 +939,19 @@ public sealed class VmService : IDisposable
     /// immediately ("Requesting …"), then live progress from the WMI job, then success or the exact
     /// failure text. The state watcher/metrics refresh flip the card to the real state afterward.
     /// </summary>
-    public void BeginPowerAction(string vmName, VmOpKind kind, VmOpOrigin origin)
+    /// <param name="target">The VM, found on the host by its ID; the name is for the log and the UI.</param>
+    public void BeginPowerAction(VmRef target, VmOpKind kind, VmOpOrigin origin)
     {
-        Emit(vmName, kind, VmOpPhase.Requested, null, null);
-        _ = Task.Run(() => RunPowerAction(vmName, kind, origin));
+        Emit(target, kind, VmOpPhase.Requested, null, null);
+        _ = Task.Run(() => RunPowerAction(target, kind, origin));
     }
 
-    private void RunPowerAction(string vmName, VmOpKind kind, VmOpOrigin origin)
+    /// <summary>The VM as a log line names it: its name and its ID, since the name alone may be shared.</summary>
+    private static string Label(VmRef target) => $"{target.Shown} ({target.Id})";
+
+    private void RunPowerAction(VmRef target, VmOpKind kind, VmOpOrigin origin)
     {
+        var vmName = Label(target);
         // Begin line for EVERY power action — the vm-power.log audit trail (issue #20). Every exit
         // path below writes exactly one matching outcome line (succeeded / no-op / failed / job-tracked).
         _powerLog.LogInformation("BEGIN {Kind} '{Vm}' (origin={Origin})", kind, vmName, origin);
@@ -950,24 +960,24 @@ public sealed class VmService : IDisposable
             // Answered at once rather than by a WMI call that would fail slowly or hang.
             const string reason = "Hyper-V Virtual Machine Management is not running";
             _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): {Error}", kind, vmName, origin, reason);
-            Emit(vmName, kind, VmOpPhase.Failed, null, reason);
+            Emit(target, kind, VmOpPhase.Failed, null, reason);
             return;
         }
         try
         {
             EnsureScope();
             var scope = _scope!;
-            using var vm = FindVm(scope, vmName);
+            using var vm = FindVm(scope, target.Id);
             if (vm is null)
             {
                 _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): VM not found", kind, vmName, origin);
-                Emit(vmName, kind, VmOpPhase.Failed, null, "VM not found");
+                Emit(target, kind, VmOpPhase.Failed, null, "VM not found");
                 return;
             }
 
             if (kind == VmOpKind.Shutdown)
             {
-                RunShutdown(scope, vm, vmName, origin);
+                RunShutdown(scope, vm, target, origin);
                 return;
             }
 
@@ -987,7 +997,7 @@ public sealed class VmService : IDisposable
             {
                 _powerLog.LogInformation("SUCCEEDED {Kind} '{Vm}' (origin={Origin}): already {State} — no-op",
                     kind, vmName, origin, targetStateName);
-                Emit(vmName, kind, VmOpPhase.Succeeded, null, null);
+                Emit(target, kind, VmOpPhase.Succeeded, null, null);
                 return;
             }
 
@@ -1005,17 +1015,17 @@ public sealed class VmService : IDisposable
             uint ret = Convert.ToUInt32(outParams["ReturnValue"]);
             _powerLog.LogDebug("{Kind} '{Vm}' (origin={Origin}): RequestStateChange returned {Ret}", kind, vmName, origin, ret);
 
-            if (ret == 0)    { _powerLog.LogInformation("SUCCEEDED {Kind} '{Vm}' (origin={Origin})", kind, vmName, origin); Emit(vmName, kind, VmOpPhase.Succeeded, null, null); return; }
-            if (ret == 4096) { TrackJob(scope, (string)outParams["Job"], vmName, kind, origin); return; }
+            if (ret == 0)    { _powerLog.LogInformation("SUCCEEDED {Kind} '{Vm}' (origin={Origin})", kind, vmName, origin); Emit(target, kind, VmOpPhase.Succeeded, null, null); return; }
+            if (ret == 4096) { TrackJob(scope, (string)outParams["Job"], target, kind, origin); return; }
 
             _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): RequestStateChange error 0x{Ret:X}", kind, vmName, origin, ret);
-            Emit(vmName, kind, VmOpPhase.Failed, null, $"error 0x{ret:X}");
+            Emit(target, kind, VmOpPhase.Failed, null, $"error 0x{ret:X}");
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Power action {Kind} on {Vm} failed", kind, vmName);
             _powerLog.LogError(ex, "FAILED {Kind} '{Vm}' (origin={Origin}): {Error}", kind, vmName, origin, ex.Message);
-            Emit(vmName, kind, VmOpPhase.Failed, null, ex.Message);
+            Emit(target, kind, VmOpPhase.Failed, null, ex.Message);
         }
         finally
         {
@@ -1023,8 +1033,9 @@ public sealed class VmService : IDisposable
         }
     }
 
-    private void RunShutdown(ManagementScope scope, ManagementObject vm, string vmName, VmOpOrigin origin)
+    private void RunShutdown(ManagementScope scope, ManagementObject vm, VmRef target, VmOpOrigin origin)
     {
+        var vmName = Label(target);
         // Graceful guest shutdown via the shutdown integration component (no WMI job; the guest
         // shuts down asynchronously, and the state watcher flips the card to Off).
         var guid = vm["Name"] as string ?? "";
@@ -1034,7 +1045,7 @@ public sealed class VmService : IDisposable
         if (sc is null)
         {
             _powerLog.LogWarning("FAILED Shutdown '{Vm}' (origin={Origin}): integration services not available", vmName, origin);
-            Emit(vmName, VmOpKind.Shutdown, VmOpPhase.Failed, null, "Integration services not available");
+            Emit(target, VmOpKind.Shutdown, VmOpPhase.Failed, null, "Integration services not available");
             return;
         }
         using (sc)
@@ -1049,18 +1060,19 @@ public sealed class VmService : IDisposable
                 // Graceful shutdown has no WMI job to track: the guest powers off asynchronously and
                 // the state watcher flips the card to Off, so this "initiated" line is the outcome.
                 _powerLog.LogInformation("Shutdown '{Vm}' (origin={Origin}): initiated — guest shutting down", vmName, origin);
-                Emit(vmName, VmOpKind.Shutdown, VmOpPhase.Running, null, null);
+                Emit(target, VmOpKind.Shutdown, VmOpPhase.Running, null, null);
             }
             else
             {
                 _powerLog.LogWarning("FAILED Shutdown '{Vm}' (origin={Origin}): error 0x{Ret:X}", vmName, origin, ret);
-                Emit(vmName, VmOpKind.Shutdown, VmOpPhase.Failed, null, $"error 0x{ret:X}");
+                Emit(target, VmOpKind.Shutdown, VmOpPhase.Failed, null, $"error 0x{ret:X}");
             }
         }
     }
 
-    private void TrackJob(ManagementScope scope, string jobPath, string vmName, VmOpKind kind, VmOpOrigin origin)
+    private void TrackJob(ManagementScope scope, string jobPath, VmRef target, VmOpKind kind, VmOpOrigin origin)
     {
+        var vmName = Label(target);
         // Pause is near-instant (the VM stays memory-resident); everything else that reaches here
         // (Start, Resume, Save) can legitimately take minutes — e.g. a cold-boot Start under host
         // load, or a large-memory Save/Resume — so give them the same long budget as Save/Shutdown
@@ -1088,7 +1100,7 @@ public sealed class VmService : IDisposable
                 if (Interlocked.Exchange(ref completed, 1) == 0)
                 {
                     _powerLog.LogInformation("SUCCEEDED {Kind} '{Vm}' (origin={Origin}): job completed", kind, vmName, origin);
-                    Emit(vmName, kind, VmOpPhase.Succeeded, null, null); done.Set();
+                    Emit(target, kind, VmOpPhase.Succeeded, null, null); done.Set();
                 }
                 return true;
             }
@@ -1098,11 +1110,11 @@ public sealed class VmService : IDisposable
                 {
                     var err = snap["ErrorDescription"] as string;
                     _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): job {JobState} — {Error}", kind, vmName, origin, jobState, err ?? "(no detail)");
-                    Emit(vmName, kind, VmOpPhase.Failed, null, err); done.Set();
+                    Emit(target, kind, VmOpPhase.Failed, null, err); done.Set();
                 }
                 return true;
             }
-            Emit(vmName, kind, VmOpPhase.Running, SafeInt(snap["PercentComplete"]), null);
+            Emit(target, kind, VmOpPhase.Running, SafeInt(snap["PercentComplete"]), null);
             return false;
         }
 
@@ -1146,7 +1158,7 @@ public sealed class VmService : IDisposable
             if (!done.Wait(timeout) && Interlocked.Exchange(ref completed, 1) == 0)
             {
                 _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): job timed out", kind, vmName, origin);
-                Emit(vmName, kind, VmOpPhase.Failed, null, "timed out");
+                Emit(target, kind, VmOpPhase.Failed, null, "timed out");
             }
         }
         catch (Exception ex)
@@ -1155,7 +1167,7 @@ public sealed class VmService : IDisposable
             if (Interlocked.Exchange(ref completed, 1) == 0)
             {
                 _powerLog.LogError(ex, "FAILED {Kind} '{Vm}' (origin={Origin}): job tracking error — {Error}", kind, vmName, origin, ex.Message);
-                Emit(vmName, kind, VmOpPhase.Failed, null, ex.Message);
+                Emit(target, kind, VmOpPhase.Failed, null, ex.Message);
             }
         }
         finally
@@ -1166,9 +1178,9 @@ public sealed class VmService : IDisposable
         }
     }
 
-    private void Emit(string vm, VmOpKind kind, VmOpPhase phase, int? pct, string? error) =>
-        OperationProgress?.Invoke(new VmOperationProgress(vm, kind, phase, pct,
-            WmiVmMapper.ProgressMessage(kind, phase, pct, error)));
+    private void Emit(VmRef vm, VmOpKind kind, VmOpPhase phase, int? pct, string? error) =>
+        OperationProgress?.Invoke(new VmOperationProgress(vm.Id, kind, phase, pct,
+            WmiVmMapper.ProgressMessage(kind, phase, pct, error), vm.Shown));
 
     // ── WMI plumbing ─────────────────────────────────────────────────────────────
 
@@ -1191,11 +1203,14 @@ public sealed class VmService : IDisposable
         return s.Get().Cast<ManagementObject>().First();
     }
 
-    private static ManagementObject? FindVm(ManagementScope scope, string name)
+    /// <summary>The VM with this VM ID, or null. Only a well-formed GUID reaches the query, so nothing
+    /// typed or stored can change its meaning.</summary>
+    private static ManagementObject? FindVm(ManagementScope scope, string vmId)
     {
-        var esc = name.Replace("'", "\\'");
+        if (!Guid.TryParse(HostIdentity.Bare(vmId), out var guid)) return null;
         using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
-            $"SELECT * FROM Msvm_ComputerSystem WHERE Caption='Virtual Machine' AND ElementName='{esc}'"), WmiLimits.Enumeration());
+            $"SELECT * FROM Msvm_ComputerSystem WHERE Caption='Virtual Machine' AND Name='{guid.ToString("D").ToUpperInvariant()}'"),
+            WmiLimits.Enumeration());
         return s.Get().Cast<ManagementObject>().FirstOrDefault();
     }
 

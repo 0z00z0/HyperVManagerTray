@@ -15,11 +15,10 @@ namespace HyperVManagerTray.Services;
 /// touch a VM's power state, or rename an adapter — those live in <see cref="HyperVManager"/> and the
 /// rename flow, and must stay there. Populating a picker must cost the host nothing but a read.</para>
 ///
-/// <para><b>Never throws, always answers.</b> Each section is independently guarded, so an unreachable
-/// Hyper-V host (the service stopped, WMI wedged, no virtualization role) still returns the physical
-/// adapters, and a total failure returns <see cref="Snapshot.Empty"/> rather than propagating. That is
-/// the whole degradation story for the UI: an editable picker with no items IS the plain text box it
-/// replaced, so "enumeration failed" costs the user nothing but the convenience.</para>
+/// <para><b>Never throws, always answers.</b> The Hyper-V half and the adapter half are guarded apart, so
+/// an unreachable Hyper-V host (the service stopped, WMI wedged, no virtualization role) still returns the
+/// physical adapters. The Hyper-V half is all or nothing and says which: every object is referenced by its
+/// identifier, and a partial list must never pass for "this object does not exist".</para>
 ///
 /// <para><b>Blocking.</b> <see cref="Read"/> connects to WMI and can stall for seconds on a degraded
 /// host. It must only ever be called from a background thread — see
@@ -47,26 +46,17 @@ public static class HostInventory
     private const string Namespace = @"root\virtualization\v2";
 
     /// <summary>
-    /// What the host currently has. Every list is possibly empty — see the class remarks: empty means
-    /// "could not be enumerated OR genuinely none", and the UI treats both the same way (no suggestions,
-    /// free text only), because it cannot act differently on the difference anyway.
+    /// What the host currently has. <see cref="HyperV"/> says whether Hyper-V could be read at all; when it
+    /// could not, its lists are empty and mean nothing — see <see cref="HyperVInventory"/>. The adapters
+    /// come from the network stack and are offered either way.
     /// </summary>
-    public sealed record Snapshot(
-        IReadOnlyList<string> SwitchNames,
-        IReadOnlyList<string> VmNames,
-        IReadOnlyDictionary<string, IReadOnlyList<string>> NicNamesByVm,
-        IReadOnlyList<PhysicalAdapterInfo> Adapters)
+    public sealed record Snapshot(HyperVInventory HyperV, IReadOnlyList<PhysicalAdapterInfo> Adapters)
     {
-        public static readonly Snapshot Empty = new(
-            [], [], new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase), []);
+        public static readonly Snapshot Empty = new(HyperVInventory.Unreadable, []);
 
-        /// <summary>
-        /// The synthetic adapter names of a managed VM, or an empty list when the VM is unknown to the
-        /// host — which is a normal, expected state, not an error: a config may name a VM that has not
-        /// been created yet, and the NIC editor must still accept free text for it.
-        /// </summary>
-        public IReadOnlyList<string> NicNamesFor(string vmName) =>
-            NicNamesByVm.TryGetValue(vmName, out var nics) ? nics : [];
+        /// <summary>The adapters of the VM with <paramref name="vmId"/>; empty when the VM is unknown to the
+        /// host — a normal state, since the host may not have been readable.</summary>
+        public IReadOnlyList<HostNic> NicsFor(string? vmId) => HyperV.NicsFor(vmId);
     }
 
     /// <summary>
@@ -81,118 +71,98 @@ public static class HostInventory
         try   { adapters = AdapterMatcher.GetPhysicalAdapters(); }
         catch { adapters = []; }
 
-        ManagementScope scope;
+        return new Snapshot(ReadHyperV(), adapters);
+    }
+
+    /// <summary>
+    /// Reads the switches, VMs and VM adapters by identifier. Readable only when every query answered: a
+    /// partial read would let the identity migration conclude "no such VM" from a list that simply stopped
+    /// short. BLOCKING. Never throws.
+    /// </summary>
+    public static HyperVInventory ReadHyperV()
+    {
         try
         {
             // No EnablePrivileges: this connection only ever reads. The mutating paths ask for
             // privileges because they need them; a picker must not.
-            scope = new ManagementScope(Namespace, new ConnectionOptions());
+            var scope = new ManagementScope(Namespace, new ConnectionOptions());
             WmiLimits.ConnectBounded(scope);   // a stopped or stopping vmms must not hold the picker
+
+            var switches = ReadSwitches(scope);
+            var vms      = ReadVms(scope);
+            var nics     = ReadNics(scope, vms);
+            return new HyperVInventory(true, switches, vms, nics);
         }
         catch
         {
-            // No Hyper-V host to talk to. The adapters are still real and still worth offering.
-            return Snapshot.Empty with { Adapters = adapters };
+            // No Hyper-V host to talk to, or a query failed part-way: nothing here may be concluded from.
+            return HyperVInventory.Unreadable;
         }
-
-        var switches = ReadSwitchNames(scope);
-        var vms      = ReadVmGuids(scope);
-        var nics     = ReadNicNames(scope, vms);
-
-        return new Snapshot(
-            switches,
-            [.. vms.Keys.OrderBy(n => n, StringComparer.OrdinalIgnoreCase)],
-            nics,
-            adapters);
     }
 
-    /// <summary>Every virtual switch on the host, by friendly name.</summary>
-    private static IReadOnlyList<string> ReadSwitchNames(ManagementScope scope)
+    /// <summary>Every virtual switch on the host: its ID (<c>Name</c>) and its name (<c>ElementName</c>).</summary>
+    private static IReadOnlyList<HostSwitch> ReadSwitches(ManagementScope scope)
     {
-        try
-        {
-            var names = new List<string>();
-            using var s = new ManagementObjectSearcher(scope,
-                new ObjectQuery("SELECT ElementName FROM Msvm_VirtualEthernetSwitch"), WmiLimits.Enumeration());
-            // `using` on the COLLECTION too, not just the searcher and each object: Get() defaults to
-            // Rewindable=true, so the returned collection holds its own IEnumWbemClassObject clone which
-            // disposing the searcher does NOT release. See the Read() remarks for why that matters here.
-            using var results = s.Get();
-            foreach (ManagementObject o in results)
-                using (o)
-                {
-                    var name = o["ElementName"] as string;
-                    if (!string.IsNullOrWhiteSpace(name)) names.Add(name.Trim());
-                }
-            return names;
-        }
-        catch { return []; }
+        var list = new List<HostSwitch>();
+        using var s = new ManagementObjectSearcher(scope,
+            new ObjectQuery("SELECT Name, ElementName FROM Msvm_VirtualEthernetSwitch"), WmiLimits.Enumeration());
+        // `using` on the COLLECTION too, not just the searcher and each object: Get() defaults to
+        // Rewindable=true, so the returned collection holds its own IEnumWbemClassObject clone which
+        // disposing the searcher does NOT release. See the class remarks for why that matters here.
+        using var results = s.Get();
+        foreach (ManagementObject o in results)
+            using (o)
+            {
+                var id = HostIdentity.Bare(o["Name"] as string);
+                if (id.Length > 0) list.Add(new HostSwitch(id, (o["ElementName"] as string ?? "").Trim()));
+            }
+        return [.. list.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase)];
     }
 
-    /// <summary>VM name → VM GUID, for the InstanceID matching every per-VM settings class needs.</summary>
-    private static Dictionary<string, string> ReadVmGuids(ManagementScope scope)
+    /// <summary>Every VM on the host: its VM ID (<c>Name</c>) and its name (<c>ElementName</c>).</summary>
+    private static IReadOnlyList<HostVm> ReadVms(ManagementScope scope)
     {
-        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        try
-        {
-            using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
-                "SELECT ElementName, Name FROM Msvm_ComputerSystem WHERE Caption='Virtual Machine'"), WmiLimits.Enumeration());
-            using var results = s.Get();   // Rewindable collection — its own enumerator to release
-            foreach (ManagementObject o in results)
-                using (o)
-                {
-                    var name = o["ElementName"] as string ?? "";
-                    if (name.Length == 0) continue;
-                    map[name] = o["Name"] as string ?? "";
-                }
-        }
-        catch { /* leave the map as far as it got — a partial VM list still beats none */ }
-        return map;
+        var rows = new List<VmRow>();
+        using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
+            "SELECT ElementName, Name FROM Msvm_ComputerSystem WHERE Caption='Virtual Machine'"), WmiLimits.Enumeration());
+        using var results = s.Get();   // Rewindable collection — its own enumerator to release
+        foreach (ManagementObject o in results)
+            using (o) rows.Add(new VmRow(o["Name"] as string ?? "", o["ElementName"] as string ?? "", 0));
+        return [.. HostIdentity.IndexVms(rows).Values
+                    .Select(r => new HostVm(r.Id, r.Name))
+                    .OrderBy(v => v.Name, StringComparer.OrdinalIgnoreCase)];
     }
 
     /// <summary>
-    /// Every synthetic adapter name, grouped by owning VM. Unlike <c>VmService.ReadDiscovered</c> — which
-    /// keeps ONE NIC per VM because the dashboard only needs the primary — this keeps them ALL: the whole
-    /// point of the NIC editor is the VM with a second or renamed adapter, which is exactly the VM that
-    /// silently never reconnects today.
+    /// Every synthetic adapter, grouped by owning VM ID. All of them, not one per VM: the adapter editor
+    /// exists for the VM with a second adapter.
     ///
-    /// <para>A per-VM settings class embeds its owning VM's GUID in its InstanceID, so the association is
-    /// a substring test — the same matching <c>VmService.MatchVm</c> does.</para>
+    /// <para>A per-VM settings class embeds its owning VM's ID in its InstanceID, so the association is a
+    /// substring test — the same matching <c>VmService.MatchVm</c> does.</para>
     /// </summary>
-    private static IReadOnlyDictionary<string, IReadOnlyList<string>> ReadNicNames(
-        ManagementScope scope, Dictionary<string, string> vmGuids)
+    private static IReadOnlyDictionary<string, IReadOnlyList<HostNic>> ReadNics(
+        ManagementScope scope, IReadOnlyList<HostVm> vms)
     {
-        var byVm = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        try
-        {
-            using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
-                "SELECT InstanceID, ElementName FROM Msvm_SyntheticEthernetPortSettingData"), WmiLimits.Enumeration());
-            using var results = s.Get();   // Rewindable collection — its own enumerator to release
-            foreach (ManagementObject o in results)
-                using (o)
-                {
-                    var instanceId = o["InstanceID"] as string ?? "";
-                    var nicName    = (o["ElementName"] as string)?.Trim();
-                    if (string.IsNullOrEmpty(nicName)) continue;
-                    if (MatchVm(instanceId, vmGuids) is not { } vmName) continue;
+        var byVm = new Dictionary<string, List<HostNic>>(StringComparer.OrdinalIgnoreCase);
+        using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
+            "SELECT InstanceID, ElementName FROM Msvm_SyntheticEthernetPortSettingData"), WmiLimits.Enumeration());
+        using var results = s.Get();   // Rewindable collection — its own enumerator to release
+        foreach (ManagementObject o in results)
+            using (o)
+            {
+                var instanceId = o["InstanceID"] as string ?? "";
+                if (HostIdentity.NicIdFromInstanceId(instanceId) is not { } nicId) continue;
+                var owner = vms.FirstOrDefault(v => instanceId.Contains(v.Id, StringComparison.OrdinalIgnoreCase));
+                if (owner is null) continue;
 
-                    var list = byVm.TryGetValue(vmName, out var existing) ? existing : byVm[vmName] = [];
-                    if (!list.Contains(nicName, StringComparer.OrdinalIgnoreCase)) list.Add(nicName);
-                }
-        }
-        catch { /* partial is fine — see the class remarks */ }
+                var list = byVm.TryGetValue(owner.Id, out var existing) ? existing : byVm[owner.Id] = [];
+                if (!list.Any(n => HostIdentity.Same(n.Id, nicId)))
+                    list.Add(new HostNic(nicId, (o["ElementName"] as string ?? "").Trim()));
+            }
 
         return byVm.ToDictionary(
             kv => kv.Key,
-            kv => (IReadOnlyList<string>)[.. kv.Value.OrderBy(n => n, StringComparer.OrdinalIgnoreCase)],
+            kv => (IReadOnlyList<HostNic>)[.. kv.Value.OrderBy(n => n.Name, StringComparer.OrdinalIgnoreCase)],
             StringComparer.OrdinalIgnoreCase);
-    }
-
-    private static string? MatchVm(string instanceId, Dictionary<string, string> vmGuids)
-    {
-        foreach (var (name, guid) in vmGuids)
-            if (guid.Length > 0 && instanceId.Contains(guid, StringComparison.OrdinalIgnoreCase))
-                return name;
-        return null;
     }
 }

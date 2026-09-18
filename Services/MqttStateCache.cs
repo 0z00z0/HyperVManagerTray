@@ -27,30 +27,32 @@ public sealed class MqttStateCache
 
     public void SetNetwork(MatchResult? result) => _network = result;
 
-    /// <summary>The last status for one VM, or null when none has been seen.</summary>
-    public VmStatus? Vm(string vmName) =>
-        vmName is not null && _vms.TryGetValue(vmName, out var status) ? status : null;
+    /// <summary>The last status for the VM with <paramref name="vmId"/>, or null when none has been seen.</summary>
+    public VmStatus? Vm(string vmId) =>
+        vmId is not null && _vms.TryGetValue(vmId, out var status) ? status : null;
 
+    /// <summary>Keyed by VM ID: two VMs may share a name, and each keeps its own state.</summary>
     public void SetVms(IReadOnlyList<VmStatus>? statuses)
     {
         var map = new Dictionary<string, VmStatus>(StringComparer.OrdinalIgnoreCase);
         foreach (var status in statuses ?? [])
-            if (!string.IsNullOrEmpty(status?.Name)) map[status.Name] = status;
+            if (!string.IsNullOrEmpty(status?.Id)) map[status.Id] = status;
         _vms = map;
     }
 
-    /// <summary>The last operation message for one VM, or null when none has been reported.</summary>
-    public string? Operation(string vmName) =>
-        vmName is not null && _operations.TryGetValue(vmName, out var text) ? text : null;
+    /// <summary>The last operation message for the VM with <paramref name="vmId"/>, or null when none has
+    /// been reported.</summary>
+    public string? Operation(string vmId) =>
+        vmId is not null && _operations.TryGetValue(vmId, out var text) ? text : null;
 
     public void SetOperation(VmOperationProgress progress)
     {
-        if (string.IsNullOrEmpty(progress.VmName)) return;
+        if (string.IsNullOrEmpty(progress.VmId)) return;
         lock (_operationLock)
         {
             var map = new Dictionary<string, string>(_operations, StringComparer.OrdinalIgnoreCase)
             {
-                [progress.VmName] = Describe(progress),
+                [progress.VmId] = Describe(progress),
             };
             _operations = map;
         }

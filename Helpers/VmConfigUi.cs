@@ -20,87 +20,69 @@ namespace HyperVManagerTray.Helpers;
 public static class VmConfigUi
 {
     /// <summary>
-    /// The managed VM with this name, or null if this app doesn't manage it — the single lookup behind
-    /// "is this VM ours, and what is its NIC called?".
-    ///
-    /// <para><b>Case-insensitive, like every other name comparison on this surface.</b> Hyper-V VM names
-    /// are case-insensitive, and the two surfaces that produce one disagree on casing by construction:
-    /// the "Start managing a VM" prompt (issue #47) takes free text, so a user types <c>devbox</c>, while
-    /// the "Add VM" picker (issue #41) sources <see cref="UnmanagedVms"/> from the host inventory and
-    /// therefore carries Hyper-V's own <c>DevBox</c>. <c>NetworkMonitor</c> used to look these up with an
-    /// ordinal <c>==</c> — the only such compare left in the app — so a config the app's OWN pickers
-    /// created could fail to match, and since issue #37 escalated that miss from a log line to a
-    /// permanent failure state, the result was a pinned red icon and a VM that was never reconnected.
-    /// Centralising the lookup here is what stops a third caller re-deriving it a fourth way.</para>
+    /// The managed VM with this VM ID, or null if this app doesn't manage it — the single lookup behind
+    /// "is this VM ours, and which adapter do we reconnect?". By ID alone: two VMs may share a name, and a
+    /// name found the first of them.
     /// </summary>
-    public static Models.VmTarget? FindManagedVm(IEnumerable<Models.VmTarget>? managedVms, string vmName) =>
-        managedVms?.FirstOrDefault(v => string.Equals(v.Name, vmName, StringComparison.OrdinalIgnoreCase));
+    public static Models.VmTarget? FindManagedVm(IEnumerable<Models.VmTarget>? managedVms, string? vmId) =>
+        string.IsNullOrWhiteSpace(vmId)
+            ? null
+            : managedVms?.FirstOrDefault(v => HostIdentity.Same(v.Id, vmId));
 
     /// <summary>
     /// The VMs on the host that this app does NOT manage — the set the "Manage VMs" list offers to add,
-    /// and the set Settings' add-picker suggests. Case-insensitive (Hyper-V VM names are), de-duplicated,
-    /// and ordered by name so the menu doesn't reshuffle between opens.
+    /// and the set Settings' add-picker offers. Compared by VM ID, so a VM sharing its name with a managed
+    /// one is still offered; ordered by name, then ID, so the menu doesn't reshuffle between opens.
     /// </summary>
-    public static IReadOnlyList<string> UnmanagedVms(
-        IEnumerable<string> hostVms, IEnumerable<string> managedVms)
+    public static IReadOnlyList<HostVm> UnmanagedVms(
+        IEnumerable<HostVm>? hostVms, IEnumerable<Models.VmTarget>? managedVms)
     {
-        var managed = new HashSet<string>(managedVms ?? [], StringComparer.OrdinalIgnoreCase);
+        var managed = (managedVms ?? []).Where(v => !string.IsNullOrWhiteSpace(v.Id)).ToList();
         return
         [
             .. (hostVms ?? [])
-                .Where(n => !string.IsNullOrWhiteSpace(n))
-                .Select(n => n.Trim())
-                .Where(n => !managed.Contains(n))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                .Where(h => !string.IsNullOrWhiteSpace(h.Id))
+                .Where(h => !managed.Any(m => HostIdentity.Same(m.Id, h.Id)))
+                .DistinctBy(h => HostIdentity.Bare(h.Id), StringComparer.OrdinalIgnoreCase)
+                .OrderBy(h => h.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(h => h.Id, StringComparer.OrdinalIgnoreCase)
         ];
     }
 
     /// <summary>
     /// Which of a VM's synthetic adapters a NEW managed VM is seeded with — the single answer both
-    /// add-a-VM surfaces use (the tray's "Manage VMs" list and Settings' add picker).
-    ///
-    /// <para><b>Why this is a shared function and not two one-liners.</b> It was two one-liners, and they
-    /// disagreed. <c>VmService.ReadDiscovered</c> kept one NIC per VM by assigning into a dictionary as
-    /// WMI rows arrived — so the LAST row won, in whatever order WMI happened to return them.
-    /// <c>SettingsWindow</c> took <c>NicNamesFor(name).FirstOrDefault()</c>, and
-    /// <c>HostInventory.ReadNicNames</c> sorts OrdinalIgnoreCase — so "Ethernet 2" beat "Network
-    /// Adapter". The same act on two surfaces therefore persisted a different adapter, and whichever
-    /// surface picked the non-primary NIC wrote a name <c>HyperVManager.FindSyntheticNic</c> never
-    /// matches: <c>ApplySwitchAsync</c> then returns false on every pass and the VM is silently never
-    /// reconnected — the exact failure issue #41 exists to fix. Issues #34/#47 built
-    /// <c>ManagedVmActions</c> and this class specifically so the two surfaces could not drift; the NIC
-    /// seed bypassed both. It doesn't now.</para>
-    ///
-    /// <para>Ordinal-ignore-case ordering, matching <c>HostInventory.ReadNicNames</c>: the choice among
-    /// several adapters is arbitrary either way, so the property that matters is that it is the SAME
-    /// arbitrary choice on both surfaces and stable between reads — not WMI's row order. An empty or
-    /// all-blank list yields the Hyper-V default, which is also what
-    /// <see cref="Services.ConfigManager.AddVmToConfig"/> falls back to, so the two agree by construction
-    /// rather than by coincidence.</para>
+    /// add-a-VM surfaces use (the tray's "Manage VMs" list and Settings' add picker), so the two cannot
+    /// seed different adapters. The first by name, then by ID, whatever order WMI returned them in; null
+    /// when the VM has no adapter, which leaves "the VM's only adapter" to be decided when it has one.
     /// </summary>
-    public static string SeedNicName(IEnumerable<string>? nicNames) =>
-        (nicNames ?? [])
-            .Where(n => !string.IsNullOrWhiteSpace(n))
-            .Select(n => n.Trim())
-            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
-            .FirstOrDefault()
-        ?? SettingsOptions.DefaultNicName;
+    public static HostNic? SeedNic(IEnumerable<HostNic>? nics) =>
+        (nics ?? [])
+            .Where(n => !string.IsNullOrWhiteSpace(n.Id))
+            .OrderBy(n => n.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(n => n.Id, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
 
     /// <summary>
-    /// The switches an override may target: the fallback plus every switch named by a rule. Shared by the
-    /// tray's "Override VM switch" submenu and Settings → Network's override control so the two surfaces
-    /// can't offer different sets. De-duplicated and ordered.
+    /// The switches an override may target: the fallback's plus every rule's, by ID. Shared by the tray's
+    /// "Override VM switch" submenu and Settings → Network's override control so the two surfaces can't
+    /// offer different sets. De-duplicated by ID and ordered by name; a switch not identified yet is left
+    /// out, since nothing could be connected to it.
     /// </summary>
-    public static IReadOnlyList<string> OverrideSwitchNames(
-        string? fallbackSwitch, IEnumerable<string> ruleSwitches)
+    public static IReadOnlyList<Models.SwitchRef> OverrideSwitches(
+        Models.ISwitchTarget? fallback, IEnumerable<Models.ISwitchTarget>? rules)
     {
-        var all = new List<string>();
-        if (!string.IsNullOrWhiteSpace(fallbackSwitch)) all.Add(fallbackSwitch.Trim());
-        foreach (var s in ruleSwitches ?? [])
-            if (!string.IsNullOrWhiteSpace(s)) all.Add(s.Trim());
+        var all = new List<Models.SwitchRef>();
+        if (fallback is not null && !string.IsNullOrWhiteSpace(fallback.SwitchId))
+            all.Add(new Models.SwitchRef(fallback.SwitchId, fallback.SwitchName));
+        foreach (var r in rules ?? [])
+            if (!string.IsNullOrWhiteSpace(r.SwitchId)) all.Add(new Models.SwitchRef(r.SwitchId, r.SwitchName));
 
-        return [.. all.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(s => s, StringComparer.OrdinalIgnoreCase)];
+        return
+        [
+            .. all.DistinctBy(s => HostIdentity.Bare(s.Id), StringComparer.OrdinalIgnoreCase)
+                  .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+                  .ThenBy(s => s.Id, StringComparer.OrdinalIgnoreCase)
+        ];
     }
 
     /// <summary>

@@ -1,4 +1,5 @@
 using HyperVManagerTray.Helpers;
+using HyperVManagerTray.Models;
 using HyperVManagerTray.Services;
 using Xunit;
 
@@ -16,11 +17,11 @@ namespace HyperVManagerTray.Tests;
 public class MatchResultDisplayRefreshTests
 {
     private static MatchResult Applied(string adapterName = "Realtek USB GbE Family Controller") =>
-        new("Office LAN", "Bridged", ["vDev"])
+        new("rule-office", "Office LAN", "SW-BRIDGED", "Bridged", [new VmRef("VM-DEV", "vDev")])
         {
             ApplyStatus              = NetworkStatusUi.SwitchApplyStatus.Applied,
             HostAdapterName          = adapterName,
-            HostAdapterInterfaceName = "Ethernet 5",
+            HostAdapterInterfaceId   = "{IF-5}",
             HostIp                   = "10.0.0.45",
             Gateway                  = "10.0.0.1",
             DnsServers               = ["10.0.0.1"],
@@ -60,10 +61,10 @@ public class MatchResultDisplayRefreshTests
 
         // Outcome and identity: the confirmed result's own, untouched.
         Assert.Equal(NetworkStatusUi.SwitchApplyStatus.Applied, refreshed.ApplyStatus);
-        Assert.Equal("Office LAN", refreshed.RuleName);
-        Assert.Equal("Bridged",    refreshed.VirtualSwitch);
-        Assert.Equal("Ethernet 5", refreshed.HostAdapterInterfaceName);
-        Assert.Equal(["vDev"],     refreshed.TargetVms);
+        Assert.Equal("rule-office", refreshed.RuleId);
+        Assert.Equal("SW-BRIDGED",  refreshed.SwitchId);
+        Assert.Equal("{IF-5}",      refreshed.HostAdapterInterfaceId);
+        Assert.Equal(["VM-DEV"],    refreshed.TargetVms.Select(v => v.Id));
         Assert.True(refreshed.UserInitiated);
         Assert.Empty(refreshed.FailedVms);
     }
@@ -78,7 +79,7 @@ public class MatchResultDisplayRefreshTests
     public void ADifferentRule_RefreshesNothing()
     {
         var confirmed = Applied();
-        var fresh     = Applied("Office dock") with { RuleName = "Home LAN" };
+        var fresh     = Applied("Office dock") with { RuleId = "rule-home", RuleName = "Home LAN" };
 
         Assert.Null(confirmed.WithRefreshedDisplayFrom(fresh));
     }
@@ -87,7 +88,7 @@ public class MatchResultDisplayRefreshTests
     [Fact]
     public void ADifferentSwitch_RefreshesNothing()
     {
-        Assert.Null(Applied().WithRefreshedDisplayFrom(Applied() with { VirtualSwitch = "Default Switch" }));
+        Assert.Null(Applied().WithRefreshedDisplayFrom(Applied() with { SwitchId = "SW-DEFAULT", SwitchName = "Default Switch" }));
     }
 
     /// <summary>
@@ -100,7 +101,7 @@ public class MatchResultDisplayRefreshTests
     public void ADifferentHostAdapter_RefreshesNothing()
     {
         var confirmed = Applied();
-        var fresh     = Applied("Home dock") with { HostAdapterInterfaceName = "Ethernet 7" };
+        var fresh     = Applied("Home dock") with { HostAdapterInterfaceId = "{IF-7}" };
 
         Assert.Null(confirmed.WithRefreshedDisplayFrom(fresh));
     }

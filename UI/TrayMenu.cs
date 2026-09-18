@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml.Controls;
 using HyperVManagerTray.Helpers;
+using HyperVManagerTray.Models;
 using HyperVManagerTray.Services;
 using ZeroZero.Brand.Core;
 using ZeroZero.Brand.WinUI;
@@ -142,33 +143,33 @@ internal sealed class TrayMenu
     {
         _manageVmsMenu.Items.Clear();
 
-        var managed = _config.Current.VirtualMachines.Select(v => v.Name).ToList();
+        var managed = _config.Current.VirtualMachines.Select(v => v.Ref).ToList();
+        // Two VMs may share a name; the label then carries the start of each ID, so both can be told apart.
+        var labels  = HostIdentity.Labels(
+            managed.Select(v => (v.Id, v.Name))
+                   .Concat((_vm.GetCachedVmsSync() ?? []).Select(d => (d.Id, d.Name))));
 
         // Read from the in-memory cache ONLY — never block the UI thread. GetCachedVmsSync() returns null
         // until the first background discovery completes; App.PreWarmVmCacheAsync owns that and calls
         // RefreshState() when the data lands.
         var allVms = _vm.GetCachedVmsSync();
 
+        foreach (var vm in managed)
+            _manageVmsMenu.Items.Add(ManagedItem(vm, labels.GetValueOrDefault(vm.Id) ?? vm.Shown));
+
         if (allVms is null)
         {
             // Cache still warming (the first few seconds after startup). The managed VMs are known from
             // config alone, so offer un-managing them; the unmanaged ones simply aren't discovered yet.
-            foreach (var name in managed) _manageVmsMenu.Items.Add(VmItem(name, isManaged: true, nicName: ""));
-
             if (_manageVmsMenu.Items.Count == 0)
                 _manageVmsMenu.Items.Add(new MenuFlyoutItem { Text = "Loading VMs…", IsEnabled = false });
             return;
         }
 
-        var nicByVm = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var d in allVms) nicByVm[d.Name] = d.NicName;
-
-        foreach (var name in managed)
-            _manageVmsMenu.Items.Add(VmItem(name, isManaged: true, nicName: ""));
-
-        foreach (var name in VmConfigUi.UnmanagedVms(allVms.Select(d => d.Name), managed))
-            _manageVmsMenu.Items.Add(VmItem(name, isManaged: false,
-                nicName: nicByVm.TryGetValue(name, out var nic) ? nic : ""));
+        var unmanaged = VmConfigUi.UnmanagedVms(allVms.Select(d => new HostVm(d.Id, d.Name)), _config.Current.VirtualMachines);
+        foreach (var host in unmanaged)
+            if (allVms.FirstOrDefault(d => HostIdentity.Same(d.Id, host.Id)) is { } discovered)
+                _manageVmsMenu.Items.Add(UnmanagedItem(discovered, labels.GetValueOrDefault(discovered.Id) ?? discovered.Name));
 
         if (_manageVmsMenu.Items.Count == 0)
             _manageVmsMenu.Items.Add(new MenuFlyoutItem { Text = "(no VMs found)", IsEnabled = false });
@@ -181,17 +182,28 @@ internal sealed class TrayMenu
         });
     }
 
-    /// <summary>One VM in the Manage VMs list. Checked ⇒ managed ⇒ clicking un-manages it, and vice versa.</summary>
-    private ToggleMenuFlyoutItem VmItem(string vmName, bool isManaged, string nicName)
+    /// <summary>A managed VM in the Manage VMs list: checked, and clicking un-manages it.</summary>
+    private ToggleMenuFlyoutItem ManagedItem(VmRef vm, string label)
     {
-        var item = new ToggleMenuFlyoutItem { Text = vmName, IsChecked = isManaged };
+        var item = new ToggleMenuFlyoutItem { Text = label, IsChecked = true };
         item.Command = new RelayCommand(() =>
         {
-            UiActivityLog.Logger.LogInformation(
-                "Tray: Manage VMs → {Action} '{Vm}'", isManaged ? "stop managing" : "manage", vmName);
-            // Fire-and-forget is correct here: the native menu is already gone by the time either flow
-            // shows its dialog, and both report their own outcome.
-            _ = isManaged ? _managedVms.RemoveAsync(vmName) : _managedVms.AddAsync(vmName, nicName);
+            UiActivityLog.Logger.LogInformation("Tray: Manage VMs → stop managing '{Vm}' ({Id})", vm.Shown, vm.Id);
+            // Fire-and-forget is correct here: the native menu is already gone by the time the flow shows
+            // its dialog, and it reports its own outcome.
+            _ = _managedVms.RemoveAsync(vm);
+        });
+        return item;
+    }
+
+    /// <summary>A host VM this app does not manage: unchecked, and clicking starts managing it.</summary>
+    private ToggleMenuFlyoutItem UnmanagedItem(DiscoveredVm vm, string label)
+    {
+        var item = new ToggleMenuFlyoutItem { Text = label, IsChecked = false };
+        item.Command = new RelayCommand(() =>
+        {
+            UiActivityLog.Logger.LogInformation("Tray: Manage VMs → manage '{Vm}' ({Id})", vm.Name, vm.Id);
+            _ = _managedVms.AddAsync(vm);
         });
         return item;
     }
@@ -202,23 +214,25 @@ internal sealed class TrayMenu
     {
         _overrideMenu.Items.Clear();
 
-        var switches = VmConfigUi.OverrideSwitchNames(
-            _config.Current.Fallback.VirtualSwitch,
-            _config.Current.Rules.Select(r => r.VirtualSwitch));
+        var switches   = VmConfigUi.OverrideSwitches(_config.Current.Fallback, _config.Current.Rules);
+        var vms        = _config.Current.IdentifiedVms;
+        var vmLabels   = HostIdentity.Labels(vms.Select(v => (v.Id, v.Name)));
+        var swLabels   = HostIdentity.Labels(switches.Select(s => (s.Id, s.Name)));
 
-        foreach (var vm in _config.Current.VirtualMachines)
+        foreach (var vm in vms)
         {
             foreach (var sw in switches)
             {
-                var vmName = vm.Name;
-                var swName = sw;
+                var vmRef = vm;
+                var swRef = sw;
                 _overrideMenu.Items.Add(new MenuFlyoutItem
                 {
-                    Text    = $"{vm.Name} → {sw}",
+                    Text    = $"{vmLabels.GetValueOrDefault(vm.Id) ?? vm.Shown} → {swLabels.GetValueOrDefault(sw.Id) ?? sw.Shown}",
                     Command = new RelayCommand(() =>
                     {
-                        UiActivityLog.Logger.LogInformation("Tray: Override switch '{Vm}' → '{Switch}'", vmName, swName);
-                        _ = _network.OverrideSwitchAsync(vmName, swName);
+                        UiActivityLog.Logger.LogInformation("Tray: Override switch '{Vm}' ({VmId}) → '{Switch}' ({SwitchId})",
+                            vmRef.Shown, vmRef.Id, swRef.Shown, swRef.Id);
+                        _ = _network.OverrideSwitchAsync(vmRef, swRef);
                     }),
                 });
             }

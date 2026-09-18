@@ -25,7 +25,7 @@ public class MqttStateCacheTests
     public void Network_HoldsTheLastAppliedOutcome()
     {
         var cache = new MqttStateCache();
-        var result = new MatchResult("Office", "Bridged", ["Dev"])
+        var result = new MatchResult("office", "Office", "SW-BRIDGED", "Bridged", [new VmRef("Dev", "Dev")])
         {
             ApplyStatus = NetworkStatusUi.SwitchApplyStatus.Applied,
         };
@@ -39,7 +39,7 @@ public class MqttStateCacheTests
     public void Network_ClearsWhenNoRuleMatched()
     {
         var cache = new MqttStateCache();
-        cache.SetNetwork(new MatchResult("Office", "Bridged", ["Dev"]));
+        cache.SetNetwork(new MatchResult("office", "Office", "SW-BRIDGED", "Bridged", [new VmRef("Dev", "Dev")]));
 
         cache.SetNetwork(null);
 
@@ -87,7 +87,7 @@ public class MqttStateCacheTests
     public void SetVms_TolerantOfANullListAndOfNamelessEntries()
     {
         var cache = new MqttStateCache();
-        cache.SetVms([Vm("Dev"), new VmStatus { Name = "" }, null!]);
+        cache.SetVms([Vm("Dev"), new VmStatus { Id = "", Name = "" }, null!]);
 
         Assert.NotNull(cache.Vm("Dev"));
 

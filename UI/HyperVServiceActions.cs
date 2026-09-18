@@ -61,11 +61,11 @@ internal sealed class HyperVServiceActions
     /// The VM card's Start while a service is down: starts each stopped service, waits until the VMs can
     /// be read, then starts the VM. Reports whichever step failed and goes no further.
     /// </summary>
-    public async Task StartServicesThenVmAsync(string vmName, VmOpOrigin origin)
+    public async Task StartServicesThenVmAsync(VmRef vm, VmOpOrigin origin)
     {
-        UiActivityLog.Logger.LogInformation("Services: start services, then '{Vm}' (origin={Origin})", vmName, origin);
+        UiActivityLog.Logger.LogInformation("Services: start services, then '{Vm}' ({Id}) (origin={Origin})", vm.Shown, vm.Id, origin);
 
-        if (await _control.StartServicesThenVmAsync(vmName, origin).ConfigureAwait(true) is { } error)
+        if (await _control.StartServicesThenVmAsync(vm, origin).ConfigureAwait(true) is { } error)
             _notify(Title, $"{error} Try Start again in a moment.", true);
     }
 }

@@ -18,7 +18,7 @@ namespace HyperVManagerTray.Helpers;
 /// the placeholder <c>MyVM</c> was still sitting in the fallback's <c>targetVms</c>, and every
 /// evaluation pass merely logged <c>VM 'MyVM' not found in config</c> into a file nobody was reading.
 /// A shipped sample must be either genuinely inert or absent. This one is genuinely inert: no rules to
-/// match, no VMs to target, and an empty <c>targetVms</c> on the fallback means the apply pass iterates
+/// match, no VMs to target, and an empty <c>targetVmIds</c> on the fallback means the apply pass iterates
 /// nothing and logs nothing (see <c>DefaultConfigTests.DefaultFallbackHasNoTargets</c>). The annotated,
 /// fully-populated example lives in the README, where a wrong value can only mislead a reader — not
 /// silently misconfigure a running app.</para>
@@ -30,6 +30,10 @@ public static class DefaultConfig
     /// <see cref="Models.AppConfig"/> so the shipped file has a stable, reviewable shape (key order,
     /// two-space indent) that a diff can police — a serialiser would silently reorder or add keys as
     /// the model grows. <c>DefaultConfigTests</c> asserts it round-trips to exactly the values below.
+    ///
+    /// <para>The fallback switch is given by NAME, the one place a name is written on purpose: the Default
+    /// Switch's ID belongs to the host, so the blank slate names it and the identity migration turns the
+    /// name into that host's ID on the first start that can read Hyper-V.</para>
     /// </summary>
     public const string Json = """
         {
@@ -38,7 +42,7 @@ public static class DefaultConfig
           "rules": [],
           "fallback": {
             "virtualSwitch": "Default Switch",
-            "targetVms": []
+            "targetVmIds": []
           }
         }
 

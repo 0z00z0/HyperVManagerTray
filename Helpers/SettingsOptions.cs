@@ -200,36 +200,8 @@ public static class SettingsOptions
     /// </summary>
     public static bool IsPersistableRule(Models.NetworkRule? rule) =>
         rule is not null
-        && !string.IsNullOrWhiteSpace(rule.VirtualSwitch)
+        && !string.IsNullOrWhiteSpace(rule.SwitchId)
         && !DeclaresNoCondition(rule);
-
-    /// <summary>
-    /// Splits a comma- and/or newline-separated VM list into a cleaned list: trimmed, blanks dropped,
-    /// duplicates removed case-insensitively (first spelling wins). Backs both the rule and fallback
-    /// target-VM editors so a hand-edited config value round-trips predictably.
-    /// </summary>
-    public static List<string> ParseVmList(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text)) return [];
-        return CleanVmList(text.Split([',', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries));
-    }
-
-    /// <summary>
-    /// Splits a strictly NEWLINE-separated VM list into a cleaned list (trimmed, blanks dropped,
-    /// case-insensitive dedupe). Unlike <see cref="ParseVmList"/> it does NOT treat a comma as a
-    /// separator, so a VM whose name legitimately contains a comma (e.g. "Web, App") survives the
-    /// round-trip intact. This is the representation the Settings editor uses — one VM per line — which
-    /// is unambiguous where the old single-line comma form corrupted such names.
-    /// </summary>
-    public static List<string> ParseVmLines(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text)) return [];
-        return CleanVmList(text.Split(['\n', '\r'], StringSplitOptions.RemoveEmptyEntries));
-    }
-
-    /// <summary>Joins a VM list one-per-line for the multi-line editor (the unambiguous counterpart to
-    /// <see cref="ParseVmLines"/>; safe even when a name contains a comma).</summary>
-    public static string JoinVmLines(IEnumerable<string> names) => string.Join(Environment.NewLine, names);
 
     /// <summary>Trims, drops blanks, and removes case-insensitive duplicates (first spelling wins).</summary>
     public static List<string> CleanVmList(IEnumerable<string> names)
@@ -244,54 +216,8 @@ public static class SettingsOptions
         return result;
     }
 
-    /// <summary>Joins a VM list for display in a single-line editor ("VM1, VM2").</summary>
-    public static string JoinVmList(IEnumerable<string> names) => string.Join(", ", names);
-
     /// <summary>Clamps a rule priority to a sane, non-negative range (a hand-edited negative → 0).</summary>
     public static int NormalizePriority(int priority) => Math.Clamp(priority, 0, 100_000);
-
-    // ── Live-value suggestions (issue #41) ──────────────────────────────────────
-    // The identity fields (virtual switch, target VM, adapter MAC, a managed VM's NIC name) name things
-    // the app can already enumerate off the host, yet were hand-typed — so a typo produced a rule that
-    // silently never matched. These helpers shape the enumerated values into picker rows. They are
-    // deliberately ASSISTIVE, never restrictive: the current value always survives, and a value that is
-    // not in the live list is never dropped, because a rule is legitimately written ahead of the switch
-    // or VM it names (and the host may simply be offline when Settings is opened).
-
-    /// <summary>
-    /// The rows an editable picker offers for an identity field: <paramref name="current"/> first when it
-    /// is a real value the live list doesn't already contain (so a rule naming a not-yet-created switch,
-    /// or written while the host was unreachable, still shows its own value as a choice), then the live
-    /// values sorted case-insensitively. Blank/whitespace entries are dropped and duplicates removed
-    /// case-insensitively (first spelling wins).
-    ///
-    /// <para>The result is only ever a SUGGESTION list — the picker stays editable, so a value absent
-    /// from it can still be typed and persisted. An empty result (host offline, enumeration failed) is
-    /// therefore not a failure state: the control simply behaves as the plain text box it replaced.</para>
-    /// </summary>
-    public static List<string> SuggestionItems(string? current, IEnumerable<string>? live)
-    {
-        var seen   = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var result = new List<string>();
-
-        var liveClean = (live ?? [])
-            .Select(v => v?.Trim() ?? string.Empty)
-            .Where(v => v.Length > 0)
-            .OrderBy(v => v, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var cur = current?.Trim();
-        if (!string.IsNullOrEmpty(cur) && !liveClean.Contains(cur, StringComparer.OrdinalIgnoreCase))
-        {
-            result.Add(cur);
-            seen.Add(cur);
-        }
-
-        foreach (var v in liveClean)
-            if (seen.Add(v)) result.Add(v);
-
-        return result;
-    }
 
     /// <summary>
     /// Canonicalises a managed VM's NIC name (<see cref="Models.VmTarget.NicName"/>): trims, and maps
@@ -306,25 +232,6 @@ public static class SettingsOptions
 
     /// <summary>The Hyper-V default name of a VM's first synthetic network adapter.</summary>
     public const string DefaultNicName = "Network Adapter";
-
-    /// <summary>
-    /// Appends <paramref name="vmName"/> to a one-VM-per-line editor's text, returning the new text.
-    /// Backs the "Add from discovered VMs" affordance on the rule/fallback target-VM boxes: picking a VM
-    /// must ADD to what the user has, never replace it, and picking the same VM twice must not duplicate
-    /// it (the comparison is case-insensitive, matching <see cref="CleanVmList"/>'s dedupe). Returns the
-    /// text unchanged when the name is blank or already listed.
-    /// </summary>
-    public static string AppendVmLine(string? existingText, string? vmName)
-    {
-        var name = vmName?.Trim();
-        if (string.IsNullOrEmpty(name)) return existingText ?? string.Empty;
-
-        var lines = ParseVmLines(existingText);
-        if (lines.Contains(name, StringComparer.OrdinalIgnoreCase)) return existingText ?? string.Empty;
-
-        lines.Add(name);
-        return JoinVmLines(lines);
-    }
 
     // ── Shared ──────────────────────────────────────────────────────────────────
 

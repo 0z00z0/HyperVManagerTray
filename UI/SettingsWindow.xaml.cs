@@ -111,8 +111,7 @@ internal sealed partial class SettingsWindow : Window
     private readonly HashSet<NetworkRule> _draftRules = new(ReferenceEqualityComparer.Instance);
 
     private StackPanel? _rulesListPanel;
-    private ComboBox?   _fallbackSwitchCombo;
-    private TextBox?    _fallbackVmsBox;
+
 
     // ── Live host values for the identity pickers (issue #41) ────────────────────
     //
@@ -501,12 +500,11 @@ internal sealed partial class SettingsWindow : Window
     /// removed the harm it was originally justified by. Its comment used to cite the fan-out — "a config
     /// write raises ConfigReloaded, which re-evaluates the network and can move a VM's switch" — and that
     /// is now fixed at the cause: the reload is classified, and a NIC-name write that changes nothing
-    /// never reaches the NetworkMonitor. But the write itself was never the harmless half. Assigning
-    /// <c>ItemsSource</c> CLEARS the combo's Text and resets its selection before
-    /// <see cref="SuggestionCombo"/> restores it, so an unguarded SelectionChanged commits the empty
-    /// string that exists in between — persisting a blank NIC name over the user's real one, from nothing
-    /// but a background host enumeration finishing. That is a data-loss bug in its own right, and this
-    /// guard is what prevents it.</para>
+    /// never reaches the NetworkMonitor. But the write itself was never the harmless half. Refilling a
+    /// picker's items clears and resets its selection before <see cref="IdentityCombo"/> selects the
+    /// stored value again, so an unguarded SelectionChanged commits whatever is selected in between —
+    /// overwriting the stored adapter or switch from nothing but a background host enumeration
+    /// finishing. That is a data-loss bug in its own right, and this guard is what prevents it.</para>
     /// </summary>
     private void ApplyInventory(HostInventory.Snapshot snapshot) => WithUpdatingSuppressed(() =>
     {
@@ -518,71 +516,152 @@ internal sealed partial class SettingsWindow : Window
     });
 
     /// <summary>
-    /// An editable picker for an identity field: it SUGGESTS the live values but accepts anything typed.
+    /// A closed picker for an identity field: it lists the objects the host has, shown by name and stored
+    /// by identifier. Nothing can be typed — a name typed into a box is exactly what finds the wrong VM or
+    /// switch, or none — so an object that does not exist yet cannot be chosen until it does.
     ///
-    /// <para>Editable — not a closed dropdown — is the whole design decision of issue #41. A rule is
-    /// legitimately written before the switch or VM it names exists, and the host may be offline or
-    /// Hyper-V unreachable when Settings is opened; a closed list would make those cases uneditable. So
-    /// the live values are an affordance that removes the retyping (and with it the silent-typo failure
-    /// mode), never a constraint. With no items it is precisely the TextBox it replaced.</para>
+    /// <para>The stored value is always kept on the list, even when the host could not be read or no
+    /// longer has it: it then shows its last-seen name marked as not found, and stays selected until the
+    /// person picks something else. Opening Settings never changes what is stored.</para>
     ///
-    /// <para><paramref name="live"/> pulls this field's values out of a snapshot; it is invoked on each
-    /// enumeration, under the re-entrancy guard.</para>
+    /// <para><paramref name="live"/> pulls this field's objects out of a snapshot; it is invoked on each
+    /// enumeration, under the re-entrancy guard. <paramref name="emptyChoice"/>, when given, is an extra
+    /// first entry that stores no identifier at all.</para>
     /// </summary>
-    private ComboBox SuggestionCombo(
-        string? value,
+    private ComboBox IdentityCombo(
+        string? currentId,
+        string? currentName,
         string placeholder,
-        Func<HostInventory.Snapshot, IReadOnlyList<string>> live,
-        Action<string> commit)
+        Func<HostInventory.Snapshot, IReadOnlyList<(string Id, string Name)>> live,
+        Action<string?, string> commit,
+        string? emptyChoice = null)
     {
         var combo = new ComboBox
         {
-            IsEditable          = true,
-            Text                = value ?? "",
             PlaceholderText     = placeholder,
             MinWidth            = 220,
             HorizontalAlignment = HorizontalAlignment.Stretch,
         };
 
-        _consumerSink.Add(snapshot =>
+        // hostRead: whether the list came from a host that could be read. Only then may a stored value
+        // missing from it be called "not found".
+        void Fill(IReadOnlyList<(string Id, string Name)> objects, bool hostRead)
         {
-            // The user's current text is the authority, not the list: re-populating must never retype the
-            // field. Captured before and restored after, because assigning ItemsSource clears Text.
-            var current = combo.Text;
-            combo.ItemsSource = SettingsOptions.SuggestionItems(current, live(snapshot));
-            combo.Text        = current;
-        });
+            var labels  = HostIdentity.Labels(objects);
+            var entries = new List<IdentityChoice>();
+            if (emptyChoice is not null) entries.Add(new IdentityChoice(null, "", emptyChoice));
+            foreach (var (id, name) in objects)
+                entries.Add(new IdentityChoice(id, name, labels.GetValueOrDefault(id) ?? name));
+            if (!string.IsNullOrWhiteSpace(currentId) && !objects.Any(o => HostIdentity.Same(o.Id, currentId)))
+            {
+                var shown = string.IsNullOrWhiteSpace(currentName) ? HostIdentity.Short(currentId!) : currentName!;
+                entries.Add(new IdentityChoice(currentId, currentName ?? "", hostRead ? $"{shown} (not found on this host)" : shown));
+            }
 
-        // Both paths, deliberately. LostFocus alone would lose a pick made just before the window is
-        // closed or the app is alt-tabbed away; SelectionChanged alone would miss free text, which is the
-        // case that must keep working. Committing twice is harmless — every ConfigManager mutator
-        // no-ops when the value is unchanged, so the redundant call never reaches the file.
+            combo.Items.Clear();
+            foreach (var entry in entries)
+                combo.Items.Add(new ComboBoxItem { Content = entry.Label, Tag = entry });
+            combo.SelectedIndex = entries.FindIndex(e =>
+                string.IsNullOrWhiteSpace(currentId) ? e.Id is null : HostIdentity.Same(e.Id, currentId));
+        }
+
+        WithUpdatingSuppressed(() => Fill([], hostRead: false));
+        _consumerSink.Add(snapshot => Fill(live(snapshot), snapshot.HyperV.Readable));
+
         combo.SelectionChanged += (_, _) =>
         {
             if (_updating) return;
-            commit(combo.SelectedItem as string ?? combo.Text);
+            if (combo.SelectedItem is not ComboBoxItem { Tag: IdentityChoice picked }) return;
+            currentId   = picked.Id;
+            currentName = picked.Name;
+            commit(picked.Id, picked.Name);
         };
-        combo.LostFocus += (_, _) =>
-        {
-            if (_updating) return;
-            commit(combo.Text);
-        };
-
-        // NOT optional, and the reason this control can be trusted with free text at all: an editable
-        // ComboBox raises TextSubmitted when the user commits text that matches no item, and its DEFAULT
-        // handling is to REVERT the box to the last selected value. That default is exactly backwards
-        // here — text matching no item is the case this field must support (a switch or VM that doesn't
-        // exist yet, or a host that couldn't be enumerated), so silently discarding it would reintroduce
-        // the closed-picklist behaviour this issue exists to avoid. Handled = true suppresses the revert
-        // and keeps what the user typed.
-        combo.TextSubmitted += (_, args) =>
-        {
-            args.Handled = true;
-            if (_updating) return;
-            commit(combo.Text);
-        };
-
         return combo;
+    }
+
+    /// <summary>One entry of an <see cref="IdentityCombo"/>: the identifier stored, the name kept beside
+    /// it, and the label shown.</summary>
+    private sealed record IdentityChoice(string? Id, string Name, string Label);
+
+    /// <summary>
+    /// The managed VMs as a list of check boxes, one per identified VM, labelled by name and stored by VM
+    /// ID. What a rule's and the fallback's target VMs are picked from: a target must be a managed VM,
+    /// since only a managed VM has an adapter to reconnect.
+    /// </summary>
+    private StackPanel VmChecklist(IEnumerable<string> selectedIds, Action<List<string>> commit)
+    {
+        var selected = new HashSet<string>(selectedIds.Select(HostIdentity.Bare), StringComparer.OrdinalIgnoreCase);
+        var vms      = _config.Current.IdentifiedVms;
+        var labels   = HostIdentity.Labels(vms.Select(v => (v.Id, v.Name)));
+        var panel    = new StackPanel { Spacing = 2, MinWidth = 220 };
+
+        if (vms.Count == 0)
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = "No VMs are managed yet — add one under Managed VMs first.",
+                TextWrapping = TextWrapping.Wrap, Opacity = 0.75, FontSize = 12,
+            });
+            return panel;
+        }
+
+        foreach (var vm in vms)
+        {
+            var box = new CheckBox
+            {
+                Content   = labels.GetValueOrDefault(vm.Id) ?? vm.Shown,
+                IsChecked = selected.Contains(vm.Id),
+                Tag       = vm.Id,
+            };
+            box.Click += (_, _) =>
+            {
+                if (_updating) return;
+                commit([.. panel.Children.OfType<CheckBox>().Where(c => c.IsChecked == true).Select(c => (string)c.Tag!)]);
+            };
+            panel.Children.Add(box);
+        }
+        return panel;
+    }
+
+    /// <summary>
+    /// The names an older settings document holds that could not be turned into identifiers, listed where
+    /// the person edits them — the "needs attention" the migration reports once in the log. Null when
+    /// there are none. The forget button drops them all, after asking.
+    /// </summary>
+    private UIElement? BuildAttentionCard()
+    {
+        var outstanding = ConfigIdentityMigration.Outstanding(_config.Current);
+        if (outstanding.Count == 0) return null;
+
+        var content = new StackPanel { Spacing = 6 };
+        content.Children.Add(new TextBlock
+        {
+            Text = "Needs attention: these settings name something that is not identified on this host, "
+                 + "so nothing acts on them. Pick the right object below, or forget the names.",
+            TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.SemiBold,
+        });
+        foreach (var item in outstanding)
+            content.Children.Add(new TextBlock
+            {
+                Text = $"• {item.Where}: {item.What} '{item.Name}'",
+                TextWrapping = TextWrapping.Wrap, FontSize = 12,
+            });
+
+        var forget = new Button { Content = "Forget these names" };
+        forget.Click += (_, _) =>
+        {
+            if (!NativeMethods.Confirm(
+                    "Forget the names that could not be identified?\n\nThey are removed from the settings. "
+                    + "Nothing on the host is changed.", AppInfo.Name)) return;
+            Task.Run(() =>
+            {
+                try { _config.ForgetUnresolvedNames(); }
+                catch (Exception ex) { WarnOnUi($"Could not forget the names:\n\n{ex.Message}"); }
+                _ui.TryEnqueue(() => { if (!_closed) RefreshValuesFromConfig(); });
+            });
+        };
+        content.Children.Add(forget);
+        return Card(content);
     }
 
     /// <summary>
@@ -745,6 +824,8 @@ internal sealed partial class SettingsWindow : Window
             "what to do with the VM when the bridged network is lost (the switch falls back to the " +
             "default). The action is cancelled if the bridge returns within the delay."));
 
+        if (BuildAttentionCard() is { } attention) panel.Children.Add(attention);
+
         var vms = _config.Current.VirtualMachines;
         if (vms.Count == 0)
         {
@@ -768,43 +849,33 @@ internal sealed partial class SettingsWindow : Window
     }
 
     /// <summary>
-    /// "Start managing a VM" — the half of issue #47 that made Settings genuinely complete. Creating a
-    /// managed VM was previously reachable ONLY from the tray, which is what broke Espen's standing rule
-    /// that Settings is the superset (issue #34); nothing else in <see cref="AppConfig"/> was tray-only.
+    /// "Start managing a VM" — the half of issue #47 that made Settings genuinely complete. A closed list
+    /// of the host's VMs this app does not manage yet, read from the ONE cold <see cref="HostInventory"/>
+    /// read this window already makes. A VM is managed by its VM ID, so one that does not exist yet cannot
+    /// be added until it does; two VMs sharing a name are told apart by the start of their IDs.
     ///
-    /// <para>An editable picker, following the same reasoning as every other identity field (issue #41):
-    /// it SUGGESTS the host's unmanaged VMs — reusing the ONE cold <see cref="HostInventory"/> read this
-    /// window already makes, rather than adding a third enumeration path — but accepts free text, because
-    /// a config may legitimately name a VM that has not been created yet, and the host may be unreachable
-    /// when Settings is opened. With no suggestions it is exactly the text box it would otherwise be.</para>
-    ///
-    /// <para>Deliberately NOT a <see cref="SuggestionCombo"/>: that control commits on
-    /// SelectionChanged/LostFocus, which is right for a field that edits an existing VM and quite wrong
-    /// here — merely tabbing past this box must not add a VM to config. The Add button is the only commit.</para>
+    /// <para>Deliberately NOT an <see cref="IdentityCombo"/>: that control commits on SelectionChanged,
+    /// which is right for a field that edits an existing VM and quite wrong here — merely picking in this
+    /// list must not add a VM to config. The Add button is the only commit.</para>
     /// </summary>
     private UIElement BuildAddVmCard()
     {
         var combo = new ComboBox
         {
-            IsEditable          = true,
-            PlaceholderText     = "VM name",
+            PlaceholderText     = "VM on this host",
             MinWidth            = 220,
             HorizontalAlignment = HorizontalAlignment.Stretch,
         };
-
-        // An editable ComboBox REVERTS text that matches no item unless TextSubmitted is handled — the
-        // same trap SuggestionCombo documents at length. A not-yet-created VM is exactly the case that
-        // must keep working, so suppress the revert.
-        combo.TextSubmitted += (_, args) => args.Handled = true;
-
-        var addBtn = new Button { Content = "Start managing" };
+        var addBtn = new Button { Content = "Start managing", IsEnabled = false };
 
         _consumerSink.Add(snapshot =>
         {
-            var current = combo.Text;   // assigning ItemsSource clears Text — restore what the user typed
-            combo.ItemsSource = VmConfigUi.UnmanagedVms(
-                snapshot.VmNames, _config.Current.VirtualMachines.Select(v => v.Name));
-            combo.Text = current;
+            var unmanaged = VmConfigUi.UnmanagedVms(snapshot.HyperV.Vms, _config.Current.VirtualMachines);
+            var labels    = HostIdentity.Labels(unmanaged.Select(v => (v.Id, v.Name)));
+            combo.Items.Clear();
+            foreach (var vm in unmanaged)
+                combo.Items.Add(new ComboBoxItem { Content = labels.GetValueOrDefault(vm.Id) ?? vm.Name, Tag = vm });
+            addBtn.IsEnabled = unmanaged.Count > 0;
         });
 
         addBtn.Click += (_, _) => _ = AddVmAsync();
@@ -815,26 +886,14 @@ internal sealed partial class SettingsWindow : Window
         {
             try
             {
-                // combo.Text, NOT `SelectedItem as string ?? combo.Text`. On an editable ComboBox picking
-                // an item sets Text too, so Text is the authority for both paths — whereas SelectedItem
-                // holds the LAST pick and survives the user clearing the box and typing something else
-                // (TextSubmitted is handled above precisely to keep that typed text). Reading SelectedItem
-                // first meant "pick vDev, clear the box, type vBuild, click Add" added vDev — the
-                // not-yet-created VM being the very case this free-text combo exists for. SuggestionCombo
-                // gets this right by only reading SelectedItem inside SelectionChanged, where it is the
-                // thing that just changed; this call site has no such excuse.
-                var name = combo.Text?.Trim();
-                if (string.IsNullOrEmpty(name)) return;
+                if (combo.SelectedItem is not ComboBoxItem { Tag: HostVm vm }) return;
 
-                // The VM's own adapter, when the host could be read and reports one. VmConfigUi.SeedNicName
-                // is the SAME pick the tray's "Manage VMs" list makes (via VmService.ReadDiscovered) — the
-                // two surfaces previously disagreed about which of several adapters to seed, and the loser
-                // wrote a NIC name that matches nothing, so the VM silently never reconnected. With no
-                // host read it yields the Hyper-V default, which is what AddVmToConfig would have applied
-                // to a blank anyway; the NIC row on the card that appears is there to correct it.
-                var nic = VmConfigUi.SeedNicName(_inventory?.NicNamesFor(name));
+                // The VM's own adapter, as VmConfigUi.SeedNic picks it — the SAME pick the tray's
+                // "Manage VMs" list makes, so the two surfaces cannot seed different adapters.
+                var nic = VmConfigUi.SeedNic(_inventory?.NicsFor(vm.Id));
+                var discovered = new DiscoveredVm(vm.Id, vm.Name, nic?.Id, nic?.Name ?? SettingsOptions.DefaultNicName);
 
-                if (!await _managedVms.AddAsync(name, nic)) return;
+                if (!await _managedVms.AddAsync(discovered)) return;
                 if (_closed) return;
                 // The VM list is built from _config.Current, which AddAsync has just confirmed — rebuild so
                 // the new card appears. Same path the Reload button uses; every populate is guarded, so the
@@ -854,8 +913,8 @@ internal sealed partial class SettingsWindow : Window
 
         return SettingRow(
             "Start managing a VM",
-            "Offers the VMs on this host that aren't managed yet; any name can still be typed (a VM that "
-            + "does not exist yet is allowed). The VM is not started or changed — only this app's list.",
+            "Offers the VMs on this host that aren't managed yet. The VM is not started or changed — "
+            + "only this app's list.",
             stack);
     }
 
@@ -863,14 +922,19 @@ internal sealed partial class SettingsWindow : Window
     /// One managed VM: its network adapter (issue #41) and its on-bridge-lost action + delay.
     ///
     /// <para>A Card holding the VM's name over two <see cref="SettingRowPanel"/> rows, rather than the
-    /// single row this was: the NIC name is a second, unrelated setting and deserves its own labelled row
+    /// single row this was: the adapter is a second, unrelated setting and deserves its own labelled row
     /// with its own description. Reusing SettingRowPanel (not a Grid) keeps issue #31's guarantee — each
     /// row drops its control beneath the text when the window is too narrow for both — which a Grid would
     /// have silently thrown away, and which issue #44's wider font makes matter more, not less.</para>
+    ///
+    /// <para>An entry an older settings document left unidentified has no VM ID: it is shown with that
+    /// said, and offers only "Stop managing", since nothing else about it can act on anything.</para>
     /// </summary>
     private UIElement BuildVmCard(VmTarget vm)
     {
-        var vmName = vm.Name;
+        var vmRef      = vm.Ref;
+        var vmName     = vmRef.Shown;
+        var identified = !string.IsNullOrWhiteSpace(vm.Id);
 
         var content = new StackPanel { Spacing = 10 };
 
@@ -879,7 +943,7 @@ internal sealed partial class SettingsWindow : Window
         // machine", and this deletes nothing — ManagedVmActions' single confirmation says so in full.
         var title = new TextBlock
         {
-            Text              = vmName,
+            Text              = identified ? vmName : $"{vm.Name} (not identified on this host)",
             FontSize          = 14,
             FontWeight        = FontWeights.SemiBold,
             TextWrapping      = TextWrapping.Wrap,
@@ -892,7 +956,7 @@ internal sealed partial class SettingsWindow : Window
         {
             try
             {
-                if (!await _managedVms.RemoveAsync(vmName)) return;   // cancelled, or not confirmed — say nothing more
+                if (!await _managedVms.RemoveAsync(vmRef)) return;   // cancelled, or not confirmed — say nothing more
                 if (_closed) return;
                 RefreshValuesFromConfig();   // this card's VM is gone from _config.Current — re-render without it
             }
@@ -912,23 +976,26 @@ internal sealed partial class SettingsWindow : Window
         header.Children.Add(stopBtn);
         content.Children.Add(header);
 
+        if (!identified) return Card(content);
+
         // ── Network adapter (issue #41) ──
-        // Previously reachable ONLY by hand-editing config.json — a VM with a renamed or second synthetic
-        // adapter silently never reconnected, and the file was the only fix. The suggestions are the VM's
-        // OWN adapters as Hyper-V reports them; free text stays valid because the VM may not exist yet.
-        var nicCombo = SuggestionCombo(
+        // The VM's OWN adapters as Hyper-V reports them, by adapter ID. "Its only adapter" stores no ID
+        // and is what a VM with a single adapter needs; a VM with several must have one picked.
+        var nicCombo = IdentityCombo(
+            vm.NicId,
             vm.NicName,
-            SettingsOptions.DefaultNicName,
-            snapshot => snapshot.NicNamesFor(vmName),
-            nic => Task.Run(() =>
+            "Network adapter",
+            snapshot => [.. snapshot.NicsFor(vm.Id).Select(n => (n.Id, n.Name))],
+            (nicId, nicName) => Task.Run(() =>
             {
-                try { _config.SetVmNicName(vmName, nic); }
+                try { _config.SetVmNic(vm.Id, nicId, nicName); }
                 catch (Exception ex) { WarnOnUi($"Could not save the network adapter for {vmName}:\n\n{ex.Message}"); }
-            }));
+            }),
+            emptyChoice: "Its only adapter");
         content.Children.Add(Row(
             "Network adapter",
-            $"The VM adapter this app reconnects. Offers {vmName}'s own adapters when the host can be "
-            + $"read; any name can still be typed. Blank restores the default (\"{SettingsOptions.DefaultNicName}\").",
+            $"The adapter of {vmName} this app reconnects. \"Its only adapter\" suits a VM with one; a VM "
+            + "with several needs the right one picked.",
             nicCombo));
 
         // ── On bridge lost ──
@@ -952,7 +1019,7 @@ internal sealed partial class SettingsWindow : Window
             delayCombo.IsEnabled = act is not null;
             Task.Run(() =>
             {
-                try { _config.SetVmBridgeLostAction(vmName, act, delay); }
+                try { _config.SetVmBridgeLostAction(vm.Id, act, delay); }
                 catch (Exception ex) { WarnOnUi($"Could not save the setting for {vmName}:\n\n{ex.Message}"); }
             });
         }
@@ -994,6 +1061,8 @@ internal sealed partial class SettingsWindow : Window
             "Rules map a recognised host network (by adapter MAC and/or IP subnet) to the Hyper-V " +
             "virtual switch the listed VMs should use. Rules are evaluated by ascending priority; the " +
             "first match wins. When none match, the fallback switch is used."));
+
+        if (BuildAttentionCard() is { } attention) panel.Children.Add(attention);
 
         // Snapshot config into the working list the editor mutates.
         _workingRules.Clear();
@@ -1049,31 +1118,22 @@ internal sealed partial class SettingsWindow : Window
         });
 
         var fb = _config.Current.Fallback;
-        _fallbackSwitchCombo = SuggestionCombo(
-            fb.VirtualSwitch,
-            "Hyper-V switch name",
-            snapshot => snapshot.SwitchNames,
-            _ => CommitFallback());
+        var fallbackSwitchCombo = IdentityCombo(
+            fb.SwitchId,
+            fb.SwitchName,
+            "Virtual switch",
+            snapshot => [.. snapshot.HyperV.Switches.Select(s => (s.Id, s.Name))],
+            (id, name) => CommitFallback(id is null ? null : new SwitchRef(id, name), null));
         panel.Children.Add(SettingRow(
             "Fallback switch",
             "Used when no rule matches (typically a NAT switch such as the Hyper-V \"Default Switch\"). "
-            + "Offers the host's switches; any name can still be typed.",
-            _fallbackSwitchCombo));
+            + "Offers the host's switches.",
+            fallbackSwitchCombo));
 
-        // One VM per line (fix 8): unambiguous even when a VM name contains a comma.
-        _fallbackVmsBox = new TextBox
-        {
-            Text         = SettingsOptions.JoinVmLines(fb.TargetVms),
-            MinWidth     = 220,
-            AcceptsReturn = true,
-            TextWrapping = TextWrapping.Wrap,
-        };
-        _fallbackVmsBox.LostFocus += (_, _) => CommitFallback();
         panel.Children.Add(SettingRow(
             "Fallback target VMs",
-            "VM names reconnected to the fallback switch — one per line. Add one from the host's VMs, "
-            + "or type a name (a VM that does not exist yet is allowed).",
-            WithVmPicker(_fallbackVmsBox, CommitFallback)));
+            "The managed VMs reconnected to the fallback switch.",
+            VmChecklist(fb.TargetVmIds, ids => CommitFallback(null, ids))));
 
         panel.Children.Add(new TextBlock
         {
@@ -1101,39 +1161,40 @@ internal sealed partial class SettingsWindow : Window
 
         // Both lists come from config (the managed VMs, and the switches any rule or the fallback names),
         // NOT from the host — an override only makes sense for a VM this app manages onto a switch it
-        // knows about, which is exactly the tray submenu's pairing. VmConfigUi.OverrideSwitchNames is
+        // knows about, which is exactly the tray submenu's pairing. VmConfigUi.OverrideSwitches is
         // shared with the tray so the two surfaces can't offer different sets.
-        var vmNames  = _config.Current.VirtualMachines.Select(v => v.Name).ToList();
-        var switches = VmConfigUi.OverrideSwitchNames(
-            _config.Current.Fallback.VirtualSwitch,
-            _config.Current.Rules.Select(r => r.VirtualSwitch));
+        var vms      = _config.Current.IdentifiedVms;
+        var switches = VmConfigUi.OverrideSwitches(_config.Current.Fallback, _config.Current.Rules);
+        var vmLabels = HostIdentity.Labels(vms.Select(v => (v.Id, v.Name)));
+        var swLabels = HostIdentity.Labels(switches.Select(s => (s.Id, s.Name)));
 
         WithUpdatingSuppressed(() =>
         {
-            foreach (var n in vmNames)  vmCombo.Items.Add(n);
-            foreach (var s in switches) switchCombo.Items.Add(s);
-            if (vmNames.Count  > 0) vmCombo.SelectedIndex     = 0;
+            foreach (var v in vms)      vmCombo.Items.Add(new ComboBoxItem { Content = vmLabels.GetValueOrDefault(v.Id) ?? v.Shown, Tag = v });
+            foreach (var s in switches) switchCombo.Items.Add(new ComboBoxItem { Content = swLabels.GetValueOrDefault(s.Id) ?? s.Shown, Tag = s });
+            if (vms.Count      > 0) vmCombo.SelectedIndex     = 0;
             if (switches.Count > 0) switchCombo.SelectedIndex = 0;
         });
 
         var applyBtn = new Button
         {
             Content   = "Apply override",
-            IsEnabled = vmNames.Count > 0 && switches.Count > 0,
+            IsEnabled = vms.Count > 0 && switches.Count > 0,
         };
         applyBtn.Click += (_, _) => _ = ApplyOverrideAsync();
 
         async Task ApplyOverrideAsync()
         {
-            // SelectedItem is right HERE, unlike the add-VM box: both of these combos are closed
-            // picklists (IsEditable is false), so there is no typed text for it to disagree with.
-            if (vmCombo.SelectedItem is not string vm || switchCombo.SelectedItem is not string sw) return;
-            UiActivityLog.Logger.LogInformation("Settings: Override switch '{Vm}' → '{Switch}'", vm, sw);
+            // Both combos are closed picklists carrying the VM and the switch themselves, by ID.
+            if (vmCombo.SelectedItem is not ComboBoxItem { Tag: VmRef vm }
+                || switchCombo.SelectedItem is not ComboBoxItem { Tag: SwitchRef sw }) return;
+            UiActivityLog.Logger.LogInformation("Settings: Override switch '{Vm}' ({VmId}) → '{Switch}' ({SwitchId})",
+                vm.Shown, vm.Id, sw.Shown, sw.Id);
             try { await _network.OverrideSwitchAsync(vm, sw); }
             catch (Exception ex)
             {
                 AppInfo.AppendCrashLogLine("SettingsWindow", $"ApplyOverride: {ex}");
-                if (!_closed) NativeMethods.Warn($"Could not override the switch for {vm}:\n\n{ex.Message}", AppInfo.Name);
+                if (!_closed) NativeMethods.Warn($"Could not override the switch for {vm.Shown}:\n\n{ex.Message}", AppInfo.Name);
             }
         }
 
@@ -1149,37 +1210,11 @@ internal sealed partial class SettingsWindow : Window
 
         return SettingRow(
             "Override VM switch",
-            vmNames.Count == 0
+            vms.Count == 0
                 ? "No VMs are managed yet — add one under Managed VMs first."
                 : "Force a managed VM onto a specific virtual switch now. This is temporary: the next "
                   + "network change re-evaluates the rules and reverts it.",
             controls);
-    }
-
-    /// <summary>
-    /// Pairs a one-VM-per-line box with an "Add VM" picker fed by the host's discovered VMs (issue #41).
-    ///
-    /// <para>The box is kept — it round-trips a name containing a comma safely (fix 8) and is what makes
-    /// a not-yet-created VM expressible. The picker only APPENDS a line
-    /// (<see cref="SettingsOptions.AppendVmLine"/>), so it can neither replace what the user typed nor
-    /// duplicate a VM already listed.</para>
-    /// </summary>
-    private FrameworkElement WithVmPicker(TextBox vmsBox, Action commit)
-    {
-        var picker = PickerButton(
-            "Add VM",
-            "No VMs found on this host",
-            snapshot => [.. snapshot.VmNames.Select(v => (v, v))],
-            vmName =>
-            {
-                vmsBox.Text = SettingsOptions.AppendVmLine(vmsBox.Text, vmName);
-                commit();
-            });
-
-        var stack = new StackPanel { Spacing = 6, MinWidth = 220 };
-        stack.Children.Add(vmsBox);
-        stack.Children.Add(picker);
-        return stack;
     }
 
     /// <summary>
@@ -1233,7 +1268,7 @@ internal sealed partial class SettingsWindow : Window
     /// </summary>
     private void AddRule()
     {
-        var draft = new NetworkRule { Name = "New rule", Priority = 100, VirtualSwitch = "" };
+        var draft = new NetworkRule { Id = ConfigIdentityMigration.NewRuleId(), Name = "New rule", Priority = 100 };
         _workingRules.Add(draft);
         _draftRules.Add(draft);
         RebuildRuleCards();
@@ -1337,22 +1372,27 @@ internal sealed partial class SettingsWindow : Window
         TextField("IP subnet (CIDR)", rule.Conditions.IpCidr, "10.0.0.0/23 (optional)",
             v => rule.Conditions.IpCidr = SettingsOptions.BlankToNull(v), SettingsOptions.IsValidCidr);
 
-        // The switch a typo here silently costs everything: the rule matches the network, then binds
-        // nothing, and says so only in a log line (issue #17's failure). Suggest the host's real switches.
-        Field("Virtual switch", SuggestionCombo(
-            rule.VirtualSwitch,
-            "Hyper-V switch name",
-            snapshot => snapshot.SwitchNames,
-            v => { rule.VirtualSwitch = v.Trim(); CommitRules(); }));
-
-        // One VM per line (not comma-separated) so a VM whose name contains a comma round-trips intact (fix 8).
-        TextField("Target VMs", SettingsOptions.JoinVmLines(rule.TargetVms), "One VM name per line",
-            v => rule.TargetVms = SettingsOptions.ParseVmLines(v), multiline: true,
-            wrap: box => WithVmPicker(box, () =>
+        // The switch a typo here silently cost everything: the rule matched the network, then bound
+        // nothing (issue #17's failure). Picked from the host's switches and stored by switch ID, so it
+        // can neither be mistyped nor mistaken for another switch of the same name.
+        Field("Virtual switch", IdentityCombo(
+            rule.SwitchId,
+            rule.SwitchName,
+            "Virtual switch",
+            snapshot => [.. snapshot.HyperV.Switches.Select(s => (s.Id, s.Name))],
+            (id, name) =>
             {
-                rule.TargetVms = SettingsOptions.ParseVmLines(box.Text);
+                rule.SwitchId            = id ?? "";
+                rule.SwitchName          = name;
+                rule.LegacyVirtualSwitch = null;   // picked: the unidentified name no longer applies
                 CommitRules();
             }));
+
+        Field("Target VMs", VmChecklist(rule.TargetVmIds, ids =>
+        {
+            rule.TargetVmIds = ids;
+            CommitRules();
+        }));
 
         // Auto-start toggle.
         var autoLabel = new TextBlock { Text = "Auto-start VMs", VerticalAlignment = VerticalAlignment.Center, FontSize = 12, Opacity = 0.8 };
@@ -1370,15 +1410,14 @@ internal sealed partial class SettingsWindow : Window
         var computeCombo = new ComboBox { MinWidth = 150 };
         var stopDelay    = new ComboBox { MinWidth = 130 };
 
-        bool AnyStop() => rule.ServiceAction(HyperVServiceKind.VirtualMachineManagement) == RuleServiceAction.Stop
-                       || rule.ServiceAction(HyperVServiceKind.HostCompute) == RuleServiceAction.Stop;
+        bool AnyStop() => rule.ServiceAction(HyperVServiceKind.VirtualMachineManagement) == RuleServiceAction.Stop;
 
         WithUpdatingSuppressed(() =>
         {
             PopulateLabelCombo(vmmsCombo, RuleServiceActionOptions,
-                RuleServiceActionIndex(rule.ServiceAction(HyperVServiceKind.VirtualMachineManagement)));
-            PopulateLabelCombo(computeCombo, RuleServiceActionOptions,
-                RuleServiceActionIndex(rule.ServiceAction(HyperVServiceKind.HostCompute)));
+                RuleServiceActionIndex(RuleServiceActionOptions, rule.ServiceAction(HyperVServiceKind.VirtualMachineManagement)));
+            PopulateLabelCombo(computeCombo, HostComputeActionOptions,
+                RuleServiceActionIndex(HostComputeActionOptions, rule.ServiceAction(HyperVServiceKind.HostCompute)));
             LoadDelayCombo(stopDelay, SettingsOptions.NormalizeDelaySeconds(rule.ServiceStopDelaySeconds));
             stopDelay.IsEnabled = AnyStop();
         });
@@ -1386,8 +1425,8 @@ internal sealed partial class SettingsWindow : Window
         void CommitServices()
         {
             if (_updating) return;
-            rule.VmManagementService     = ServiceActionAt(vmmsCombo.SelectedIndex);
-            rule.HostComputeService      = ServiceActionAt(computeCombo.SelectedIndex);
+            rule.VmManagementService     = ServiceActionAt(RuleServiceActionOptions, vmmsCombo.SelectedIndex);
+            rule.HostComputeService      = ServiceActionAt(HostComputeActionOptions, computeCombo.SelectedIndex);
             rule.ServiceStopDelaySeconds = stopDelay.SelectedItem is ComboBoxItem { Tag: int d } ? d : 30;
             stopDelay.IsEnabled = AnyStop();
             CommitRules();
@@ -1404,8 +1443,9 @@ internal sealed partial class SettingsWindow : Window
         var servicesNote = new TextBlock
         {
             Text = "When this rule becomes active. A start runs before any VM starts. A stop saves every "
-                 + "running VM on the host first, and is skipped while Auto-start VMs is on. Stopping the "
-                 + "Host Compute Service also stops WSL 2, Windows Sandbox and Docker.",
+                 + "running VM on the host first, and is skipped while Auto-start VMs is on. The Host "
+                 + "Compute Service is stopped only from the dashboard, because stopping it also stops "
+                 + "WSL 2, Windows Sandbox and Docker.",
             FontSize     = 12,
             Opacity      = 0.7,
             TextWrapping = TextWrapping.Wrap,
@@ -1486,11 +1526,12 @@ internal sealed partial class SettingsWindow : Window
         return stack;
     }
 
-    private void CommitFallback()
+    /// <summary>Saves the fallback: a new switch when <paramref name="sw"/> is given, new target VMs when
+    /// <paramref name="vmIds"/> is; whatever is not given stays as stored.</summary>
+    private void CommitFallback(SwitchRef? sw, IReadOnlyList<string>? vmIds)
     {
-        if (_updating || _fallbackSwitchCombo is null || _fallbackVmsBox is null) return;
-        var sw   = _fallbackSwitchCombo.Text;
-        var vms  = SettingsOptions.ParseVmLines(_fallbackVmsBox.Text);
+        if (_updating) return;
+        var vms = vmIds ?? _config.Current.Fallback.TargetVmIds;
         Task.Run(() =>
         {
             try { _config.SetFallback(sw, vms); }
@@ -1936,15 +1977,25 @@ internal sealed partial class SettingsWindow : Window
         ("Stop",        RuleServiceAction.Stop),
     ];
 
-    private static int RuleServiceActionIndex(RuleServiceAction action) => action switch
-    {
-        RuleServiceAction.Start => 1,
-        RuleServiceAction.Stop  => 2,
-        _                       => 0,
-    };
+    /// <summary>The Host Compute Service offers no stop: it is stopped only from the dashboard, where the
+    /// person stopping it is told it takes WSL 2, Windows Sandbox and Docker with it.</summary>
+    private static readonly IReadOnlyList<(string Label, RuleServiceAction? Value)> HostComputeActionOptions =
+    [
+        ("Leave alone", null),
+        ("Start",       RuleServiceAction.Start),
+    ];
 
-    private static RuleServiceAction? ServiceActionAt(int index) =>
-        index >= 0 && index < RuleServiceActionOptions.Count ? RuleServiceActionOptions[index].Value : null;
+    private static int RuleServiceActionIndex(IReadOnlyList<(string Label, RuleServiceAction? Value)> options,
+                                              RuleServiceAction action)
+    {
+        for (int i = 0; i < options.Count; i++)
+            if (options[i].Value == action) return i;
+        return 0;
+    }
+
+    private static RuleServiceAction? ServiceActionAt(IReadOnlyList<(string Label, RuleServiceAction? Value)> options,
+                                                      int index) =>
+        index >= 0 && index < options.Count ? options[index].Value : null;
 
     private static StackPanel Section(string title)
     {

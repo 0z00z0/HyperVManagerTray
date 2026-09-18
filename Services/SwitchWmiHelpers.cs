@@ -156,25 +156,26 @@ public static class SwitchWmiHelpers
     // ── External-adapter (Msvm_ExternalEthernetPort) matching ────────────────────
 
     /// <summary>
-    /// True when an <c>Msvm_ExternalEthernetPort</c> endpoint denotes the wanted physical adapter, using the
-    /// same precedence the binding path relies on: a hardware-MAC (<c>PermanentAddress</c>) match is
-    /// authoritative; adapter description (<c>ElementName</c>) is the fallback for adapters whose WMI MAC is
-    /// absent/renormalised. MACs are compared after stripping separators and case (via
-    /// <see cref="AdapterMatcher.NormalizeMac"/>); a MAC that isn't a full 12 hex digits can't match, so
-    /// only the description is considered then.
+    /// True when an <c>Msvm_ExternalEthernetPort</c> endpoint denotes the wanted physical adapter. A
+    /// hardware-MAC (<c>PermanentAddress</c>) match is authoritative; the fallback, for an adapter whose WMI
+    /// MAC is absent or renormalised, is the adapter's interface GUID inside the port's <c>DeviceID</c>. Never
+    /// the description: that is a display name, and this very app lets the person rename it. MACs are
+    /// compared after stripping separators and case (via <see cref="AdapterMatcher.NormalizeMac"/>).
     /// </summary>
     /// <param name="candidateMac">The port's <c>PermanentAddress</c> (any separator form; may be null).</param>
-    /// <param name="candidateDesc">The port's <c>ElementName</c> (may be null).</param>
+    /// <param name="candidateDeviceId">The port's <c>DeviceID</c> (may be null).</param>
     /// <param name="targetMac">The wanted adapter's MAC, already normalised (12 hex digits).</param>
-    /// <param name="targetDesc">The wanted adapter's description (may be null ⇒ no description fallback).</param>
+    /// <param name="targetInterfaceGuid">The wanted adapter's interface GUID, braces or not (may be null ⇒
+    /// MAC only).</param>
     public static bool ExternalPortMatchesAdapter(
-        string? candidateMac, string? candidateDesc, string? targetMac, string? targetDesc)
+        string? candidateMac, string? candidateDeviceId, string? targetMac, string? targetInterfaceGuid)
     {
         if (!string.IsNullOrEmpty(targetMac) &&
             AdapterMatcher.NormalizeMac(candidateMac ?? "") == AdapterMatcher.NormalizeMac(targetMac))
             return true;
-        return !string.IsNullOrEmpty(targetDesc) &&
-               string.Equals(candidateDesc, targetDesc, StringComparison.OrdinalIgnoreCase);
+        var guid = (targetInterfaceGuid ?? "").Trim().Trim('{', '}');
+        return guid.Length > 0 && !string.IsNullOrEmpty(candidateDeviceId) &&
+               candidateDeviceId.Contains(guid, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool Eq(string? a, string b) =>

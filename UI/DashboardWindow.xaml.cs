@@ -234,7 +234,7 @@ public sealed partial class DashboardWindow : Window
         // content it is supposed to size to (issue #59). ResizeAndPlace re-reads these subtitles and
         // re-applies the tooltips, so the truncation guarantee follows the new width too.
         foreach (var card in _cards.Values)
-            card.Subtitle.Text = Subtitle(ShownStatus(_latest, card.VmName));
+            card.Subtitle.Text = Subtitle(ShownStatus(_latest, card.VmId));
 
         if (AppWindow.IsVisible) ResizeAndPlace();
     }
@@ -548,30 +548,30 @@ public sealed partial class DashboardWindow : Window
     }
 
     /// <summary>The VM card's Start while a service is down: the services first, then the VM.</summary>
-    private async Task StartViaServicesAsync(string vmName)
+    private async Task StartViaServicesAsync(VmRef vm)
     {
-        if (!_startingViaService.Add(vmName)) return;
-        RefreshCardOverlay(vmName);
+        if (!_startingViaService.Add(vm.Id)) return;
+        RefreshCardOverlay(vm.Id);
         try
         {
-            await _serviceActions.StartServicesThenVmAsync(vmName, VmOpOrigin.Dashboard);
+            await _serviceActions.StartServicesThenVmAsync(vm, VmOpOrigin.Dashboard);
         }
         catch (Exception ex)
         {
-            UiActivityLog.Logger.LogWarning(ex, "Dashboard: starting the services for '{Vm}' failed", vmName);
-            _notify($"{AppInfo.Name} — {vmName}", ex.Message, true);
+            UiActivityLog.Logger.LogWarning(ex, "Dashboard: starting the services for '{Vm}' ({Id}) failed", vm.Shown, vm.Id);
+            _notify($"{AppInfo.Name} — {vm.Shown}", ex.Message, true);
         }
         finally
         {
-            _startingViaService.Remove(vmName);
-            RefreshCardOverlay(vmName);
+            _startingViaService.Remove(vm.Id);
+            RefreshCardOverlay(vm.Id);
         }
     }
 
-    private void RefreshCardOverlay(string vmName)
+    private void RefreshCardOverlay(string vmId)
     {
-        if (!_cards.TryGetValue(vmName, out var card)) return;
-        ApplyOverlay(card, ShownStatus(_latest, vmName));
+        if (!_cards.TryGetValue(vmId, out var card)) return;
+        ApplyOverlay(card, ShownStatus(_latest, vmId));
         ApplyRowTooltips(_contentWidth);
     }
 
@@ -624,24 +624,24 @@ public sealed partial class DashboardWindow : Window
         {
             if (progress.Phase == VmOpPhase.Succeeded)
             {
-                RemoveOp(progress.VmName);
+                RemoveOp(progress.VmId);
                 // Show the achieved state immediately: the real EnabledState can lag several seconds
                 // behind a completed op (blank/"Unknown", or still the pre-op state, in the meantime).
                 // Hold the achieved state (future HoldUntil) so EffectiveStateName won't let a stale
                 // live read overwrite it before the WMI read catches up.
                 if (SettledState(progress.Kind) is { } settled)
-                    _effectiveState[progress.VmName] = (settled, DateTime.UtcNow.AddSeconds(6));
+                    _effectiveState[progress.VmId] = (settled, DateTime.UtcNow.AddSeconds(6));
             }
             else
             {
-                _op[progress.VmName]      = progress;
-                _opSince[progress.VmName] = DateTime.UtcNow;   // (re)start the overlay's age clock
+                _op[progress.VmId]      = progress;
+                _opSince[progress.VmId] = DateTime.UtcNow;   // (re)start the overlay's age clock
             }
 
             // Update just the affected card in place — no need to wait for the next status tick.
-            if (_cards.TryGetValue(progress.VmName, out var card))
+            if (_cards.TryGetValue(progress.VmId, out var card))
             {
-                ApplyOverlay(card, ShownStatus(_latest, progress.VmName));
+                ApplyOverlay(card, ShownStatus(_latest, progress.VmId));
                 // The overlay rewrites the state label ("Requesting start…" is far wider than
                 // "Running"), which shrinks the VM name's slot beside it — so what the header
                 // truncates changes here too, and the tooltips must follow (issue #57).
@@ -659,7 +659,7 @@ public sealed partial class DashboardWindow : Window
     private sealed class VmCard
     {
         public required Border      Root;
-        public required string      VmName;        // config VM name — keys the IP/op-progress lookups
+        public required string      VmId;          // VM ID — keys the IP/op-progress lookups; names may repeat
         public required string      Shape;         // layout signature — rebuild when it changes
         public required TextBlock   Title;         // VM name — Star column of the header row (issue #57: can truncate)
         public required TextBlock   State;
@@ -697,7 +697,9 @@ public sealed partial class DashboardWindow : Window
     /// </summary>
     private bool BuildCards(IReadOnlyList<VmStatus> statuses)
     {
-        var vms = _config.Current.VirtualMachines;
+        // Identified VMs only: an entry an older settings document left unidentified has no ID to key a
+        // card on, and Settings is where it is shown as needing attention.
+        var vms = _config.Current.VirtualMachines.Where(v => !string.IsNullOrWhiteSpace(v.Id)).ToList();
 
         // Zero managed VMs → an empty-state card (issue #38). Previously this method simply added no
         // children, leaving the "VIRTUAL MACHINES" header floating over blank space — which reads as a
@@ -725,15 +727,15 @@ public sealed partial class DashboardWindow : Window
         }
 
         // VM set/order changed (config edit, first open) → rebuild the panel wholesale.
-        if (!vms.Select(v => v.Name).SequenceEqual(_cardOrder, StringComparer.OrdinalIgnoreCase))
+        if (!vms.Select(v => v.Id).SequenceEqual(_cardOrder, StringComparer.OrdinalIgnoreCase))
         {
             VmPanel.Children.Clear();
             _cards.Clear();
-            _cardOrder = vms.Select(v => v.Name).ToList();
+            _cardOrder = vms.Select(v => v.Id).ToList();
             foreach (var vm in vms)
             {
-                var card = BuildCard(vm, ShownStatus(statuses, vm.Name));
-                _cards[vm.Name] = card;
+                var card = BuildCard(vm, ShownStatus(statuses, vm.Id));
+                _cards[vm.Id] = card;
                 VmPanel.Children.Add(card.Root);
             }
             return true;
@@ -743,11 +745,11 @@ public sealed partial class DashboardWindow : Window
         for (int i = 0; i < vms.Count; i++)
         {
             var vm = vms[i];
-            var s  = ShownStatus(statuses, vm.Name);
-            if (!_cards.TryGetValue(vm.Name, out var card) || card.Shape != ShapeOf(s))
+            var s  = ShownStatus(statuses, vm.Id);
+            if (!_cards.TryGetValue(vm.Id, out var card) || card.Shape != ShapeOf(s))
             {
                 card = BuildCard(vm, s);          // layout shape changed → rebuild this card
-                _cards[vm.Name]      = card;
+                _cards[vm.Id]        = card;
                 VmPanel.Children[i]  = card.Root;
                 layoutChanged        = true;
             }
@@ -759,22 +761,22 @@ public sealed partial class DashboardWindow : Window
         return layoutChanged;
     }
 
-    private static VmStatus? FindStatus(IReadOnlyList<VmStatus> statuses, string name) =>
-        statuses.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+    private static VmStatus? FindStatus(IReadOnlyList<VmStatus> statuses, string vmId) =>
+        statuses.FirstOrDefault(x => HostIdentity.Same(x.Id, vmId));
 
     /// <summary>The status a card may show: none at all while vmms is down, since anything still held
     /// was read before it stopped (issue #114).</summary>
-    private VmStatus? ShownStatus(IReadOnlyList<VmStatus> statuses, string name) =>
-        VmmsDown ? null : FindStatus(statuses, name);
+    private VmStatus? ShownStatus(IReadOnlyList<VmStatus> statuses, string vmId) =>
+        VmmsDown ? null : FindStatus(statuses, vmId);
 
     /// <summary>The guest IP a card may show, under the same rule as <see cref="ShownStatus"/>.</summary>
-    private string ShownIp(string vmName) => VmmsDown ? "" : _vm.GetCachedVmIp(vmName) ?? "";
+    private string ShownIp(string vmId) => VmmsDown ? "" : _vm.GetCachedVmIp(vmId) ?? "";
 
     private void UpdateCard(VmCard card, VmStatus? s)
     {
         ApplyOverlay(card, s);
         card.Subtitle.Text = Subtitle(s);
-        card.Ip.Text        = ShownIp(card.VmName);
+        card.Ip.Text        = ShownIp(card.VmId);
         if (card.Uptime is not null) card.Uptime.Text = FormatUptime(s);
         if (s is null) return;
         if (card.CpuValue is not null) { card.CpuValue.Text = $"{s.Cpu}%"; SetBar(card.CpuBar, s.Cpu / 100.0); }
@@ -798,18 +800,18 @@ public sealed partial class DashboardWindow : Window
         //   • a graceful Shutdown, which only ever emits a "Shutting down…" Running phase (the guest
         //     powers off asynchronously) and so never gets a Succeeded to clear it.
         // Succeeded ops are already removed in OnVmOperationProgress, so this covers the stuck cases.
-        if (_op.TryGetValue(card.VmName, out var staleOp) && ReachedTarget(staleOp.Kind, s))
-            RemoveOp(card.VmName);
+        if (_op.TryGetValue(card.VmId, out var staleOp) && ReachedTarget(staleOp.Kind, s))
+            RemoveOp(card.VmId);
 
         // Age-out overlays that never clear on their own: a hung/cancelled graceful Shutdown that stays
         // in the Running phase (finding 1), and a sticky "Failed: …" overlay (finding 7). Runs on every
         // ~2.5 s metrics tick while the dashboard is open, so a stuck card re-enables itself.
-        if (_op.TryGetValue(card.VmName, out var timedOp) &&
-            _opSince.TryGetValue(card.VmName, out var since) &&
+        if (_op.TryGetValue(card.VmId, out var timedOp) &&
+            _opSince.TryGetValue(card.VmId, out var since) &&
             VmStateUi.IsOverlayExpired(timedOp.Kind, timedOp.Phase, DateTime.UtcNow - since))
-            RemoveOp(card.VmName);
+            RemoveOp(card.VmId);
 
-        if (_op.TryGetValue(card.VmName, out var op) && op.Message is { Length: > 0 } msg)
+        if (_op.TryGetValue(card.VmId, out var op) && op.Message is { Length: > 0 } msg)
         {
             card.State.Text       = Truncate(msg, 30);
             card.State.Foreground = op.Phase == VmOpPhase.Failed ? AppColors.IndicatorRedBrush : AppColors.IndicatorOrangeBrush;
@@ -819,7 +821,7 @@ public sealed partial class DashboardWindow : Window
             // doesn't get a redundant tooltip.
             ToolTipService.SetToolTip(card.State, msg.Length > 30 ? msg : null);
         }
-        else if (_startingViaService.Contains(card.VmName))
+        else if (_startingViaService.Contains(card.VmId))
         {
             card.State.Text       = "Starting service…";
             card.State.Foreground = AppColors.IndicatorOrangeBrush;
@@ -836,7 +838,7 @@ public sealed partial class DashboardWindow : Window
         }
         else
         {
-            var state = EffectiveStateName(card.VmName, s);
+            var state = EffectiveStateName(card.VmId, s);
             // The VM's active Msvm_ConcreteJob carries a finer-grained verb+percent than the coarse
             // EnabledState-derived state — e.g. "Restoring (10%)" for a resume-from-Saved that reports
             // the same EnabledState ("Starting") as a cold boot (issue #13). This mirrors Hyper-V
@@ -850,7 +852,7 @@ public sealed partial class DashboardWindow : Window
             ToolTipService.SetToolTip(card.State, null);   // clear any tooltip left by a prior overlay message
         }
 
-        SetButtonsEnabled(card, !IsOpActive(card.VmName) && !_startingViaService.Contains(card.VmName));
+        SetButtonsEnabled(card, !IsOpActive(card.VmId) && !_startingViaService.Contains(card.VmId));
     }
 
     /// <summary>
@@ -996,7 +998,8 @@ public sealed partial class DashboardWindow : Window
 
         var title = new TextBlock
         {
-            Text              = vm.Name,
+            // The name the host reports now, else the one last seen: shown only, never looked up.
+            Text              = string.IsNullOrWhiteSpace(s?.Name) ? vm.Name : s.Name,
             FontSize          = TitleFontSize,
             FontWeight        = Microsoft.UI.Text.FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center,
@@ -1056,7 +1059,7 @@ public sealed partial class DashboardWindow : Window
         // IP comes from VmService's cache (WMI, refreshed by the metrics loop/tooltip path) — no extra poll.
         var ipLabel = new TextBlock
         {
-            Text                = ShownIp(vm.Name),
+            Text                = ShownIp(vm.Id),
             FontSize            = ValueFontSize,   // matches the dashboard's unified right-column value size
             Foreground          = (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"],
             HorizontalAlignment = HorizontalAlignment.Right,
@@ -1107,7 +1110,7 @@ public sealed partial class DashboardWindow : Window
         var card = new VmCard
         {
             Root         = root,
-            VmName       = vm.Name,
+            VmId         = vm.Id,
             Shape        = ShapeOf(s),
             Title        = title,
             State        = stateLabel,
@@ -1204,8 +1207,8 @@ public sealed partial class DashboardWindow : Window
             Padding  = new Thickness(CardButtonPaddingX, 3, CardButtonPaddingX, 3),
             Command  = new RelayCommand(() =>
             {
-                UiActivityLog.Logger.LogInformation("Dashboard: {Command} '{Vm}'", text, vm.Name);
-                _vm.BeginPowerAction(vm.Name, kind, VmOpOrigin.Dashboard);
+                UiActivityLog.Logger.LogInformation("Dashboard: {Command} '{Vm}' ({Id})", text, vm.Name, vm.Id);
+                _vm.BeginPowerAction(vm.Ref, kind, VmOpOrigin.Dashboard);
             }),
         });
 
@@ -1217,7 +1220,7 @@ public sealed partial class DashboardWindow : Window
             Padding  = new Thickness(CardButtonPaddingX, 3, CardButtonPaddingX, 3),
             Command  = new RelayCommand(() =>
             {
-                UiActivityLog.Logger.LogInformation("Dashboard: {Command} '{Vm}'", text, vm.Name);
+                UiActivityLog.Logger.LogInformation("Dashboard: {Command} '{Vm}' ({Id})", text, vm.Name, vm.Id);
                 _ = action();
             }),
         });
@@ -1229,7 +1232,7 @@ public sealed partial class DashboardWindow : Window
         {
             var shape = VmStateUi.ClassifyShape(s?.State);
             if (VmmsDown || shape is VmStateUi.Shape.Off or VmStateUi.Shape.Saved or VmStateUi.Shape.Paused)
-                TaskBtn("Start", () => StartViaServicesAsync(vm.Name));
+                TaskBtn("Start", () => StartViaServicesAsync(vm.Ref));
             return panel;
         }
 
@@ -1282,12 +1285,13 @@ public sealed partial class DashboardWindow : Window
         // await could return a different result than the one this connect bound against — and the log
         // line would then name a different switch than the balloon the user just read, in the very file
         // that balloon tells them to consult.
-        var appliedSwitch = _monitor.LastApplied?.VirtualSwitch;
+        var applied       = _monitor.LastApplied;
+        var appliedSwitch = applied is null ? null : new SwitchRef(applied.SwitchId, applied.SwitchName);
 
         var result = await VmConnectFlow.RunAsync(
-            vm.Name,
+            vm.Ref.Shown,
             appliedSwitch,
-            sw     => _hyperV.ApplySwitchAsync(vm.Name, vm.NicName, sw),
+            sw     => _hyperV.ApplySwitchAsync(vm.Ref, vm.NicId, sw),
             // Same channel and same reasoning as the tray's manual network actions (App.InitTrayIcon):
             // a balloon, NOT suppressed by a visible dashboard. The dashboard is by definition visible
             // here — the user just clicked a button on it — so the default suppression would swallow
@@ -1306,13 +1310,13 @@ public sealed partial class DashboardWindow : Window
                 _notify($"{AppInfo.Name} — {vm.Name}", message, true);
                 await Task.Yield();
             },
-            ()      => Shell.OpenVmConnect(vm.Name));
+            ()      => Shell.OpenVmConnect(vm.Id));
 
         if (result.Error is not null)
             UiActivityLog.Logger.LogWarning(result.Error, "Connect: switch bind threw for '{Vm}'", vm.Name);
         else if (result.Bind == VmConnectFlow.BindStep.Failed)
             UiActivityLog.Logger.LogWarning("Connect: could not confirm '{Vm}' on switch '{Switch}'; connecting anyway",
-                                            vm.Name, appliedSwitch);
+                                            vm.Name, appliedSwitch?.Shown);
     }
 
     private async Task StartAndConnectAsync(VmTarget vm)
@@ -1321,8 +1325,8 @@ public sealed partial class DashboardWindow : Window
         // flat 2.5s guess with an actual readiness wait (event-driven off VmService.StatusesChanged —
         // see its doc comment). On timeout it proceeds anyway rather than hanging the button — vmconnect
         // itself tolerates attaching to a VM that's still finishing boot.
-        _vm.BeginPowerAction(vm.Name, VmOpKind.Start, VmOpOrigin.Dashboard);
-        var readiness = await _vm.WaitUntilRunningAsync(vm.Name, StartAndConnectTimeout);
+        _vm.BeginPowerAction(vm.Ref, VmOpKind.Start, VmOpOrigin.Dashboard);
+        var readiness = await _vm.WaitUntilRunningAsync(vm.Id, StartAndConnectTimeout);
         // Don't launch vmconnect onto a VM that failed to start (issue #30, finding 6); a plain timeout
         // still connects, since vmconnect tolerates attaching to a VM that's still finishing boot.
         if (readiness == VmService.StartReadiness.Failed) return;

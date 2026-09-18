@@ -66,7 +66,7 @@ public class DefaultConfigTests : IDisposable
 
         Assert.Empty(cfg.Rules);
         Assert.Empty(cfg.VirtualMachines);
-        Assert.Empty(cfg.Fallback.TargetVms);
+        Assert.Empty(cfg.Fallback.TargetVmIds);
 
         // Belt and braces: catch a placeholder reintroduced under any shape the model checks above miss
         // (a comment, a new collection, a renamed key).
@@ -86,12 +86,12 @@ public class DefaultConfigTests : IDisposable
     {
         var cfg = Parse(DefaultConfig.Json);
 
-        Assert.Empty(cfg.Fallback.TargetVms);
+        Assert.Empty(cfg.Fallback.TargetVmIds);
         // Every fallback/rule target must be resolvable in virtualMachines, or the apply pass warns.
         // Vacuously true for the default — which is the point — but this states the rule that keeps it so.
-        var known = cfg.VirtualMachines.Select(v => v.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        Assert.All(cfg.Fallback.TargetVms.Concat(cfg.Rules.SelectMany(r => r.TargetVms)),
-                   name => Assert.Contains(name, known));
+        var known = cfg.VirtualMachines.Select(v => v.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        Assert.All(cfg.Fallback.TargetVmIds.Concat(cfg.Rules.SelectMany(r => r.TargetVmIds)),
+                   id => Assert.Contains(id, known));
     }
 
     /// <summary>The default must still be a working config: a real fallback switch and Debug logging.</summary>
@@ -100,7 +100,7 @@ public class DefaultConfigTests : IDisposable
     {
         var cfg = Parse(DefaultConfig.Json);
 
-        Assert.Equal("Default Switch", cfg.Fallback.VirtualSwitch);
+        Assert.Equal("Default Switch", cfg.Fallback.LegacyVirtualSwitch);
         Assert.Equal(LogLevel.Debug, cfg.LogLevel);
         Assert.Empty(cfg.RuleSwitches);
     }
@@ -160,7 +160,7 @@ public class DefaultConfigTests : IDisposable
         Assert.True(mgr.LastLoad.Succeeded);
         Assert.Equal(0, mgr.LastLoad.RuleCount);
         Assert.Equal(0, mgr.LastLoad.VmCount);
-        Assert.Empty(mgr.Current.Fallback.TargetVms);
+        Assert.Empty(mgr.Current.Fallback.TargetVmIds);
     }
 
     public void Dispose()

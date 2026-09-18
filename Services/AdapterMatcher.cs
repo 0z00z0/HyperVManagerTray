@@ -20,12 +20,26 @@ namespace HyperVManagerTray.Services;
 /// record carried no outcome at all and therefore structurally could not express "tried and failed" —
 /// which is exactly why the tray icon showed a confident green "bridged" after a failed bind. Any
 /// status surface must render <see cref="ApplyStatus"/>, never infer success from
-/// <see cref="VirtualSwitch"/>.</para>
+/// <see cref="SwitchId"/>.</para>
 /// </summary>
-public sealed record MatchResult(string RuleName, string VirtualSwitch, IReadOnlyList<string> TargetVms)
+/// <param name="RuleId">The matched rule's ID, or <see cref="FallbackRuleId"/>. What identifies the rule —
+/// <paramref name="RuleName"/> is only shown, and two rules may share one.</param>
+/// <param name="RuleName">The rule's name, shown only.</param>
+/// <param name="SwitchId">The virtual switch ID to connect to. Empty when the rule's switch is not identified.</param>
+/// <param name="SwitchName">The switch's name, shown only.</param>
+/// <param name="TargetVms">The VMs to connect, identified by VM ID.</param>
+public sealed record MatchResult(
+    string RuleId, string RuleName, string SwitchId, string SwitchName, IReadOnlyList<VmRef> TargetVms)
 {
-    public string HostAdapterName          { get; init; } = "—";  // display name (FriendlyName, else Description)
-    public string HostAdapterInterfaceName { get; init; } = "—";  // OS interface alias used by Set-VMSwitch
+    /// <summary>The <see cref="RuleId"/> of the fallback. Never a GUID, so no rule can carry it.</summary>
+    public const string FallbackRuleId = "fallback";
+
+    /// <summary>Whether no rule matched and the fallback applies. By ID: a rule may be NAMED "Fallback".</summary>
+    public bool IsFallback => RuleId == FallbackRuleId;
+
+    public string HostAdapterName        { get; init; } = "—";  // display name (FriendlyName, else Description)
+    public string HostAdapterInterfaceId { get; init; } = "";   // NetworkInterface.Id — what the bind targets
+    public string HostAdapterAlias       { get; init; } = "—";  // connection alias ("Ethernet 5") — shown only
     public string HostIp                   { get; init; } = "—";
     public string Gateway                  { get; init; } = "—";
     public IReadOnlyList<string> DnsServers { get; init; } = [];
@@ -35,7 +49,7 @@ public sealed record MatchResult(string RuleName, string VirtualSwitch, IReadOnl
     /// been applied yet, and the default must never be an optimistic one.</summary>
     public NetworkStatusUi.SwitchApplyStatus ApplyStatus { get; init; } = NetworkStatusUi.SwitchApplyStatus.NotEvaluated;
 
-    /// <summary>The target VMs whose NIC could not be attached to <see cref="VirtualSwitch"/> on this
+    /// <summary>The target VMs' names whose NIC could not be attached to <see cref="SwitchId"/> on this
     /// pass — populated when <see cref="ApplyStatus"/> is
     /// <see cref="NetworkStatusUi.SwitchApplyStatus.VmConnectFailed"/>, so the balloon can name them.</summary>
     public IReadOnlyList<string> FailedVms { get; init; } = [];
@@ -56,7 +70,7 @@ public sealed record MatchResult(string RuleName, string VirtualSwitch, IReadOnl
     /// the apply pass MUST run.
     ///
     /// <para><b>Why each clause is load-bearing.</b> The predicate this replaced compared only
-    /// <see cref="VirtualSwitch"/> and <see cref="TargetVms"/>, which is unsound in two opposite
+    /// <see cref="SwitchId"/> and <see cref="TargetVms"/>, which is unsound in two opposite
     /// directions:</para>
     /// <list type="bullet">
     /// <item><description><see cref="ApplyStatus"/> must be <see cref="NetworkStatusUi.SwitchApplyStatus.Applied"/>:
@@ -66,28 +80,27 @@ public sealed record MatchResult(string RuleName, string VirtualSwitch, IReadOnl
     /// handler clears the skip-cache precisely so the next event retries, but that event hit the guard
     /// and never re-entered the apply pass, so the cleared cache was never read and the red icon was
     /// pinned for the session.</description></item>
-    /// <item><description><see cref="HostAdapterInterfaceName"/> must match: the outcome depends on the
+    /// <item><description><see cref="HostAdapterInterfaceId"/> must match: the outcome depends on the
     /// adapter the switch is bound to, not just on the switch's name. Two rules (an office dock and a
     /// home dock, different NICs) can name the same switch and the same VMs; without this clause,
     /// moving between them skipped the rebind, left the switch bound to the now-absent adapter, and
     /// carried the old <c>Applied</c> forward — a green icon over a VM with no network.</description></item>
-    /// <item><description><see cref="RuleName"/> must match: a different rule is a different intent even
+    /// <item><description><see cref="RuleId"/> must match: a different rule is a different intent even
     /// when it resolves to the same switch and adapter. It also gates per-rule side effects the skip
     /// path does not run at all — most concretely <c>autoStart</c>, which would be silently missed when
     /// a rule swap was mistaken for "nothing changed".</description></item>
     /// </list>
     ///
-    /// <para>Every comparison is <see cref="StringComparison.OrdinalIgnoreCase"/>, matching the rest of
-    /// the app: Hyper-V switch names, Windows interface aliases and VM names are all case-insensitive,
-    /// and an ordinal compare here would force a redundant rebind (a real VM network drop) on nothing
-    /// but a casing difference.</para>
+    /// <para>Every clause compares identifiers, never names, and without regard to case: WMI and the
+    /// network stack spell GUIDs in different cases, and an ordinal compare here would force a redundant
+    /// rebind (a real VM network drop) on nothing but a casing difference.</para>
     /// </summary>
     public bool ConfirmsSameOutcomeFor(MatchResult next) =>
         ApplyStatus == NetworkStatusUi.SwitchApplyStatus.Applied &&
-        string.Equals(RuleName, next.RuleName, StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(VirtualSwitch, next.VirtualSwitch, StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(HostAdapterInterfaceName, next.HostAdapterInterfaceName, StringComparison.OrdinalIgnoreCase) &&
-        TargetVms.SequenceEqual(next.TargetVms, StringComparer.OrdinalIgnoreCase);
+        string.Equals(RuleId, next.RuleId, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(SwitchId, next.SwitchId, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(HostAdapterInterfaceId, next.HostAdapterInterfaceId, StringComparison.OrdinalIgnoreCase) &&
+        TargetVms.Select(v => v.Id).SequenceEqual(next.TargetVms.Select(v => v.Id), StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// THIS confirmed outcome with its DISPLAY-only fields re-read from <paramref name="next"/>, a freshly
@@ -111,7 +124,7 @@ public sealed record MatchResult(string RuleName, string VirtualSwitch, IReadOnl
     /// have moved. Everything copied here is display-only by the type's own contract
     /// (<see cref="HostAdapterName"/> is a FriendlyName, and the IP/gateway/DNS are read straight off the
     /// adapter); everything load-bearing — <see cref="ApplyStatus"/>, <see cref="FailedVms"/>,
-    /// <see cref="VirtualSwitch"/>, <see cref="HostAdapterInterfaceName"/> — is kept from the confirmed
+    /// <see cref="SwitchId"/>, <see cref="HostAdapterInterfaceId"/> — is kept from the confirmed
     /// result, and is in any case equal by the guard.</para>
     ///
     /// <para><b>Why null rather than <paramref name="next"/> when the guard fails.</b> A disagreement means
@@ -125,6 +138,7 @@ public sealed record MatchResult(string RuleName, string VirtualSwitch, IReadOnl
             ? this with
               {
                   HostAdapterName = next.HostAdapterName,
+                  HostAdapterAlias = next.HostAdapterAlias,
                   HostIp          = next.HostIp,
                   Gateway         = next.Gateway,
                   DnsServers      = next.DnsServers,
@@ -232,10 +246,10 @@ public static class AdapterMatcher
         {
             var matched = MatchingNic(rule, physical, virtual_);
             if (matched is not null)
-                return BuildResult(rule.Name, rule.VirtualSwitch, rule.TargetVms, matched, virtual_);
+                return BuildResult(rule.Id, rule.Name, rule, config, matched, virtual_);
         }
 
-        return BuildResult("Fallback", config.Fallback.VirtualSwitch, config.Fallback.TargetVms,
+        return BuildResult(MatchResult.FallbackRuleId, "Fallback", config.Fallback, config,
                            PrimaryAdapter(physical, virtual_), virtual_);
     }
 
@@ -439,7 +453,7 @@ public static class AdapterMatcher
     }
 
     private static MatchResult BuildResult(
-        string ruleName, string virtualSwitch, List<string> targetVms,
+        string ruleId, string ruleName, ISwitchTarget target, AppConfig config,
         NetworkInterface? nic, List<NetworkInterface> virtualAdapters)
     {
         IPInterfaceProperties? props = null;
@@ -489,12 +503,13 @@ public static class AdapterMatcher
             .Select(d => d.ToString())
             .ToList() ?? [];
 
-        return new MatchResult(ruleName, virtualSwitch, targetVms)
+        return new MatchResult(ruleId, ruleName, target.SwitchId, target.SwitchName, config.VmRefs(target.TargetVmIds))
         {
             // Display only (dashboard "HOST NETWORK → Adapter"). The rule was already matched on
-            // MAC/CIDR above, and Set-VMSwitch targets HostAdapterInterfaceName — not this string.
-            HostAdapterName          = nic is not null ? DisplayNameResolver.Resolve(nic) : "—",
-            HostAdapterInterfaceName = nic?.Name ?? "—",
+            // MAC/CIDR above, and the bind targets HostAdapterInterfaceId — not this string.
+            HostAdapterName        = nic is not null ? DisplayNameResolver.Resolve(nic) : "—",
+            HostAdapterInterfaceId = nic?.Id ?? "",
+            HostAdapterAlias       = nic?.Name ?? "—",
             HostIp                   = ip,
             Gateway                  = gw,
             DnsServers               = dns
@@ -537,7 +552,7 @@ public static class AdapterMatcher
 
                 // When bridged, the physical NIC has no IP — check virtual NICs for the CIDR.
                 // If any virtual NIC carries an IP inside the rule's subnet, the rule is matched
-                // and we return the physical NIC (its Name alias is what Set-VMSwitch needs).
+                // and we return the physical NIC (its interface ID is what the bind needs).
                 foreach (var vNic in virtualAdapters)
                 {
                     try

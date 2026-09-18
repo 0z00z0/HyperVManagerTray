@@ -121,7 +121,7 @@ public class MqttLegacyRemovalTests : IDisposable
         using var mgr = new ConfigManager(path, NullLogger.Instance);
         Assert.Equal(LogLevel.Warning, mgr.Current.LogLevel);
         Assert.Equal("Real", Assert.Single(mgr.Current.VirtualMachines).Name);
-        Assert.Equal("Default Switch", mgr.Current.Fallback.VirtualSwitch);
+        Assert.Equal("Default Switch", mgr.Current.Fallback.LegacyVirtualSwitch);
         Assert.Equal(120, mgr.Current.SettingsWindowX);
     }
 

@@ -176,102 +176,12 @@ public class SettingsOptionsTests
         => Assert.Equal(expected, SettingsOptions.IsValidCidr(cidr));
 
     [Theory]
-    [InlineData("VM1, VM2, VM3",   new[] { "VM1", "VM2", "VM3" })]
-    [InlineData(" VM1 ,VM2,, VM1", new[] { "VM1", "VM2" })]        // trims, drops blanks, dedupes
-    [InlineData("VM1\nVM2\r\nVM3", new[] { "VM1", "VM2", "VM3" })] // newline-separated too
-    [InlineData("",                new string[0])]
-    [InlineData(null,              new string[0])]
-    public void ParseVmList_CleansAndDedupes(string? text, string[] expected)
-        => Assert.Equal(expected, SettingsOptions.ParseVmList(text));
-
-    [Fact]
-    public void ParseVmList_DedupeIsCaseInsensitiveFirstSpellingWins()
-        => Assert.Equal(["Alpha"], SettingsOptions.ParseVmList("Alpha, alpha, ALPHA"));
-
-    [Fact]
-    public void JoinVmList_RoundTripsWithParse()
-    {
-        var original = new[] { "Alpha", "Beta", "Gamma" };
-        Assert.Equal(original, SettingsOptions.ParseVmList(SettingsOptions.JoinVmList(original)));
-    }
-
-    // ── Newline-only VM list (fix 8: the editor representation) ──────────────────
-
-    [Theory]
-    [InlineData("VM1\nVM2\nVM3",   new[] { "VM1", "VM2", "VM3" })]
-    [InlineData("VM1\r\nVM2\r\n",  new[] { "VM1", "VM2" })]
-    [InlineData(" VM1 \n VM1 \nVM2", new[] { "VM1", "VM2" })]      // trims, dedupes
-    [InlineData("",                new string[0])]
-    [InlineData(null,              new string[0])]
-    public void ParseVmLines_SplitsOnNewlinesOnly(string? text, string[] expected)
-        => Assert.Equal(expected, SettingsOptions.ParseVmLines(text));
-
-    [Fact]
-    public void ParseVmLines_DoesNotSplitOnComma()
-        // The whole point of the newline representation: a VM name containing a comma is ONE entry.
-        => Assert.Equal(["Web, App"], SettingsOptions.ParseVmLines("Web, App"));
-
-    [Fact]
-    public void JoinVmLines_RoundTripsAVmNameContainingAComma()
-    {
-        // "Web, App" corrupts through the comma-based Join/Parse; the newline pair preserves it.
-        var original = new[] { "Web, App", "Db" };
-        Assert.Equal(original, SettingsOptions.ParseVmLines(SettingsOptions.JoinVmLines(original)));
-    }
-
-    [Theory]
     [InlineData(-5,      0)]
     [InlineData(0,       0)]
     [InlineData(100,     100)]
     [InlineData(200_000, 100_000)]
     public void NormalizePriority_Clamps(int input, int expected)
         => Assert.Equal(expected, SettingsOptions.NormalizePriority(input));
-
-    // ── SuggestionItems (issue #41) ─────────────────────────────────────────────
-    // The pickers are ASSISTIVE, never restrictive. These tests pin that promise: the live values are
-    // offered, but a value the live list has never heard of is never dropped — a rule is legitimately
-    // written before the switch or VM it names exists, and the host may be offline entirely.
-
-    [Fact]
-    public void SuggestionItems_OffersTheLiveValuesSorted()
-        => Assert.Equal(["Bridged", "Default Switch", "NAT"],
-                        SettingsOptions.SuggestionItems(null, ["NAT", "Bridged", "Default Switch"]));
-
-    [Fact]
-    public void SuggestionItems_KeepsACurrentValueTheHostDoesNotHave()
-    {
-        // The load-bearing case: a rule prepared for a not-yet-created switch must still show its own
-        // value — first, so it reads as the current choice rather than buried among the live ones.
-        var items = SettingsOptions.SuggestionItems("Not-Yet-Created", ["Bridged", "NAT"]);
-        Assert.Equal(["Not-Yet-Created", "Bridged", "NAT"], items);
-    }
-
-    [Fact]
-    public void SuggestionItems_DoesNotDuplicateACurrentValueTheHostAlsoHas()
-        => Assert.Equal(["Bridged", "NAT"], SettingsOptions.SuggestionItems("Bridged", ["NAT", "Bridged"]));
-
-    [Fact]
-    public void SuggestionItems_CurrentValueMatchesLiveCaseInsensitively()
-        // "bridged" and "Bridged" are the same switch — offering both would invite the typo this removes.
-        => Assert.Equal(["Bridged"], SettingsOptions.SuggestionItems("bridged", ["Bridged"]));
-
-    [Fact]
-    public void SuggestionItems_DropsBlanksAndDeduplicatesLiveValues()
-        => Assert.Equal(["Bridged"], SettingsOptions.SuggestionItems("  ", ["Bridged", "  ", "bridged", ""]));
-
-    [Fact]
-    public void SuggestionItems_TrimsTheCurrentValue()
-        => Assert.Equal(["Bridged"], SettingsOptions.SuggestionItems("  Bridged  ", []));
-
-    [Fact]
-    public void SuggestionItems_NoLiveValues_YieldsJustTheCurrentOne()
-        // Host offline / enumeration failed: the picker degrades to the text box it replaced, and the
-        // user's own value is still there. This is a supported state, not an error.
-        => Assert.Equal(["Bridged"], SettingsOptions.SuggestionItems("Bridged", null));
-
-    [Fact]
-    public void SuggestionItems_NothingAtAll_IsEmptyNotNull()
-        => Assert.Empty(SettingsOptions.SuggestionItems(null, null));
 
     // ── NormalizeNicName (issue #41) ────────────────────────────────────────────
 
@@ -285,45 +195,6 @@ public class SettingsOptionsTests
     public void NormalizeNicName_BlankBecomesTheDefaultAndTheRestIsPreserved(string? input, string expected)
         => Assert.Equal(expected, SettingsOptions.NormalizeNicName(input));
 
-    // ── AppendVmLine (issue #41) ────────────────────────────────────────────────
-    // Picking a VM from the host must ADD to what the user has, never replace it.
-
-    [Fact]
-    public void AppendVmLine_AddsToAnEmptyBox()
-        => Assert.Equal("Alpha", SettingsOptions.AppendVmLine("", "Alpha"));
-
-    [Fact]
-    public void AppendVmLine_AppendsWithoutDiscardingExistingNames()
-        => Assert.Equal(["Alpha", "Beta"],
-                        SettingsOptions.ParseVmLines(SettingsOptions.AppendVmLine("Alpha", "Beta")));
-
-    [Fact]
-    public void AppendVmLine_AlreadyListed_IsUnchanged()
-        => Assert.Equal("Alpha", SettingsOptions.AppendVmLine("Alpha", "Alpha"));
-
-    [Fact]
-    public void AppendVmLine_AlreadyListedInAnotherCase_IsUnchanged()
-        => Assert.Equal("Alpha", SettingsOptions.AppendVmLine("Alpha", "ALPHA"));
-
-    [Fact]
-    public void AppendVmLine_BlankName_IsUnchanged()
-        => Assert.Equal("Alpha", SettingsOptions.AppendVmLine("Alpha", "  "));
-
-    [Fact]
-    public void AppendVmLine_PreservesAVmNameContainingAComma()
-        // The newline representation (fix 8) must survive the picker too.
-        => Assert.Equal(["Web, App", "Db"],
-                        SettingsOptions.ParseVmLines(SettingsOptions.AppendVmLine("Web, App", "Db")));
-
-    [Fact]
-    public void AppendVmLine_PickedValueSerialisesIdenticallyToTheHandTypedEquivalent()
-    {
-        // Acceptance criterion: a value chosen from a picker round-trips exactly as if it were typed.
-        var picked    = SettingsOptions.ParseVmLines(SettingsOptions.AppendVmLine("Alpha", "Beta"));
-        var handTyped = SettingsOptions.ParseVmLines("Alpha\r\nBeta");
-        Assert.Equal(handTyped, picked);
-    }
-
     // ── The on-bridge-lost delay the monitor actually honours ────────────────────
 
     /// <summary>
@@ -335,7 +206,7 @@ public class SettingsOptionsTests
     [Fact]
     public void EffectiveBridgeLostDelaySeconds_ZeroMeansImmediateNotUnset()
     {
-        var vm = new VmTarget { Name = "Alpha", OnBridgeLostAction = "pause", OnBridgeLostDelaySeconds = 0 };
+        var vm = new VmTarget { Id = "Alpha", Name = "Alpha", OnBridgeLostAction = "pause", OnBridgeLostDelaySeconds = 0 };
 
         Assert.Equal(0, SettingsOptions.EffectiveBridgeLostDelaySeconds(vm));
         Assert.Equal("Immediate", SettingsOptions.FormatDelay(SettingsOptions.EffectiveBridgeLostDelaySeconds(vm)));
@@ -345,7 +216,7 @@ public class SettingsOptionsTests
     /// never reaches the monitor as 0. This is why dropping the ternary loses nothing.</summary>
     [Fact]
     public void EffectiveBridgeLostDelaySeconds_OmittedValueStillDefaultsTo30() =>
-        Assert.Equal(30, SettingsOptions.EffectiveBridgeLostDelaySeconds(new VmTarget { Name = "Alpha" }));
+        Assert.Equal(30, SettingsOptions.EffectiveBridgeLostDelaySeconds(new VmTarget { Id = "Alpha", Name = "Alpha" }));
 
     // Every value the picker offers must survive to the monitor exactly as chosen.
     [Fact]
@@ -353,7 +224,7 @@ public class SettingsOptionsTests
     {
         foreach (var preset in SettingsOptions.BridgeLostDelaySeconds)
         {
-            var vm = new VmTarget { Name = "Alpha", OnBridgeLostDelaySeconds = preset };
+            var vm = new VmTarget { Id = "Alpha", Name = "Alpha", OnBridgeLostDelaySeconds = preset };
             Assert.Equal(preset, SettingsOptions.EffectiveBridgeLostDelaySeconds(vm));
         }
     }
@@ -365,7 +236,7 @@ public class SettingsOptionsTests
     [InlineData(999_999, 86_400)]
     public void EffectiveBridgeLostDelaySeconds_ClampsHandEditedValues(int stored, int expected) =>
         Assert.Equal(expected, SettingsOptions.EffectiveBridgeLostDelaySeconds(
-            new VmTarget { Name = "Alpha", OnBridgeLostDelaySeconds = stored }));
+            new VmTarget { Id = "Alpha", Name = "Alpha", OnBridgeLostDelaySeconds = stored }));
     // ── IsPersistableRule: never write an inert catch-all (the #31-batch review) ─────────
 
     /// <summary>
@@ -373,7 +244,7 @@ public class SettingsOptionsTests
     /// the user had typed a character. It must not reach config.json.
     /// </summary>
     private static NetworkRule BlankTemplate() =>
-        new() { Name = "New rule", Priority = 100, VirtualSwitch = "" };
+        new() { Name = "New rule", Priority = 100, SwitchId = "" };
 
     /// <summary>
     /// Why this matters, in one test. A rule with no conditions matches EVERY network — that is
@@ -405,16 +276,16 @@ public class SettingsOptionsTests
         Assert.False(SettingsOptions.IsPersistableRule(conditionOnly));   // no switch to bind
 
         var switchOnly = BlankTemplate();
-        switchOnly.VirtualSwitch = "Bridged";
+        switchOnly.SwitchId = "Bridged";
         Assert.False(SettingsOptions.IsPersistableRule(switchOnly));      // matches everything
 
         var complete = BlankTemplate();
-        complete.VirtualSwitch = "Bridged";
+        complete.SwitchId = "Bridged";
         complete.Conditions.IpCidr = "10.0.0.0/24";
         Assert.True(SettingsOptions.IsPersistableRule(complete));         // says what and when
 
         var byMac = BlankTemplate();
-        byMac.VirtualSwitch = "Bridged";
+        byMac.SwitchId = "Bridged";
         byMac.Conditions.AdapterMac = "AA:BB:CC:DD:EE:FF";
         Assert.True(SettingsOptions.IsPersistableRule(byMac));            // either condition qualifies
     }
@@ -428,7 +299,7 @@ public class SettingsOptionsTests
     public void IsPersistableRule_TreatsARuleWhoseOnlyConditionIsMalformedAsACatchAll()
     {
         var rule = BlankTemplate();
-        rule.VirtualSwitch = "Bridged";
+        rule.SwitchId = "Bridged";
         rule.Conditions.IpCidr = "not-a-cidr";
 
         // Believing the typed text, this looks like it declares a condition …
@@ -444,7 +315,7 @@ public class SettingsOptionsTests
     public void DeclaresNoCondition_TreatsBlanksAsNoCondition()
     {
         var rule = BlankTemplate();
-        rule.VirtualSwitch = "Bridged";
+        rule.SwitchId = "Bridged";
         rule.Conditions.AdapterMac = "";
         rule.Conditions.IpCidr     = "   ";
 
