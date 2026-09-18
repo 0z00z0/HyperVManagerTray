@@ -49,7 +49,7 @@ SetupIconFile=..\Assets\AppIcon.ico
 ; ZeroZero Software studio-look wizard graphics, matching ChargeKeeper's installer so the two
 ; read as one family. Built by installer\make-wizard-images.ps1 (native GDI+, no SVG rasteriser
 ; needed): dark #0a0f17 studio background, the two bracket-gradient accent bars, the [Ø] studio
-; mark, and this app's own VM-monitor product glyph (the same shape Helpers\IconGenerator.cs
+; mark, and this app's own route-fork product glyph (the same shape Helpers\IconGenerator.cs
 ; paints for the tray icon). Comma-separated variants at 100/125/150/175/200 % let Inno pick the
 ; best for the display DPI. SetupIconFile above deliberately stays the product AppIcon.ico — the
 ; [Ø] mark belongs to the wizard chrome only, never the app's own icon.
@@ -80,7 +80,7 @@ Source: "{#PublishDir}\*"; DestDir: "{app}"; Excludes: "config.json"; Flags: rec
 ; Flat shortcut in Start Menu → Programs (no sub-folder) so the app is searchable by name.
 ; IconFilename points to Assets\TrayBlue.ico — the blue (Fallback) tray glyph, pre-rendered and
 ; shipped under Assets\ (Content items keep their relative path) so the shortcut matches the tray
-; icon (the runtime icon-*-v4.ico files don't exist until first launch, so can't be used here).
+; icon (the runtime icon-*.ico files don't exist until first launch, so can't be used here).
 Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\Assets\TrayBlue.ico"; Comment: "Hyper-V VM network and power manager"
 
 [Tasks]
@@ -115,7 +115,11 @@ Type: files; Name: "{app}\Microsoft.Win32.*.dll"
 Type: files; Name: "{app}\Microsoft.DiaSymReader.Native.amd64.dll"
 Type: files; Name: "{app}\System.*.dll"
 Type: files; Name: "{app}\workloads*.json"
-; Superseded runtime-generated tray icons from older builds (v3/v4 → v5 product-glyph redesign).
+; Superseded runtime-generated tray icons from older builds (the current glyph is v6, route fork).
+Type: files; Name: "{app}\icon-unknown-v5.ico"
+Type: files; Name: "{app}\icon-bridged-v5.ico"
+Type: files; Name: "{app}\icon-fallback-v5.ico"
+Type: files; Name: "{app}\icon-failed-v5.ico"
 Type: files; Name: "{app}\icon-unknown-v4.ico"
 Type: files; Name: "{app}\icon-bridged-v4.ico"
 Type: files; Name: "{app}\icon-fallback-v4.ico"
@@ -125,12 +129,17 @@ Type: files; Name: "{app}\icon-fallback-v3.ico"
 
 ; Generated at runtime by the app — remove on uninstall so the folder can be cleaned up.
 [UninstallDelete]
-Type: files;      Name: "{app}\icon-unknown-v5.ico"
-Type: files;      Name: "{app}\icon-bridged-v5.ico"
-Type: files;      Name: "{app}\icon-fallback-v5.ico"
+Type: files;      Name: "{app}\icon-unknown-v6.ico"
+Type: files;      Name: "{app}\icon-bridged-v6.ico"
+Type: files;      Name: "{app}\icon-fallback-v6.ico"
+Type: files;      Name: "{app}\icon-failed-v6.ico"
 Type: files;      Name: "{app}\AppIcon.ico"
 Type: files;      Name: "{app}\app.ico"
 ; Legacy names — clean up if upgrading from an older install
+Type: files;      Name: "{app}\icon-unknown-v5.ico"
+Type: files;      Name: "{app}\icon-bridged-v5.ico"
+Type: files;      Name: "{app}\icon-fallback-v5.ico"
+Type: files;      Name: "{app}\icon-failed-v5.ico"
 Type: files;      Name: "{app}\icon-unknown-v4.ico"
 Type: files;      Name: "{app}\icon-bridged-v4.ico"
 Type: files;      Name: "{app}\icon-fallback-v4.ico"
