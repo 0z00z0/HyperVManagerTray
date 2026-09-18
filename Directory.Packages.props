@@ -40,9 +40,10 @@
     <PackageVersion Include="ZeroZero.Lifecycle" Version="0.7.1" />
     <!-- 0.7.2 closes the disposal race on the connection's reconcile gate and the discovery
          publisher's announcement gate: a settings change applied after teardown, or a reconnect
-         still in flight at exit, could each end the process. Never go below it. -->
-    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.7.2" />
-    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.7.2" />
+         still in flight at exit, could each end the process. Never go below it. 0.7.3 keeps an
+         unreachable broker from filling mqtt.log: one line when the link goes, one when it returns. -->
+    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.7.3" />
+    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.7.3" />
     <!-- 0.8.0 reports a timeout, an unreachable host, a failure status and an unreadable release as
          four outcomes rather than two, which is the split every message about a failed check is
          written to. It also keeps UpdateScheduler.Dispose idempotent: this app stops the schedule
