@@ -57,26 +57,39 @@ internal static class AppUpdateOptions
         InstallerFileName.Replace("{version}", versionText, StringComparison.Ordinal);
 
     /// <summary>Tells the installer this run is the app's own update, so it waits for the app to exit
-    /// by itself before ending it. Read by <c>StartedByTheApplication</c> in
+    /// by itself before ending it, and starts it again afterwards. Read by <c>StartedByTheApplication</c> in
     /// <c>installer\HyperVManagerTray.iss</c> as <c>{param:UPDATEFROMAPP}</c>.</summary>
     public const string StartedByApplicationSwitch = "/UPDATEFROMAPP=1";
 
-    /// <summary>The switch above, plus a request that the installer log the run it makes (issue #91:
+    /// <summary>
+    /// The update was agreed to in the update dialog, so Setup shows no wizard. <c>/SILENT</c> rather
+    /// than <c>/VERYSILENT</c>: its progress window is the one sign of the update in the seconds the
+    /// app is gone. <c>/SUPPRESSMSGBOXES</c> because a message box under a silent run has no wizard
+    /// behind it and the app that asked has exited; the next start reports the outcome instead.
+    /// <c>/NORESTART</c> because a reboot is never this update's decision.
+    /// </summary>
+    public const string UnattendedSwitches = "/SILENT /SUPPRESSMSGBOXES /NORESTART";
+
+    /// <summary>The installer log's file name, in <see cref="AppInfo.DataDir"/>, for the version running
+    /// before the update. Also named in the report of an update that did not complete.</summary>
+    public static string InstallerLogFileNameFor(string runningVersionText) => $"installer-{runningVersionText}.log";
+
+    /// <summary>The switches above, plus a request that the installer log the run it makes (issue #91:
     /// diagnosing why the update flow's installer run does not always rewrite the uninstall entry).
     /// The log is named for the version running before the update, so the folder holds one log per
     /// version rather than growing without bound. Never throws — a log that cannot be arranged must
     /// not stop an update.</summary>
-    private static string InstallerArgumentsFor(Version runningVersion)
+    internal static string InstallerArgumentsFor(Version runningVersion)
     {
         try
         {
             Directory.CreateDirectory(AppInfo.DataDir);
-            var path = Path.Combine(AppInfo.DataDir, $"installer-{AppInfo.FormatVersion(runningVersion)}.log");
-            return $"{StartedByApplicationSwitch} /LOG=\"{path}\"";
+            var path = Path.Combine(AppInfo.DataDir, InstallerLogFileNameFor(AppInfo.FormatVersion(runningVersion)));
+            return $"{UnattendedSwitches} {StartedByApplicationSwitch} /LOG=\"{path}\"";
         }
         catch
         {
-            return StartedByApplicationSwitch;
+            return $"{UnattendedSwitches} {StartedByApplicationSwitch}";
         }
     }
 }

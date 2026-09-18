@@ -242,6 +242,10 @@ public partial class App : Application
             // Config feedback needs the tray icon, so it lands here rather than at the load itself.
             AnnounceConfigState(createdDefaultConfig, configMigration);
 
+            // The outcome of an update the previous version started for itself. Needs the tray icon
+            // for its balloon, so it lands here with the config feedback.
+            ReportTheOutcomeOfAnUnattendedUpdate();
+
             // A later hand-edit that doesn't parse is announced once per broken save (issue #39) — the
             // app keeps running on the previous settings, and staying quiet about that is how a user
             // ends up debugging dock behaviour against rules that were never loaded.
@@ -347,6 +351,32 @@ public partial class App : Application
         if (ConfigLoadUi.BalloonMessage(_config!.LastLoad) is { } problem)
             ShowBalloon($"{AppInfo.Name} — config", problem,
                         isError: true, suppressWhenDashboardVisible: false);
+    }
+
+    /// <summary>
+    /// States the outcome of an update the previous version started for itself. That version could
+    /// not: Setup installs unattended over the files it held, so it was gone before an outcome existed.
+    /// The running version against the one the update was for is the evidence. Success and failure are
+    /// both said, because the installer's own messages were suppressed. Never throws.
+    /// </summary>
+    private void ReportTheOutcomeOfAnUnattendedUpdate()
+    {
+        try
+        {
+            var log = new UpdateLog(_loggerFactory!.CreateLogger<AppUpdate>());
+            if (UnattendedUpdate.Take(AppInfo.DataDir, AppInfo.Version, log) is not { } outcome) return;
+
+            log.Info($"Unattended update to v{outcome.TargetVersion}: {outcome.Verdict}, running v{outcome.RunningVersion}"
+                     + (outcome.Refusal is { } refusal ? $" ({refusal})" : "") + ".");
+            var report = UpdateStatusUi.UnattendedOutcomeReport(outcome);
+            ShowBalloon($"{AppInfo.Name} — update", report.Message,
+                        isError: report.IsError, suppressWhenDashboardVisible: false);
+        }
+        catch (Exception ex)
+        {
+            // A report is not worth a failed start-up.
+            _loggerFactory?.CreateLogger<AppUpdate>().LogError(ex, "Could not report the unattended update's outcome");
+        }
     }
 
     /// <summary>Writes the outcome of the startup config relocation, which runs before the logger
@@ -873,7 +903,7 @@ public partial class App : Application
     ///
     /// <para>A check and nothing else: no download, no dialog, no installer. The badge it raises
     /// opens the release page, and the only path that fetches and runs an installer is the explicit
-    /// "Check for updates", which asks first. This app does not replace itself unattended.</para>
+    /// "Check for updates", which asks first. This app never replaces itself without being asked.</para>
     /// </summary>
     private async Task CheckForUpdatesOnStartupAsync()
     {

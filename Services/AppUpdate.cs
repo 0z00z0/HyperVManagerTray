@@ -45,8 +45,15 @@ internal sealed class AppUpdate : IDisposable
             // The installer waits for this exit before it ends anything, so the sooner the app goes
             // the sooner the upgrade proceeds. Marked first: an unmarked exit is the one the relaunch
             // hook brings back — straight into the upgrade that is replacing it.
+            //
+            // The record goes down before the exit. Setup installs unattended over this process's
+            // files, so this process is gone before an outcome exists; the version that starts next
+            // reports it from the record. Nothing here waits on Setup: the wait would hold the very
+            // files it is about to replace.
             Shutdown = () =>
             {
+                if (_prompts.AcceptedVersion is { } target)
+                    UnattendedUpdate.Record(AppInfo.DataDir, target, DateTimeOffset.UtcNow, log);
                 AppLifecycle.MarkDeliberateExit();
                 exitForInstaller();
             },

@@ -61,6 +61,12 @@ installer is per-user: no admin is needed to install, and the app elevates itsel
 Updating means downloading the current installer from the same page and running it over the
 existing install. `config.json` is untouched by an upgrade.
 
+An update accepted from **Check for updates** installs unattended: no wizard and no page to
+advance. The app closes, the installer shows its progress window only, and the app starts again on
+the new version. At the next start a tray notification states whether the update landed; one that
+did not complete names both versions and the installer's log,
+`%AppData%\HyperVManagerTray\installer-<previous version>.log`.
+
 The setup offers one optional task:
 
 - **Run at startup** — a `/RL HIGHEST` logon task (one UAC prompt, only if ticked) so the
