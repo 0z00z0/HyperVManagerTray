@@ -88,10 +88,7 @@ public class InstallerSilentInstallTests
     {
         var code = Code();
 
-        Assert.Contains(
-            "if ImageIsRunning(ImageName) then ShellExec('runas', ExpandConstant('{cmd}'), " +
-            "'/C taskkill /IM \"' + ImageName + '\" /F',",
-            code);
+        Assert.Contains("if ImageIsRunning(ImageName) then StopImageElevated(ImageName);", code);
     }
 
     /// <summary>
@@ -156,6 +153,6 @@ public class InstallerSilentInstallTests
     {
         var elevations = Regex.Matches(Code(), @"ShellExec\('runas'");
 
-        Assert.Equal(3, elevations.Count);   // CloseRunningApp (via PrepareToInstall), RegisterStartupTask, StopAppAndRemoveStartupTask
+        Assert.Equal(3, elevations.Count);   // StopImageElevated (via PrepareToInstall), RegisterStartupTask, StopAppAndRemoveStartupTask
     }
 }
