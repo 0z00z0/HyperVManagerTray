@@ -62,13 +62,13 @@ public class NetworkActionsVocabularyTests
     [InlineData("NetworkStatusUi.RepairNoSwitchesMessage")]
     [InlineData("NetworkStatusUi.RepairReportFor")]
     [InlineData("NetworkStatusUi.RepairUnexpectedErrorMessage")]
-    [InlineData("NetworkStatusUi.AddRuleNoAdapterMessage")]
-    [InlineData("NetworkStatusUi.AddRuleWirelessMessage")]
-    [InlineData("NetworkStatusUi.AddRuleDuplicateMessage")]
-    [InlineData("NetworkStatusUi.AddRuleSaveFailedMessage")]
-    [InlineData("NetworkStatusUi.AddRuleUnexpectedErrorMessage")]
+    [InlineData("NetworkStatusUi.AddRuleRefusal")]
+    [InlineData("NetworkStatusUi.AddRuleReportFor")]
     [InlineData("NetworkStatusUi.ReCheckUnavailableMessage")]
     [InlineData("NetworkStatusUi.ReCheckUnexpectedErrorMessage")]
+    [InlineData("NetworkStatusUi.OverrideBindFailedMessage")]
+    [InlineData("NetworkStatusUi.OverrideNoAdapterMessage")]
+    [InlineData("NetworkStatusUi.OverrideBusyMessage")]
     [InlineData("NetworkStatusUi.OverrideUnexpectedErrorMessage")]
     public void EveryOutcome_StillReportsSomething(string message)
     {
@@ -369,18 +369,33 @@ public class NetworkActionsVocabularyTests
     }
 
     /// <summary>
-    /// The Wi-Fi rejection was shortened for the balloon (which truncates), so this pins the half most
-    /// easily lost in an edit: that NO RULE WAS ADDED. A rejection that dropped it would read as a rule
-    /// the user still has — and they would go looking for why it never bridges (issue #29, finding 5).
+    /// "Add current network" must never look as if it did nothing: every outcome, refusals included, has
+    /// text for the line beside the button. A new outcome without text fails here rather than leaving
+    /// the button silent.
     /// </summary>
     [Fact]
-    public void AddRuleWireless_StillSaysNoRuleWasAdded()
+    public void AddRule_EveryOutcomeHasText()
     {
-        var msg = NetworkStatusUi.AddRuleWirelessMessage("Intel(R) Wi-Fi 6 AX201 160MHz");
+        foreach (var outcome in Enum.GetValues<NetworkStatusUi.AddRuleOutcome>())
+        {
+            var report = NetworkStatusUi.AddRuleReportFor(outcome, "Office", "10.0.0.0/23", "Bridged");
+            Assert.Equal(outcome, report.Outcome);
+            Assert.False(string.IsNullOrWhiteSpace(report.Message), $"{outcome} has no text beside the button.");
+        }
+    }
 
-        Assert.Contains("Intel(R) Wi-Fi 6 AX201 160MHz", msg);
-        Assert.Contains("no rule was added", msg, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("wired", msg, StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// A Wi-Fi adapter is added like a wired one. The refusal of Wi-Fi was the reason pressing the button
+    /// on a laptop without a dock produced no rule.
+    /// </summary>
+    [Fact]
+    public void AddRule_WiFiAdapterIsNotRefused()
+    {
+        var wifi = new Services.CurrentNetworkInfo("Wi-Fi adapter", "AA:BB:CC:DD:EE:FF", "10.0.0.45", "10.0.0.0/23",
+                                                   IsWireless: true, InterfaceId: "{00000000-0000-0000-0000-000000000001}");
+        var (refusal, _) = NetworkStatusUi.AddRuleRefusal(wifi, []);
+
+        Assert.Null(refusal);
     }
 
     [Fact]
@@ -428,8 +443,9 @@ public class NetworkActionsVocabularyTests
         Add(nameof(NetworkStatusUi.RepairUnexpectedErrorMessage),
             NetworkStatusUi.RepairUnexpectedErrorMessage("RPC server unavailable"));
         Add(nameof(NetworkStatusUi.AddRuleNoAdapterMessage),   NetworkStatusUi.AddRuleNoAdapterMessage());
-        Add(nameof(NetworkStatusUi.AddRuleWirelessMessage),
-            NetworkStatusUi.AddRuleWirelessMessage("Intel(R) Wi-Fi 6 AX201 160MHz"));
+        Add(nameof(NetworkStatusUi.AddRuleAddedMessage),
+            NetworkStatusUi.AddRuleAddedMessage("Office LAN", "10.0.0.0/23", "Bridged"));
+        Add(nameof(NetworkStatusUi.AddRuleCancelledMessage),   NetworkStatusUi.AddRuleCancelledMessage());
         Add(nameof(NetworkStatusUi.AddRuleDuplicateMessage),   NetworkStatusUi.AddRuleDuplicateMessage("Office LAN"));
         Add(nameof(NetworkStatusUi.AddRuleSaveFailedMessage),  NetworkStatusUi.AddRuleSaveFailedMessage("access denied"));
         Add(nameof(NetworkStatusUi.AddRuleUnexpectedErrorMessage),
@@ -439,6 +455,14 @@ public class NetworkActionsVocabularyTests
             NetworkStatusUi.ReCheckUnexpectedErrorMessage("WMI went away"));
         Add(nameof(NetworkStatusUi.OverrideUnexpectedErrorMessage),
             NetworkStatusUi.OverrideUnexpectedErrorMessage("vDev", "WMI went away"));
+        Add(nameof(NetworkStatusUi.OverrideBridgedMessage),
+            NetworkStatusUi.OverrideBridgedMessage("vDev", "Bridged", "Intel(R) Wi-Fi 6 AX201 160MHz"));
+        Add(nameof(NetworkStatusUi.OverrideBindFailedMessage),
+            NetworkStatusUi.OverrideBindFailedMessage("vDev", "Bridged", "Intel(R) Wi-Fi 6 AX201 160MHz"));
+        Add(nameof(NetworkStatusUi.OverrideNoAdapterMessage),  NetworkStatusUi.OverrideNoAdapterMessage("vDev", "Bridged"));
+        Add(nameof(NetworkStatusUi.OverrideMoveFailedAfterBindMessage),
+            NetworkStatusUi.OverrideMoveFailedAfterBindMessage("vDev", "Bridged", "Intel(R) Wi-Fi 6 AX201 160MHz"));
+        Add(nameof(NetworkStatusUi.OverrideBusyMessage),       NetworkStatusUi.OverrideBusyMessage("vDev"));
         return data;
     }
 

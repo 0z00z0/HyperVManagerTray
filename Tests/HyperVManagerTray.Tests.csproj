@@ -48,6 +48,9 @@
          the failure is reported before vmconnect steals focus — is testable at all. Side effects are
          delegates, so this links with no WinUI and no live host; it depends only on NetworkStatusUi. -->
     <Compile Include="..\Helpers\VmConnectFlow.cs"    Link="Linked\VmConnectFlow.cs" />
+    <!-- The manual override's order of work: a VM never moves onto a switch that could not be bound.
+         Side effects are delegates, so it links with no WMI and no live host. -->
+    <Compile Include="..\Helpers\OverrideFlow.cs"     Link="Linked\OverrideFlow.cs" />
     <!-- Issues #34/#47: the managed-VM set arithmetic and copy behind the tray's Manage VMs list and
          Settings' add/remove. Pure (no WinUI), which is what lets it be linked and tested here. -->
     <Compile Include="..\Helpers\VmConfigUi.cs"       Link="Linked\VmConfigUi.cs" />

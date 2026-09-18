@@ -146,13 +146,15 @@ public sealed record MatchResult(
             : null;
 }
 
-/// <summary>Network details of the current primary host adapter, used by "Add current network" feature.</summary>
+/// <summary>Network details of the current primary host adapter, used by "Add current network" and by the
+/// manual override, which binds the bridged switch to this adapter. Wired and Wi-Fi alike.</summary>
 public sealed record CurrentNetworkInfo(
     string AdapterDescription,   // DISPLAY name (FriendlyName when set, else Description) — issue #32
     string Mac,          // colon-separated, e.g. "AA:BB:CC:DD:EE:FF"
     string Ip,           // e.g. "10.0.0.45"
     string IpCidr,       // e.g. "10.0.0.0/23"
-    bool   IsWireless);  // Wi-Fi (Msvm_WiFiPort) — the WMI bridge-bind path can't target it (issue #29)
+    bool   IsWireless,   // shown only: Wi-Fi binds like wired
+    string InterfaceId = "");  // NetworkInterface.Id — what a bind targets; never a name
 
 /// <summary>
 /// A physical NIC as offered in the "Rename network adapter" list (issue #15): its connection alias,
@@ -229,7 +231,8 @@ public static class AdapterMatcher
                 Mac:        mac,
                 Ip:         unicast.Address.ToString(),
                 IpCidr:     CalculateCidr(unicast),
-                IsWireless: !IsBridgeableAdapterType(nic.NetworkInterfaceType));
+                IsWireless: nic.NetworkInterfaceType == NetworkInterfaceType.Wireless80211,
+                InterfaceId: nic.Id);
         }
         catch { return null; }
     }
@@ -646,17 +649,6 @@ public static class AdapterMatcher
     }
 
     // ── Small utilities ───────────────────────────────────────────────────────
-
-    /// <summary>
-    /// True for adapter types this app's WMI switch-binding path can actually bridge onto (issue #29,
-    /// finding 5). <see cref="HyperVManager.UpdateSwitchBindingAsync"/> resolves the external uplink via
-    /// <c>Msvm_ExternalEthernetPort</c> only; a wireless adapter surfaces as <c>Msvm_WiFiPort</c>, which
-    /// that lookup never queries, so a rule bound to Wi-Fi could never take effect. Pure (takes the
-    /// <see cref="NetworkInterfaceType"/>) so it can be unit-tested without a live adapter and reused to
-    /// reject a Wi-Fi network at rule-creation time.
-    /// </summary>
-    internal static bool IsBridgeableAdapterType(NetworkInterfaceType type) =>
-        type != NetworkInterfaceType.Wireless80211;
 
     /// <summary>True only for adapters that carry a standard 48-bit (6-byte) MAC address.</summary>
     private static bool HasValidMac(NetworkInterface nic)
