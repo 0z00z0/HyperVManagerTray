@@ -17,8 +17,7 @@ namespace HyperVManagerTray.Helpers;
 /// the window between the tray icon appearing and the first apply pass confirming an outcome. On a real
 /// taskbar amber reads as "network degraded" — the tray's warning convention — so an app that had merely
 /// not finished looking yet announced a problem at every logon. The amber was also forced rather than
-/// chosen: the glyph geometry is identical across states, so colour is the only channel carrying state,
-/// and <c>RenderIcon_EveryStateHasItsOwnColour</c> requires a new state to bring a new hue.
+/// chosen: <c>RenderIcon_EveryStateHasItsOwnColour</c> requires a new state to bring a new hue.
 ///
 /// <para>The resolution is that "the first pass is in flight" was never a distinct ICON state to begin
 /// with. <see cref="Unknown"/> means <i>no claim about the network</i>, and that is exactly true while the
@@ -37,35 +36,35 @@ public enum TrayIconState
 }
 
 /// <summary>
-/// Generates the tray icon at runtime (no image assets): a minimalist "virtual machine" glyph —
-/// a hollow monitor/display with two content bars and a stand — drawn in a single muted colour
-/// on a fully transparent background.  The colour signals state (grey = no claim about the network,
-/// green = bridged to physical LAN, blue = NAT/fallback, red = the apply failed); the transparent
-/// background lets the same icon read on both light and dark taskbars.  Colours are intentionally
-/// medium-luminance, not vivid, so the glyph's edges stay crisp against either backdrop.
+/// Generates the tray icon at runtime (no image assets): the "route fork" glyph — a virtual machine
+/// above a network line that forks to a square end (physical LAN) and a round end (NAT) — drawn in a
+/// single muted colour on a fully transparent background.  State is carried twice, by colour and by
+/// shape: grey with a hollow screen and no lit branch = no claim about the network, green with the
+/// square end lit = bridged to the physical LAN, blue with the round end lit = NAT/fallback, red with a
+/// cross in place of the fork = the apply failed.  The transparent background lets the same icon read
+/// on both light and dark taskbars.  Colours are intentionally medium-luminance, not vivid, so the
+/// glyph's edges stay crisp against either backdrop.
 ///
-/// One colour per state is a rule, not a coincidence: the geometry is identical across all four, so the
-/// colour is the ONLY channel carrying the state, and two states sharing one would be indistinguishable
-/// rather than merely similar (RenderIcon_EveryStateHasItsOwnColour enumerates it).  Issue #58 removed
-/// the amber "starting" state rather than weakening that rule — see TrayIconState.
+/// One colour per state is a rule, not a coincidence: colour is the channel that reads at a glance, and
+/// two states sharing one would be told apart only by a few pixels at 16 px
+/// (RenderIcon_EveryStateHasItsOwnColour enumerates it).  Issue #58 removed the amber "starting" state
+/// rather than weakening that rule — see TrayIconState.
 ///
 /// Four multi-size .ico files are written next to the exe and swapped on state changes; writing
 /// to disk lets H.NotifyIcon reload them and avoids the GDI handle leak of Bitmap.GetHicon().
 ///
-/// Icon version: v5 — the restyled HyperVManagerTray product glyph (the 0z0-guideline product
-/// icon set, issue #26): a rounder hollow monitor, cleaner content bars and a wider grounded
-/// stand.  The exact same 16-unit geometry is drawn — plated white-on-blue with a green
-/// connection dot — by installer\Generate-AppIcon.ps1 for AppIcon.ico / TrayBlue.ico, so the tray
-/// glyphs and the app icon are one consistent family.  The version suffix forces regeneration on
-/// first run after an upgrade.
+/// Icon version: v6 — the route-fork glyph.  installer\RouteGlyph.ps1 draws the same 16-unit geometry,
+/// white on a blue plate, for AppIcon.ico, and flat blue for the Start-menu shortcut's TrayBlue.ico, so
+/// the tray glyphs and the app icon are one family.  The version suffix forces regeneration on first
+/// run after an upgrade.
 /// </summary>
 internal static class IconGenerator
 {
-    // v5 — rename forces regeneration on first run after upgrade; old v2/v3/v4 files are ignored.
-    private const string UnknownFile  = "icon-unknown-v5.ico";
-    private const string BridgedFile  = "icon-bridged-v5.ico";
-    private const string FallbackFile = "icon-fallback-v5.ico";
-    private const string FailedFile   = "icon-failed-v5.ico";   // issue #37
+    // v6 — rename forces regeneration on first run after upgrade; older files are ignored.
+    private const string UnknownFile  = "icon-unknown-v6.ico";
+    private const string BridgedFile  = "icon-bridged-v6.ico";
+    private const string FallbackFile = "icon-fallback-v6.ico";
+    private const string FailedFile   = "icon-failed-v6.ico";   // issue #37
 
     // Frame sizes baked into each .ico.  64/48 are picked by Windows on 4K (200 %+ DPI)
     // without upscaling; 32/24/20/16 cover 100–150 % tray DPI.
@@ -109,59 +108,137 @@ internal static class IconGenerator
 
     // ── Rendering ───────────────────────────────────────────────────────────────
 
-    // Glyph is designed in a 16-unit logical space and scaled to each frame size.  Everything is
-    // drawn with filled shapes (no thin strokes) so it stays crisp down to 16 px.  These are the
-    // canonical v5 product-glyph coordinates — installer\Generate-AppIcon.ps1 draws the identical
-    // geometry for AppIcon.ico / TrayBlue.ico, so keep the two in sync if either changes.  Layout:
-    //   ┌──────────────────────┐   ← hollow monitor frame (transparent centre)
-    //   │  ▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭  │   ← content bar 1
-    //   │  ▭▭▭▭▭▭▭▭▭▭          │   ← content bar 2
-    //   └──────────┬───────────┘
-    //          ▭▭▭▭▭▭▭▭▭            ← stand neck + wider foot
+    // Opacity of the branch and end that are NOT the current route (38 %), so the lit route reads first.
+    private const int DimAlpha = 97;
+
+    // "Route fork" glyph, designed in a 16-unit logical space with a half-unit margin on every side:
+    //
+    //        ┌─────────┐        ← virtual machine: rounded frame with a slot (a hollow screen while Unknown)
+    //        └────┬────┘
+    //            ╱ ╲            ← the network line forks
+    //         ■       ●         ← square end = physical LAN (Bridged), round end = NAT (Fallback)
+    //
+    // The lit branch and its solid end show the current route; the other branch and a hollow end are
+    // drawn at 38 % opacity.  Unknown lights neither branch and hollows the screen; Failed replaces the
+    // fork with a cross.  Every edge is snapped to the pixel grid of the frame being drawn, so the
+    // horizontal and vertical edges stay one colour at 16 px instead of smearing across two pixels.
+    //
+    // installer\RouteGlyph.ps1 draws the identical geometry for the application icon, the Start-menu
+    // shortcut icon and the installer wizard images; keep the two in sync if either changes.
     /// <summary>Renders the tray glyph for <paramref name="state"/> at the given pixel size (transparent background).</summary>
     internal static Bitmap RenderIcon(int size, TrayIconState state)
     {
-        var color = ColorFor(state);
         var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
         using var g = Graphics.FromImage(bmp);
         g.SmoothingMode   = SmoothingMode.AntiAlias;
-        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        g.PixelOffsetMode = PixelOffsetMode.HighQuality;   // pixel i spans [i, i+1], so integer edges are crisp
         g.Clear(Color.Transparent);   // transparent background — works on light & dark taskbars
-        g.ScaleTransform(size / 16f, size / 16f);
 
-        using var fill = new SolidBrush(color);
-
-        // ── Hollow monitor frame (outer ∖ inner via alternate fill = a ring) ──
-        using (var frame = new GraphicsPath(FillMode.Alternate))
-        {
-            AddRoundedRect(frame, new RectangleF(1.5f, 2.3f, 13.0f, 8.4f), 1.9f);  // outer bezel
-            AddRoundedRect(frame, new RectangleF(3.0f, 3.8f, 10.0f, 5.4f), 1.1f);  // screen cut-out
-            g.FillPath(fill, frame);
-        }
-
-        // ── Screen content bars (inside the transparent cut-out) ─────────────
-        using (var bars = new GraphicsPath())
-        {
-            AddRoundedRect(bars, new RectangleF(4.2f, 5.2f, 6.6f, 1.0f), 0.5f);  // long bar
-            AddRoundedRect(bars, new RectangleF(4.2f, 7.0f, 4.2f, 1.0f), 0.5f);  // short bar
-            g.FillPath(fill, bars);
-        }
-
-        // ── Stand: neck + wider foot ─────────────────────────────────────────
-        using (var stand = new GraphicsPath())
-        {
-            AddRoundedRect(stand, new RectangleF(7.0f, 10.7f, 2.0f, 1.4f),  0.3f);   // neck
-            AddRoundedRect(stand, new RectangleF(4.6f, 12.0f, 6.8f, 1.5f),  0.75f);  // foot
-            g.FillPath(fill, stand);
-        }
-
+        DrawRouteGlyph(g, new Grid(0f, size / 16f, size / 2f), ColorFor(state), state);
         return bmp;
     }
 
+    /// <summary>
+    /// Maps the 16-unit design space onto pixels: <c>origin + unit × scale</c>, with every coordinate
+    /// rounded to a whole pixel, halves rounded away from the canvas centre so the glyph stays
+    /// symmetric about its stem.  Widths round to the nearest whole pixel, at least one.
+    /// </summary>
+    private readonly record struct Grid(float Origin, float Scale, float Centre)
+    {
+        public float P(float unit)
+        {
+            var d = Origin + unit * Scale - Centre;
+            return Centre + MathF.Sign(d) * MathF.Round(MathF.Abs(d), MidpointRounding.AwayFromZero);
+        }
+
+        public float W(float units) => MathF.Max(1f, MathF.Round(units * Scale, MidpointRounding.ToEven));
+    }
+
+    private static void DrawRouteGlyph(Graphics g, Grid u, Color color, TrayIconState state)
+    {
+        var dim = Color.FromArgb(DimAlpha, color);
+        using var solid = new SolidBrush(color);
+        using var faint = new SolidBrush(dim);
+
+        // ── Virtual machine: frame with a slot, or a hollow screen while nothing is known ──
+        using (var vm = new GraphicsPath(FillMode.Alternate))
+        {
+            AddRoundedRect(vm, Edges(u.P(3.4f), u.P(0.5f), u.P(12.6f), u.P(6.9f)), 1.5f * u.Scale);
+            if (state == TrayIconState.Unknown)
+                AddRoundedRect(vm, Edges(u.P(4.8f), u.P(1.9f), u.P(11.2f), u.P(5.5f)), 0.5f * u.Scale);
+            else
+                AddRoundedRect(vm, Edges(u.P(5.0f), u.P(2.5f), u.P(11.0f), u.P(3.9f)), 0.7f * u.Scale);
+            g.FillPath(solid, vm);
+        }
+
+        if (state == TrayIconState.Failed)
+        {
+            // Short neck, then a cross where the fork would be.
+            g.FillRectangle(solid, Edges(u.P(7.1f), u.P(6.9f), u.P(8.9f), u.P(9.2f)));
+            using var cross = RoundPen(color, u.W(2.0f));
+            g.DrawLine(cross, u.P(5.4f), u.P(10.2f), u.P(10.6f), u.P(14.5f));
+            g.DrawLine(cross, u.P(10.6f), u.P(10.2f), u.P(5.4f), u.P(14.5f));
+            return;
+        }
+
+        // ── Stem down to the fork ──
+        g.FillRectangle(solid, Edges(u.P(7.1f), u.P(6.9f), u.P(8.9f), u.P(9.6f)));
+
+        bool lan = state == TrayIconState.Bridged;
+        bool nat = state == TrayIconState.Fallback;
+        float forkX = u.P(8f), forkY = u.P(9.2f), endY = u.P(12.4f);
+
+        // ── Left branch → square end (physical LAN) ──
+        using (var pen = RoundPen(lan ? color : dim, u.W(lan ? 1.8f : 1.6f)))
+            g.DrawLine(pen, forkX, forkY, u.P(3.2f), endY);
+        float sqBottom = u.P(15.5f);
+        var square = Edges(u.P(0.6f), sqBottom - u.W(4.2f), u.P(5.2f), sqBottom);
+        using (var end = new GraphicsPath(FillMode.Alternate))
+        {
+            AddRoundedRect(end, square, 0.8f * u.Scale);
+            if (!lan)
+            {
+                var ring = u.W(1.3f);
+                var inner = RectangleF.Inflate(square, -ring, -ring);
+                AddRoundedRect(end, inner, MathF.Max(0f, 0.8f * u.Scale - ring));
+            }
+            g.FillPath(lan ? solid : faint, end);
+        }
+
+        // ── Right branch → round end (NAT fallback) ──
+        using (var pen = RoundPen(nat ? color : dim, u.W(nat ? 1.8f : 1.6f)))
+            g.DrawLine(pen, forkX, forkY, u.P(12.8f), endY);
+        var diameter = u.W(4.5f);
+        float right = u.P(15.45f), bottom = u.P(15.5f);
+        var disc = new RectangleF(right - diameter, bottom - diameter, diameter, diameter);
+        using (var end = new GraphicsPath(FillMode.Alternate))
+        {
+            end.AddEllipse(disc);
+            if (!nat)
+            {
+                var ring = u.W(1.3f);
+                end.AddEllipse(RectangleF.Inflate(disc, -ring, -ring));
+            }
+            g.FillPath(nat ? solid : faint, end);
+        }
+    }
+
+    private static RectangleF Edges(float left, float top, float right, float bottom) =>
+        RectangleF.FromLTRB(left, top, right, bottom);
+
+    private static Pen RoundPen(Color color, float width) =>
+        new(color, width) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+
     private static void AddRoundedRect(GraphicsPath path, RectangleF r, float radius)
     {
-        var d = radius * 2;
+        radius = MathF.Min(radius, MathF.Min(r.Width, r.Height) / 2f);
         path.StartFigure();
+        if (radius <= 0f)
+        {
+            path.AddRectangle(r);
+            return;
+        }
+        var d = radius * 2;
         path.AddArc(r.X,         r.Y,          d, d, 180, 90);
         path.AddArc(r.Right - d, r.Y,          d, d, 270, 90);
         path.AddArc(r.Right - d, r.Bottom - d, d, d,   0, 90);
