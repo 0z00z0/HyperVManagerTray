@@ -143,6 +143,12 @@
     <Compile Include="..\Models\NetworkRule.cs"       Link="Linked\NetworkRule.cs" />
     <Compile Include="..\Models\VmTarget.cs"          Link="Linked\VmTarget.cs" />
     <Compile Include="..\Models\VmStatus.cs"          Link="Linked\VmStatus.cs" />
+    <!-- Issue #114: the refusal to stop a Hyper-V service while a managed VM runs. VM states and every
+         side effect arrive as arguments or delegates, so no service is ever touched by a test.
+         Services\HyperVServiceMonitor.cs, which really starts and stops services, is deliberately NOT linked. -->
+    <Compile Include="..\Models\HyperVServiceKind.cs"  Link="Linked\HyperVServiceKind.cs" />
+    <Compile Include="..\Helpers\ServiceStopGuard.cs"  Link="Linked\ServiceStopGuard.cs" />
+    <Compile Include="..\Helpers\ServiceStopFlow.cs"   Link="Linked\ServiceStopFlow.cs" />
 
     <!-- The MQTT integration. None of these touch WinUI, so the test assembly stays runtime-free.
          MqttService.cs is deliberately absent: it is the composition shell over NetworkMonitor,
