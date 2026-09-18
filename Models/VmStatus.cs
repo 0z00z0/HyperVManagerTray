@@ -12,6 +12,9 @@ public sealed class VmStatus
     public string  State       { get; set; } = "Unknown";  // Running, Off, Paused, Saved, …
     public string  Switch      { get; set; } = "";          // current virtual switch name, shown only
     public string  SwitchId    { get; set; } = "";          // current virtual switch ID
+    // True when the switch is external and the adapter it is bound to is absent or has no link, so the
+    // VM has no route out and any address still reported for it belongs to a network it has left.
+    public bool    SwitchUplinkDown { get; set; }
     // Transient verb+percent from the VM's active Msvm_ConcreteJob, mirroring Hyper-V Manager's
     // Status column (e.g. "Restoring (10%)"). Empty when no operation is in flight. Supersedes the
     // coarse EnabledState-derived State in the UI label while set; colour still comes from State.
