@@ -480,7 +480,7 @@ end;
 //
 // The app is ended straight away rather than asked about: taskkill returns once termination is
 // requested and its UAC prompt can be declined, so presence is then polled, and only a process
-// that survived gets the Retry/Cancel box. A Retry re-kills only after a fresh check still finds
+// that survived gets the Retry/Cancel box, on an interactive run only. A Retry re-kills only after a fresh check still finds
 // it present — if the app was exited by hand before Retry was pressed, no second UAC prompt.
 function CloseRunningApp(const DisplayName, ImageName: string): String;
 var
@@ -496,7 +496,7 @@ begin
   // Nobody to answer a message box on a winget or scripted silent run, and 'runas' would raise a UAC
   // prompt nobody can approve either — abort loudly now rather than proceed and fail later on a
   // locked file. The app's own update goes on: it inherits the app's elevation, so the kill below
-  // raises no prompt, and the user who asked for it is there to answer Retry if the kill fails.
+  // raises no prompt.
   if WizardSilent() and not StartedByTheApplication() then
   begin
     Result := TerminalMessage;
@@ -506,6 +506,15 @@ begin
   StopImageElevated(ImageName);
   while StillRunningAfterWait(ImageName) do
   begin
+    // Only the app's own update reaches here silently. It shows no wizard, and MsgBox ignores
+    // /SUPPRESSMSGBOXES, so a Retry box would stand alone on the desktop. Stop instead; the refusal
+    // is recorded in PrepareToInstall and reported at the next start.
+    if WizardSilent() then
+    begin
+      Result := TerminalMessage;
+      Exit;
+    end;
+
     if MsgBox(DisplayName + ' is still running, so its files cannot be replaced.'
               + #13#10#13#10
               + 'Exit it from the tray icon, then choose Retry.',

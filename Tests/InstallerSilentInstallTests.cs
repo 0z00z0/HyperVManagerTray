@@ -67,7 +67,8 @@ public class InstallerSilentInstallTests
     /// (<c>CloseRunningApp</c>), and the silent path is a DELIBERATE divergence from that old
     /// behaviour: a silent run can answer neither a message box nor a UAC prompt, so it aborts
     /// Setup immediately instead of proceeding quietly. The app's own update is the one silent run
-    /// exempt: it inherits the app's elevation and the user who asked for it is present.
+    /// that attempts the kill, since it inherits the app's elevation; if the app survives it, that run
+    /// stops without the Retry box, which would otherwise stand alone with no wizard behind it.
     /// </summary>
     [Fact]
     public void ASilentRunAbortsImmediatelyInsteadOfSkippingTheCheck()
@@ -76,6 +77,7 @@ public class InstallerSilentInstallTests
 
         Assert.Contains("if not ImageIsRunning(ImageName) then Exit;", code);
         Assert.Contains("if WizardSilent() and not StartedByTheApplication() then begin Result := TerminalMessage; Exit; end;", code);
+        Assert.Contains("while StillRunningAfterWait(ImageName) do begin if WizardSilent() then begin Result := TerminalMessage; Exit; end; if MsgBox(", code);
     }
 
     /// <summary>
