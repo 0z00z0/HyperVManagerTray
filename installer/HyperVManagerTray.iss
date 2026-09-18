@@ -62,9 +62,11 @@ WizardSmallImageFile=wizard\wizsmall-55x58.bmp,wizard\wizsmall-69x73.bmp,wizard\
 ; rights to end it.  PrepareToInstall (see
 ; [Code], CloseRunningApp) closes it instead: after the app's own update it first waits for the
 ; app to exit by itself, then ends whatever is still running with one elevated taskkill, and
-; offers Retry/Cancel only if that did not work.  A silent run (which can answer neither a
-; message box nor a UAC prompt) aborts Setup instead if the app is still running.  Do NOT
-; auto-restart — the app is relaunched explicitly by LaunchApp on interactive installs only.
+; offers Retry/Cancel only if that did not work.  A winget or scripted silent run (which can
+; answer neither a message box nor a UAC prompt) aborts Setup instead if the app is still running;
+; the app's own silent update goes through the same kill and Retry as an interactive run.  Do NOT
+; auto-restart — the app is relaunched explicitly by LaunchApp, on interactive installs and on the
+; app's own update.
 CloseApplications=no
 RestartApplications=no
 
@@ -424,10 +426,26 @@ begin
 end;
 
 // True when the app started this run for its own update. It passes the switch from
-// Helpers\AppUpdateOptions.cs and exits as soon as this installer has started.
+// Helpers\AppUpdateOptions.cs and exits as soon as this installer has started. That run is silent
+// like a winget or scripted one and cannot be told from them by WizardSilent, yet a user asked for
+// it, it runs with the elevated app's token, and the app expects to be started again afterwards.
 function StartedByTheApplication(): Boolean;
 begin
   Result := ExpandConstant('{param:UPDATEFROMAPP|0}') = '1';
+end;
+
+// Where a refusal is stated, since the app's own update states it nowhere else: its message boxes
+// are suppressed and the app that asked has exited. The next start reads this beside its own record
+// of the attempt and reports both. The file name must stay equal to UnattendedUpdate.RefusalFileName
+// in the app; UnattendedUpdateTests pins the pair. ASCII, one short line: it goes into a balloon.
+procedure RecordTheRefusal();
+var
+  Dir: string;
+begin
+  Dir := ExpandConstant('{userappdata}\HyperVManagerTray');
+  if ForceDirectories(Dir) then
+    SaveStringToFile(Dir + '\update-refused.txt',
+                     'Setup installed nothing because {#AppName} was still running.', False);
 end;
 
 // The app queues its own exit as it starts this run, so that exit may still be in flight here.
@@ -475,9 +493,11 @@ begin
   TerminalMessage := DisplayName + ' is still running, so its files cannot be replaced. Exit it '
                     + 'from the tray icon, then run this installer again.';
 
-  // Nobody to answer a message box on a silent run, and 'runas' would raise a UAC prompt nobody
-  // can approve either — abort loudly now rather than proceed and fail later on a locked file.
-  if WizardSilent() then
+  // Nobody to answer a message box on a winget or scripted silent run, and 'runas' would raise a UAC
+  // prompt nobody can approve either — abort loudly now rather than proceed and fail later on a
+  // locked file. The app's own update goes on: it inherits the app's elevation, so the kill below
+  // raises no prompt, and the user who asked for it is there to answer Retry if the kill fails.
+  if WizardSilent() and not StartedByTheApplication() then
   begin
     Result := TerminalMessage;
     Exit;
@@ -507,6 +527,11 @@ begin
   // installer doesn't, so this is the only place that can. See CloseRunningApp for the wait, the
   // kill, the retry loop and the silent-run behaviour.
   Result := CloseRunningApp('{#AppName}', '{#AppExe}');
+
+  // Setup stops here on a non-empty result, and in the app's own update it stops showing nothing.
+  // Leave the reason where the next start reads it, so the refusal reaches the user rather than
+  // only an exit code nobody is left to read.
+  if (Result <> '') and StartedByTheApplication() then RecordTheRefusal();
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -522,9 +547,12 @@ begin
     // Clear the dead background-update task from machines carrying one. Unconditional, so an
     // upgrade cleans up whether or not the option was ever ticked. Non-elevated, no prompt.
     RemoveAutoUpdateTask();
-    // Auto-launch only on an interactive install (not silent installs). Runs after task
-    // creation so a freshly-created startup task is used for a prompt-free launch.
-    if not WizardSilent() then LaunchApp();
+    // Auto-launch on an interactive install. Runs after task creation so a freshly-created startup
+    // task is used for a prompt-free launch. The app's own update is silent, but the app closed
+    // itself for it and expects to come back, so it is started too; this Setup inherited the app's
+    // elevation, so neither route raises a prompt. Other silent installs start nothing.
+    if not WizardSilent() then LaunchApp()
+    else if StartedByTheApplication() then LaunchApp();
   end;
 end;
 
