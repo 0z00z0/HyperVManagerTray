@@ -309,12 +309,12 @@ window shows both lists together.
 
 | Name | Version | Author / Publisher | Purpose | License |
 |---|---|---|---|---|
-| [Microsoft.WindowsAppSDK](https://www.nuget.org/packages/Microsoft.WindowsAppSDK) | 2.4.0 | Microsoft | WinUI 3 framework (windowing, XAML, Mica) | MS-EULA¹ |
+| [Microsoft.WindowsAppSDK](https://www.nuget.org/packages/Microsoft.WindowsAppSDK) | 2.5.1 | Microsoft | WinUI 3 framework (windowing, XAML, Mica) | MS-EULA¹ |
 | [Microsoft.Windows.SDK.BuildTools](https://www.nuget.org/packages/Microsoft.Windows.SDK.BuildTools) | 10.0.28000.2705 | Microsoft | Windows SDK build tooling for the App SDK | MS-EULA¹ |
 | [H.NotifyIcon.WinUI](https://github.com/HavenDV/H.NotifyIcon) | 2.4.1 | HavenDV | System-tray icon + native context menu for WinUI 3 | MIT |
 | [System.Drawing.Common](https://www.nuget.org/packages/System.Drawing.Common) | 10.0.12 | Microsoft | Renders the tray `.ico` at runtime | MIT |
 | [Microsoft.Extensions.Logging](https://www.nuget.org/packages/Microsoft.Extensions.Logging) | 10.0.12 | Microsoft | Logging abstraction the whole app codes against; the sink behind it is NLog | MIT |
-| [NLog](https://nlog-project.org/) | 6.2.0 | Jarek Kowalski, Kim Christensen, Julian Verdurmen (NLog Project) | File sink behind the logging abstraction — writes `switcher.log` / `vm-power.log` / `ui.log` and rotates them at 2 MB (issue #55) | BSD-3-Clause² |
+| [NLog](https://nlog-project.org/) | 6.2.1 | Jarek Kowalski, Kim Christensen, Julian Verdurmen (NLog Project) | File sink behind the logging abstraction — writes `switcher.log` / `vm-power.log` / `ui.log` and rotates them at 2 MB (issue #55) | BSD-3-Clause² |
 | [System.Management](https://www.nuget.org/packages/System.Management) | 10.0.12 | Microsoft | WMI access (`root\virtualization\v2`) for VM status/power and switch binding — replaced the earlier PowerShell path | MIT |
 | [TaskScheduler](https://github.com/dahall/taskscheduler) | 2.12.2 | David Hall | Typed Task Scheduler API behind `Services\StartupManager.cs` — `schtasks /Create` cannot set the battery flags that stopped the logon task starting the app on battery (issue #61) | MIT |
 
@@ -347,7 +347,7 @@ library used across ZeroZero Software apps, taken as packages from the studio's 
 
 | Package | Version | What it provides |
 |---|---|---|
-| [ZeroZero.Brand.WinUI](https://github.com/0z00z0/0z0-shared) | 0.9.1 | The **About** window (`BrandAboutWindow`), the studio mark, the typeface and the palette |
+| [ZeroZero.Brand.WinUI](https://github.com/0z00z0/0z0-shared) | 0.9.2 | The **About** window (`BrandAboutWindow`), the studio mark, the typeface and the palette |
 | [ZeroZero.Mqtt.WinUI](https://github.com/0z00z0/0z0-shared) | 0.7.2 | The MQTT module — broker connection, Home Assistant discovery and the settings panel. Delivers `ZeroZero.Config`, `ZeroZero.Mqtt` and `ZeroZero.Mqtt.Discovery` with it |
 | [ZeroZero.Lifecycle](https://github.com/0z00z0/0z0-shared) | 0.7.1 | The single-instance lock and its four outcomes, and the relaunch after a clean exit nobody asked for, limited to three in ten minutes. Wired up in `Helpers/AppLifecycle.cs` |
 | [ZeroZero.Update.Win32](https://github.com/0z00z0/0z0-shared) | 0.8.0 | The self-update flow behind `Services/AppUpdate.cs` — the release check, and the download verified against its published SHA-256 and against the publisher certificate before it is allowed to run. Delivers `ZeroZero.Update` with it |
