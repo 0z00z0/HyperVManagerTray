@@ -56,21 +56,27 @@ internal static class AppUpdateOptions
     public static string InstallerFileNameFor(string versionText) =>
         InstallerFileName.Replace("{version}", versionText, StringComparison.Ordinal);
 
-    /// <summary>Asks the installer to log the run it makes (issue #91: diagnosing why the update
-    /// flow's installer run does not always rewrite the uninstall entry). Named for the version
-    /// running before the update, so the folder holds one log per version rather than growing
-    /// without bound. Never throws — a log that cannot be arranged must not stop an update.</summary>
+    /// <summary>Tells the installer this run is the app's own update, so it waits for the app to exit
+    /// by itself before ending it. Read by <c>StartedByTheApplication</c> in
+    /// <c>installer\HyperVManagerTray.iss</c> as <c>{param:UPDATEFROMAPP}</c>.</summary>
+    public const string StartedByApplicationSwitch = "/UPDATEFROMAPP=1";
+
+    /// <summary>The switch above, plus a request that the installer log the run it makes (issue #91:
+    /// diagnosing why the update flow's installer run does not always rewrite the uninstall entry).
+    /// The log is named for the version running before the update, so the folder holds one log per
+    /// version rather than growing without bound. Never throws — a log that cannot be arranged must
+    /// not stop an update.</summary>
     private static string InstallerArgumentsFor(Version runningVersion)
     {
         try
         {
             Directory.CreateDirectory(AppInfo.DataDir);
             var path = Path.Combine(AppInfo.DataDir, $"installer-{AppInfo.FormatVersion(runningVersion)}.log");
-            return $"/LOG=\"{path}\"";
+            return $"{StartedByApplicationSwitch} /LOG=\"{path}\"";
         }
         catch
         {
-            return "";
+            return StartedByApplicationSwitch;
         }
     }
 }

@@ -30,19 +30,26 @@ internal sealed class AppUpdate : IDisposable
     /// <param name="runningVersion">The build to compare GitHub's latest against. Stated by the
     /// caller rather than read from the entry assembly, which is the component's fallback and would
     /// name whatever host happens to be running this code.</param>
-    public AppUpdate(Version runningVersion, ILogger logger)
+    /// <param name="exitForInstaller">Queues the app's ordinary exit. Called once the installer has
+    /// started, so the files it replaces are released.</param>
+    public AppUpdate(Version runningVersion, ILogger logger, Action exitForInstaller)
     {
         ArgumentNullException.ThrowIfNull(runningVersion);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(exitForInstaller);
 
         var log = new UpdateLog(logger);
         _service = new UpdateService(AppUpdateOptions.For(runningVersion, log));
         _flow = new UpdateFlow(_service, _prompts, new UpdateFlowOptions
         {
-            // The installer closes this app itself, so nothing exits here. The mark is still taken:
-            // were the installer to close it cleanly, an unmarked exit is the one the relaunch hook
-            // brings back — straight into the upgrade that is replacing it.
-            Shutdown = AppLifecycle.MarkDeliberateExit,
+            // The installer waits for this exit before it ends anything, so the sooner the app goes
+            // the sooner the upgrade proceeds. Marked first: an unmarked exit is the one the relaunch
+            // hook brings back — straight into the upgrade that is replacing it.
+            Shutdown = () =>
+            {
+                AppLifecycle.MarkDeliberateExit();
+                exitForInstaller();
+            },
             OpenReleasePage = page => Shell.Open(page.AbsoluteUri),
             Log = log,
         });

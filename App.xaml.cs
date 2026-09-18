@@ -185,9 +185,13 @@ public partial class App : Application
             // The running build is stated rather than left to the update component, which would
             // otherwise read the entry assembly — this app today, but whatever host is running the
             // code tomorrow. The comparison is this app's own decision.
+            // The exit is queued rather than run inline: the update flow calling it is still on the
+            // stack, and OnExit disposes that flow. Should the queue refuse it, the installer ends the
+            // app itself.
             _update = new AppUpdate(
                 System.Reflection.Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0),
-                _loggerFactory.CreateLogger<AppUpdate>());
+                _loggerFactory.CreateLogger<AppUpdate>(),
+                () => _ui.TryEnqueue(OnExit));
             // Directories a download left behind on an earlier run — an installer that never started,
             // a run that ended mid-download. Off the startup path; nothing waits on the count.
             _ = Task.Run(() => _update.SweepStaleDownloads());
