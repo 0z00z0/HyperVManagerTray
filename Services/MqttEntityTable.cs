@@ -108,9 +108,9 @@ public static class MqttEntityTable
             DefaultOn: false,
             Info: "Each VM's CPU share, assigned memory and virtual disk size."),
         new PublishGroup(ServicesGroup, "Hyper-V services",
-            Info: "The state of Hyper-V Virtual Machine Management and the Host Compute Service, and "
-                + "their start and stop. A stop saves every running VM first; stopping the Host Compute "
-                + "Service also stops WSL 2, Windows Sandbox and Docker."),
+            Info: "The state of Hyper-V Virtual Machine Management and the Host Compute Service, a start "
+                + "for each, and a stop for Virtual Machine Management that saves every running VM first. "
+                + "The Host Compute Service is stopped only from the dashboard."),
     ];
 
     /// <summary>The two Hyper-V services' states and their start and stop (issue #114).</summary>
@@ -348,9 +348,11 @@ public static class MqttEntityTable
         };
 
         MqttCommandVerdict Command(bool start) =>
-            MqttCommandGate.Service(spec.ServiceState(kind), start, ct => spec.ServiceCommand(kind, start, ct));
+            MqttCommandGate.Service(kind, spec.ServiceState(kind), start, ct => spec.ServiceCommand(kind, start, ct));
 
-        // The same shape choice as the VMs' power verbs, from the same setting.
+        // The same shape choice as the VMs' power verbs, from the same setting. The Host Compute Service
+        // has no stop here at all: it is stopped only from the dashboard.
+        bool offersStop = ServiceStopGuard.MayStopUnattended(kind);
         if (spec.PowerButtons)
         {
             yield return new MqttButton
@@ -361,24 +363,26 @@ public static class MqttEntityTable
                 Icon     = "mdi:play",
                 Press    = () => Command(start: true),
             };
-            yield return new MqttButton
-            {
-                EntityId = $"{stem}_stop",
-                Name     = $"Stop {label}",
-                Group    = ServicesGroup,
-                Icon     = "mdi:stop",
-                Press    = () => Command(start: false),
-            };
+            if (offersStop)
+                yield return new MqttButton
+                {
+                    EntityId = $"{stem}_stop",
+                    Name     = $"Stop {label}",
+                    Group    = ServicesGroup,
+                    Icon     = "mdi:stop",
+                    Press    = () => Command(start: false),
+                };
         }
         else
         {
+            var options = MqttCommandGate.ServiceOptionsFor(kind);
             yield return new MqttSelect
             {
                 EntityId = $"{stem}_power",
                 Name     = $"{label} control",
                 Group    = ServicesGroup,
                 Icon     = "mdi:power-settings",
-                Options  = () => MqttCommandGate.ServiceOptions,
+                Options  = () => options,
                 // A verb is an event, not a state; the state sensor reports where the service is.
                 Read     = () => null,
                 Apply    = option => Command(start: option == MqttCommandGate.ServiceOptions[0]),

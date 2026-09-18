@@ -170,6 +170,7 @@ public sealed class ConfigManager : IDisposable
             // "configured, disabled" rather than crashing every consumer of it.
             loaded.Mqtt ??= new MqttSection();
             loaded.Mqtt.Settings ??= new MqttSettings();
+            DropHostComputeStops(loaded);
             _config = loaded;
             // The file parsed, so the next failure is news again. This is the ONE place every successful
             // load flows through — the constructor, the debounce tick, SaveAndReload's read-back and the
@@ -191,6 +192,27 @@ public sealed class ConfigManager : IDisposable
             _logger.LogError(ex, "Failed to load config from {Path} — keeping the previously loaded config", _configPath);
             return LastLoad = ConfigLoadOutcome.Failure(ex.Message);
         }
+    }
+
+    // Set once a load has turned a rule's Host Compute Service stop into "leave alone", so the change is
+    // logged once per run rather than on every reload of a file that still says Stop.
+    private volatile bool _hostComputeStopDropLogged;
+
+    /// <summary>
+    /// Reads a rule's stored Host Compute Service stop as "leave alone": that service is stopped only from
+    /// the dashboard. The file keeps saying Stop until the next write, so the change is logged once.
+    /// </summary>
+    private void DropHostComputeStops(AppConfig loaded)
+    {
+        var rules = loaded.Rules.Where(r => r.HostComputeService == RuleServiceAction.Stop).ToList();
+        if (rules.Count == 0) return;
+        foreach (var rule in rules) rule.HostComputeService = null;
+
+        if (_hostComputeStopDropLogged) return;
+        _hostComputeStopDropLogged = true;
+        _logger.LogWarning("Rule(s) {Rules} asked to stop the Hyper-V Host Compute Service; that service is "
+                           + "stopped only from the dashboard, so the setting now reads as leave alone",
+                           string.Join(", ", rules.Select(r => $"'{r.Name}'")));
     }
 
     private void OnDebounceElapsed(object? _)

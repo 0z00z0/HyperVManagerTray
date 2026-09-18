@@ -59,13 +59,23 @@ public static class MqttCommandGate
     /// <summary>The verbs a Hyper-V service takes, as select options and button suffixes.</summary>
     public static readonly IReadOnlyList<string> ServiceOptions = ["Start", "Stop"];
 
+    /// <summary>The verbs <paramref name="kind"/> offers over MQTT: the Host Compute Service has no stop,
+    /// because it is stopped only from the dashboard.</summary>
+    public static IReadOnlyList<string> ServiceOptionsFor(HyperVServiceKind kind) =>
+        ServiceStopGuard.MayStopUnattended(kind) ? ServiceOptions : [ServiceOptions[0]];
+
     /// <summary>
     /// Whether a service start or stop may be requested now (issue #114): a start only from stopped, a
-    /// stop only from running. A stop accepted here still passes the stop guard, which saves every running
-    /// VM first or refuses — that needs a fresh VM read, so its answer arrives in the log, not here.
+    /// stop only from running, and never a stop of the Host Compute Service. A stop accepted here still
+    /// passes the stop guard, which saves every running VM first or refuses — that needs a fresh VM read,
+    /// so its answer arrives in the log, not here.
     /// </summary>
-    public static MqttCommandVerdict Service(HyperVServiceState state, bool start, Func<CancellationToken, Task> run)
+    public static MqttCommandVerdict Service(
+        HyperVServiceKind kind, HyperVServiceState state, bool start, Func<CancellationToken, Task> run)
     {
+        if (!start && !ServiceStopGuard.MayStopUnattended(kind))
+            return MqttCommandVerdict.Refuse(ServiceStopGuard.UnattendedStopRefusedMessage(kind));
+
         var needed = start ? HyperVServiceState.Stopped : HyperVServiceState.Running;
         return state == needed
             ? MqttCommandVerdict.Accept(run)

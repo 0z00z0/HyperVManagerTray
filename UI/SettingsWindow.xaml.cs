@@ -1370,15 +1370,14 @@ internal sealed partial class SettingsWindow : Window
         var computeCombo = new ComboBox { MinWidth = 150 };
         var stopDelay    = new ComboBox { MinWidth = 130 };
 
-        bool AnyStop() => rule.ServiceAction(HyperVServiceKind.VirtualMachineManagement) == RuleServiceAction.Stop
-                       || rule.ServiceAction(HyperVServiceKind.HostCompute) == RuleServiceAction.Stop;
+        bool AnyStop() => rule.ServiceAction(HyperVServiceKind.VirtualMachineManagement) == RuleServiceAction.Stop;
 
         WithUpdatingSuppressed(() =>
         {
             PopulateLabelCombo(vmmsCombo, RuleServiceActionOptions,
-                RuleServiceActionIndex(rule.ServiceAction(HyperVServiceKind.VirtualMachineManagement)));
-            PopulateLabelCombo(computeCombo, RuleServiceActionOptions,
-                RuleServiceActionIndex(rule.ServiceAction(HyperVServiceKind.HostCompute)));
+                RuleServiceActionIndex(RuleServiceActionOptions, rule.ServiceAction(HyperVServiceKind.VirtualMachineManagement)));
+            PopulateLabelCombo(computeCombo, HostComputeActionOptions,
+                RuleServiceActionIndex(HostComputeActionOptions, rule.ServiceAction(HyperVServiceKind.HostCompute)));
             LoadDelayCombo(stopDelay, SettingsOptions.NormalizeDelaySeconds(rule.ServiceStopDelaySeconds));
             stopDelay.IsEnabled = AnyStop();
         });
@@ -1386,8 +1385,8 @@ internal sealed partial class SettingsWindow : Window
         void CommitServices()
         {
             if (_updating) return;
-            rule.VmManagementService     = ServiceActionAt(vmmsCombo.SelectedIndex);
-            rule.HostComputeService      = ServiceActionAt(computeCombo.SelectedIndex);
+            rule.VmManagementService     = ServiceActionAt(RuleServiceActionOptions, vmmsCombo.SelectedIndex);
+            rule.HostComputeService      = ServiceActionAt(HostComputeActionOptions, computeCombo.SelectedIndex);
             rule.ServiceStopDelaySeconds = stopDelay.SelectedItem is ComboBoxItem { Tag: int d } ? d : 30;
             stopDelay.IsEnabled = AnyStop();
             CommitRules();
@@ -1404,8 +1403,9 @@ internal sealed partial class SettingsWindow : Window
         var servicesNote = new TextBlock
         {
             Text = "When this rule becomes active. A start runs before any VM starts. A stop saves every "
-                 + "running VM on the host first, and is skipped while Auto-start VMs is on. Stopping the "
-                 + "Host Compute Service also stops WSL 2, Windows Sandbox and Docker.",
+                 + "running VM on the host first, and is skipped while Auto-start VMs is on. The Host "
+                 + "Compute Service is stopped only from the dashboard, because stopping it also stops "
+                 + "WSL 2, Windows Sandbox and Docker.",
             FontSize     = 12,
             Opacity      = 0.7,
             TextWrapping = TextWrapping.Wrap,
@@ -1936,15 +1936,25 @@ internal sealed partial class SettingsWindow : Window
         ("Stop",        RuleServiceAction.Stop),
     ];
 
-    private static int RuleServiceActionIndex(RuleServiceAction action) => action switch
-    {
-        RuleServiceAction.Start => 1,
-        RuleServiceAction.Stop  => 2,
-        _                       => 0,
-    };
+    /// <summary>The Host Compute Service offers no stop: it is stopped only from the dashboard, where the
+    /// person stopping it is told it takes WSL 2, Windows Sandbox and Docker with it.</summary>
+    private static readonly IReadOnlyList<(string Label, RuleServiceAction? Value)> HostComputeActionOptions =
+    [
+        ("Leave alone", null),
+        ("Start",       RuleServiceAction.Start),
+    ];
 
-    private static RuleServiceAction? ServiceActionAt(int index) =>
-        index >= 0 && index < RuleServiceActionOptions.Count ? RuleServiceActionOptions[index].Value : null;
+    private static int RuleServiceActionIndex(IReadOnlyList<(string Label, RuleServiceAction? Value)> options,
+                                              RuleServiceAction action)
+    {
+        for (int i = 0; i < options.Count; i++)
+            if (options[i].Value == action) return i;
+        return 0;
+    }
+
+    private static RuleServiceAction? ServiceActionAt(IReadOnlyList<(string Label, RuleServiceAction? Value)> options,
+                                                      int index) =>
+        index >= 0 && index < options.Count ? options[index].Value : null;
 
     private static StackPanel Section(string title)
     {

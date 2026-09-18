@@ -112,11 +112,33 @@ public class ServiceStopGuardTests
     }
 
     [Fact]
+    public async Task A_rule_or_mqtt_can_never_stop_the_host_compute_service()
+    {
+        // Nothing is running, so every other guard would let it through: the refusal has to come from the
+        // source alone. A rule that says Stop does not list it either, whatever the file holds.
+        bool touched = false;
+        var result = await ServiceStopFlow.RunUnattendedAsync(
+            HyperVServiceKind.HostCompute,
+            read:    () => Task.FromResult(new ServiceStopFlow.VmRead([Vm("Dev", "Off")], true)),
+            saveAll: _ => { touched = true; return Task.FromResult<string?>(null); },
+            stop:    () => { touched = true; return Task.FromResult<string?>(null); });
+        var rule = new NetworkRule
+        {
+            HostComputeService  = RuleServiceAction.Stop,
+            VmManagementService = RuleServiceAction.Stop,
+        };
+
+        Assert.False(touched);
+        Assert.Equal(ServiceStopFlow.Outcome.Refused, result.Outcome);
+        Assert.Equal([HyperVServiceKind.VirtualMachineManagement], rule.ServicesToStop());
+    }
+
+    [Fact]
     public async Task A_rule_or_mqtt_stop_whose_save_fails_never_stops_the_service()
     {
         bool stopped = false;
         var result = await ServiceStopFlow.RunUnattendedAsync(
-            HyperVServiceKind.HostCompute,
+            HyperVServiceKind.VirtualMachineManagement,
             read:    () => Task.FromResult(new ServiceStopFlow.VmRead([Vm("Dev", "Running")], true)),
             saveAll: _ => Task.FromResult<string?>("Dev could not be saved."),
             stop:    () => { stopped = true; return Task.FromResult<string?>(null); });

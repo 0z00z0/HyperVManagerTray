@@ -1,3 +1,5 @@
+using HyperVManagerTray.Helpers;
+
 namespace HyperVManagerTray.Models;
 
 /// <summary>
@@ -47,7 +49,11 @@ public sealed class NetworkRule
     /// </summary>
     public RuleServiceAction? VmManagementService { get; set; }
 
-    /// <summary>What happens to the Hyper-V Host Compute Service when this rule becomes active. Null leaves it alone.</summary>
+    /// <summary>
+    /// What happens to the Hyper-V Host Compute Service when this rule becomes active: null leaves it alone,
+    /// and Start starts it. Never Stop — that service is stopped only from the dashboard, because stopping
+    /// it also stops WSL 2, Windows Sandbox and Docker. <c>ConfigManager.Load</c> reads a stored Stop as null.
+    /// </summary>
     public RuleServiceAction? HostComputeService { get; set; }
 
     /// <summary>
@@ -63,8 +69,8 @@ public sealed class NetworkRule
         ?? RuleServiceAction.None;
 
     /// <summary>
-    /// The services to stop when this rule becomes active, Host Compute first: stopping vmms first would
-    /// make the VM states unreadable, and the guard then refuses the second stop.
+    /// The services to stop when this rule becomes active. Only Virtual Machine Management: a rule never
+    /// stops the Host Compute Service, whatever a hand-edited file says.
     ///
     /// <para>Empty while the rule auto-starts VMs: those VMs need the services, and a stop would save the
     /// very VMs the rule has just started.</para>
@@ -72,8 +78,8 @@ public sealed class NetworkRule
     public IReadOnlyList<HyperVServiceKind> ServicesToStop() =>
         AutoStart && TargetVms.Count > 0
             ? []
-            : [.. new[] { HyperVServiceKind.HostCompute, HyperVServiceKind.VirtualMachineManagement }
-                  .Where(k => ServiceAction(k) == RuleServiceAction.Stop)];
+            : [.. new[] { HyperVServiceKind.VirtualMachineManagement }
+                  .Where(k => ServiceAction(k) == RuleServiceAction.Stop && ServiceStopGuard.MayStopUnattended(k))];
 
     /// <summary>The services to start when this rule becomes active, vmms first.</summary>
     public IReadOnlyList<HyperVServiceKind> ServicesToStart() =>

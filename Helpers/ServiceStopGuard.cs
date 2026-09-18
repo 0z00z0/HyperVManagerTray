@@ -30,6 +30,17 @@ public static class ServiceStopGuard
     public sealed record Decision(Verdict Verdict, IReadOnlyList<string> VmsToSave, IReadOnlyList<string> BusyVms);
 
     /// <summary>
+    /// Whether a stop of <paramref name="kind"/> may come from a source with nobody to ask — a network rule
+    /// or an MQTT command. False for the Host Compute Service: stopping it also stops WSL 2, Windows Sandbox
+    /// and Docker, so it is stopped only from the dashboard, after the person has been told so.
+    /// </summary>
+    public static bool MayStopUnattended(HyperVServiceKind kind) => kind != HyperVServiceKind.HostCompute;
+
+    /// <summary>The refusal an unattended stop of the Host Compute Service gets.</summary>
+    public static string UnattendedStopRefusedMessage(HyperVServiceKind kind) =>
+        $"{HyperVServiceNames.DisplayName(kind)} was not stopped: it is stopped only from the dashboard.";
+
+    /// <summary>
     /// Decides a stop of <paramref name="kind"/>.
     /// </summary>
     /// <param name="statuses">The last read of every VM on the host.</param>

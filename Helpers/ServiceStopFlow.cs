@@ -54,14 +54,17 @@ public static class ServiceStopFlow
     /// <summary>
     /// A stop with nobody to ask (a network rule, an MQTT command): every running VM is saved first, then
     /// the service stops. The guard's refusals still apply — a VM mid-transition, or states that cannot be
-    /// read, leave the service running.
+    /// read, leave the service running. The Host Compute Service is refused before anything is read or
+    /// saved: it is stopped only from the dashboard.
     /// </summary>
     public static Task<Result> RunUnattendedAsync(
         HyperVServiceKind kind,
         Func<Task<VmRead>> read,
         Func<IReadOnlyList<string>, Task<string?>> saveAll,
         Func<Task<string?>> stop) =>
-        RunCoreAsync(kind, read, confirm: null, saveAll, stop);
+        ServiceStopGuard.MayStopUnattended(kind)
+            ? RunCoreAsync(kind, read, confirm: null, saveAll, stop)
+            : Task.FromResult(new Result(Outcome.Refused, ServiceStopGuard.UnattendedStopRefusedMessage(kind)));
 
     /// <param name="confirm">Null for an unattended stop: every prompt is taken as yes.</param>
     private static async Task<Result> RunCoreAsync(
