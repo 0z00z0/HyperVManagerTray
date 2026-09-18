@@ -40,6 +40,40 @@ public static class MqttCommandGate
         return Power(state, kind, ct => run(kind, ct));
     }
 
+    /// <summary>
+    /// A VM verb while a Hyper-V service is down (issue #114). Only a start is offered, as on the
+    /// dashboard, and it starts the services first: with vmms down any VM may be started, since its state
+    /// cannot be read; with only the Host Compute Service down, one that is off, saved or paused.
+    /// </summary>
+    public static MqttCommandVerdict PowerWhileServicesDown(
+        string? state, bool vmmsDown, VmOpKind kind, Func<CancellationToken, Task> startViaServices)
+    {
+        bool startable = vmmsDown
+            || VmStateUi.ClassifyShape(state) is VmStateUi.Shape.Off or VmStateUi.Shape.Saved or VmStateUi.Shape.Paused;
+        return (kind is VmOpKind.Start or VmOpKind.Resume) && startable
+            ? MqttCommandVerdict.Accept(startViaServices)
+            : MqttCommandVerdict.Refuse(
+                $"'{kind}' is not available while a Hyper-V service is stopped. Start is, and starts the service first.");
+    }
+
+    /// <summary>The verbs a Hyper-V service takes, as select options and button suffixes.</summary>
+    public static readonly IReadOnlyList<string> ServiceOptions = ["Start", "Stop"];
+
+    /// <summary>
+    /// Whether a service start or stop may be requested now (issue #114): a start only from stopped, a
+    /// stop only from running. A stop accepted here still passes the stop guard, which saves every running
+    /// VM first or refuses — that needs a fresh VM read, so its answer arrives in the log, not here.
+    /// </summary>
+    public static MqttCommandVerdict Service(HyperVServiceState state, bool start, Func<CancellationToken, Task> run)
+    {
+        var needed = start ? HyperVServiceState.Stopped : HyperVServiceState.Running;
+        return state == needed
+            ? MqttCommandVerdict.Accept(run)
+            : MqttCommandVerdict.Refuse(
+                $"'{(start ? "Start" : "Stop")}' is not available while the service is "
+                + $"{HyperVServiceNames.StateText(state).ToLowerInvariant()}.");
+    }
+
     /// <summary>The VM's state as a refusal names it.</summary>
     private static string Describe(string? state) =>
         string.IsNullOrWhiteSpace(state) ? "in an unknown state" : state;

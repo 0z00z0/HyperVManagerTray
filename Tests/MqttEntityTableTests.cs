@@ -109,7 +109,7 @@ public class MqttEntityTableTests
         Assert.Equal(
             ["network_rule", "network_switch", "network_adapter", "network_host_ip", "network_gateway",
              "network_apply_status", "network_bridge_healthy", "network_recheck", "network_repair"],
-            set.All.Select(e => e.EntityId));
+            set.All.Select(e => e.EntityId).Where(id => id.StartsWith("network_", StringComparison.Ordinal)));
     }
 
     /// <summary>Twelve per VM, and the id of each is the state topic AND the command topic — so this is
@@ -755,7 +755,9 @@ public class MqttEntityTableTests
 
         static IEnumerable<string> NonPower(MqttEntitySet set) =>
             set.All.Select(e => e.EntityId)
-                   .Where(id => !id.StartsWith("vm_dev_power", StringComparison.Ordinal));
+                   .Where(id => !id.StartsWith("vm_dev_power", StringComparison.Ordinal))
+                   // The services' controls follow the same setting (issue #114).
+                   .Where(id => !id.StartsWith("service_", StringComparison.Ordinal) || id.EndsWith("_state", StringComparison.Ordinal));
 
         Assert.Equal(NonPower(selects), NonPower(buttons));
     }

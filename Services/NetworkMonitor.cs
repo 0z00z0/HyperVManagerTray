@@ -16,6 +16,7 @@ public sealed class NetworkMonitor : IDisposable
     private readonly ConfigManager _config;
     private readonly HyperVManager _hyperV;   // switch binding (native WMI)
     private readonly VmService     _vm;       // VM power (WMI)
+    private readonly HyperVServiceControl _services;   // rule-driven service start and stop (issue #114)
     private readonly ILogger<NetworkMonitor> _logger;
     // Dedicated "vm-power" category logger → vm-power.log (issue #20): records the automatic power
     // actions this monitor triggers (autostart, on-bridge-lost) with their triggering rule/reason,
@@ -44,6 +45,14 @@ public sealed class NetworkMonitor : IDisposable
     private readonly object _disconnectLock = new();
     private readonly Dictionary<string, CancellationTokenSource> _pendingDisconnect = new();
 
+    // The active rule's delayed service stops (issue #114), cancelled when another rule becomes active.
+    // Its own lock for the same reason as _disconnectLock.
+    private readonly object _serviceStopLock = new();
+    private CancellationTokenSource? _pendingServiceStop;
+
+    // vmms reports running a little before its WMI provider answers, and the switch bind needs it.
+    private static readonly TimeSpan ServiceStatesTimeout = TimeSpan.FromSeconds(60);
+
     /// <summary>
     /// Raised after an apply pass, carrying the result AND what actually happened to it
     /// (<see cref="MatchResult.ApplyStatus"/>) — the tray icon/tooltip and the dashboard host card are
@@ -58,11 +67,12 @@ public sealed class NetworkMonitor : IDisposable
     public MatchResult? LastApplied => _lastApplied;
 
     public NetworkMonitor(ConfigManager config, HyperVManager hyperV, VmService vm,
-                          ILogger<NetworkMonitor> logger, ILogger powerLog)
+                          HyperVServiceControl services, ILogger<NetworkMonitor> logger, ILogger powerLog)
     {
         _config   = config;
         _hyperV   = hyperV;
         _vm       = vm;
+        _services = services;
         _logger   = logger;
         _powerLog = powerLog;
         _debounceTimer = new System.Threading.Timer(OnDebounceElapsed, null, Timeout.Infinite, Timeout.Infinite);
@@ -405,6 +415,18 @@ public sealed class NetworkMonitor : IDisposable
         // bridge-transition detection both see a consistent before/after snapshot.
         var previousRule = _lastApplied?.RuleName;
 
+        // The rule that has just become active, if any: its service and autostart settings act once, on
+        // the change, never on a re-apply of the same rule.
+        var activeRule = result.RuleName != previousRule && result.RuleName != "Fallback"
+            ? _config.Current.Rules.FirstOrDefault(r => r.Name == result.RuleName)
+            : null;
+
+        // A stop the previous rule scheduled belongs to the network that has just gone.
+        if (result.RuleName != previousRule) CancelServiceStops();
+
+        // Services the rule starts come up before the bind below, which goes through vmms (issue #114).
+        if (activeRule is not null) await StartRuleServicesAsync(activeRule);
+
         // When a specific rule matched, re-bind the Hyper-V virtual switch to the detected
         // physical adapter before connecting any VMs.  This is what makes an "Internal"
         // switch become an "External" (bridged) switch pointing at the right LAN NIC.
@@ -483,10 +505,19 @@ public sealed class NetworkMonitor : IDisposable
 
         // Per-network autostart: when this rule has just become active and opts in, start (or
         // resume) its target VMs.  Never auto-stop on leaving — by design.
-        if (result.RuleName != previousRule && result.RuleName != "Fallback")
+        if (activeRule is { AutoStart: true } rule && rule.TargetVms.Count > 0)
         {
-            var rule = _config.Current.Rules.FirstOrDefault(r => r.Name == result.RuleName);
-            if (rule?.AutoStart == true)
+            // A stopped service is started before any VM start, whatever the rule says about it.
+            string? servicesError = _services.AnyServiceDown
+                ? await _services.EnsureRunningForVmStartAsync(VmOpOrigin.Auto, $"rule '{rule.Name}' autostart")
+                : null;
+
+            if (servicesError is not null)
+            {
+                _logger.LogWarning("Autostart for rule '{Rule}' skipped: {Error}", rule.Name, servicesError);
+                _powerLog.LogWarning("AUTO Start skipped for rule '{Rule}': {Error}", rule.Name, servicesError);
+            }
+            else
             {
                 foreach (var vmName in rule.TargetVms)
                 {
@@ -497,11 +528,114 @@ public sealed class NetworkMonitor : IDisposable
             }
         }
 
+        if (activeRule is not null) ScheduleServiceStops(activeRule);
+
         HandleBridgeTransition(previousRule, result);
 
         _lastApplied = result;
         SwitchApplied?.Invoke(this, result);
         return result;
+    }
+
+    // ── Hyper-V services per rule (issue #114) ──────────────────────────────────
+
+    /// <summary>
+    /// Starts the services <paramref name="rule"/> asks for, vmms first, and waits for the VMs to be
+    /// readable when vmms had to start — the bind and the reconnects after this go through it. A failure
+    /// is logged and the pass carries on: the bind then fails and says so on the icon.
+    /// </summary>
+    private async Task StartRuleServicesAsync(NetworkRule rule)
+    {
+        bool startedVmms = false;
+        foreach (var kind in rule.ServicesToStart())
+        {
+            if (_services.Monitor.State(kind) == HyperVServiceState.Running) continue;
+
+            var name = HyperVServiceNames.DisplayName(kind);
+            _logger.LogInformation("Rule '{Rule}': starting service '{Service}'", rule.Name, name);
+            _powerLog.LogInformation("AUTO Start service '{Service}': rule '{Rule}' (network became active)", name, rule.Name);
+
+            if (await _services.StartAsync(kind, VmOpOrigin.Auto) is { } error)
+                _logger.LogWarning("Rule '{Rule}': service '{Service}' could not be started: {Error}", rule.Name, name, error);
+            else if (kind == HyperVServiceKind.VirtualMachineManagement)
+                startedVmms = true;
+        }
+
+        if (startedVmms && !await _vm.WaitForStatesAsync(ServiceStatesTimeout))
+            _logger.LogWarning("Rule '{Rule}': vmms is running, but the VMs could not be read yet", rule.Name);
+    }
+
+    /// <summary>
+    /// Schedules the service stops <paramref name="rule"/> asks for, after its delay. Cancelled by
+    /// <see cref="CancelServiceStops"/> when another rule becomes active first. Each stop saves every
+    /// running VM on the host before stopping, through <see cref="HyperVServiceControl.StopAsync"/>.
+    /// </summary>
+    private void ScheduleServiceStops(NetworkRule rule)
+    {
+        var kinds = rule.ServicesToStop();
+        if (kinds.Count == 0)
+        {
+            if (HyperVServiceNames.All.Any(k => rule.ServiceAction(k) == RuleServiceAction.Stop))
+                _logger.LogInformation("Rule '{Rule}': service stop ignored while it auto-starts VMs", rule.Name);
+            return;
+        }
+
+        var ruleName = rule.Name;
+        var delaySec = SettingsOptions.NormalizeDelaySeconds(rule.ServiceStopDelaySeconds);
+        var cts      = new CancellationTokenSource();
+        lock (_serviceStopLock)
+        {
+            // Cancelled, not disposed: its task still reads the token, and disposes it on the way out.
+            _pendingServiceStop?.Cancel();
+            _pendingServiceStop = cts;
+        }
+
+        _logger.LogInformation("Rule '{Rule}': stopping {Services} in {Delay}s",
+            ruleName, string.Join(", ", kinds.Select(HyperVServiceNames.DisplayName)), delaySec);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(delaySec), cts.Token);
+
+                foreach (var kind in kinds)
+                {
+                    // The stop itself runs to its end once begun; a rule change only prevents the next one.
+                    cts.Token.ThrowIfCancellationRequested();
+                    _powerLog.LogInformation("AUTO Stop service '{Service}': rule '{Rule}' (active for {Delay}s)",
+                        HyperVServiceNames.DisplayName(kind), ruleName, delaySec);
+                    var outcome = await _services.StopAsync(kind, VmOpOrigin.Auto, $"rule '{ruleName}'", confirm: null);
+                    if (outcome.Outcome != Helpers.ServiceStopFlow.Outcome.Stopped)
+                        _logger.LogWarning("Rule '{Rule}': service '{Service}' not stopped — {Outcome}: {Message}",
+                            ruleName, HyperVServiceNames.DisplayName(kind), outcome.Outcome, outcome.Message);
+                }
+            }
+            catch (OperationCanceledException) { /* another rule became active — expected */ }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Service stop for rule '{Rule}' failed", ruleName);
+            }
+            finally
+            {
+                lock (_serviceStopLock)
+                {
+                    if (ReferenceEquals(_pendingServiceStop, cts)) _pendingServiceStop = null;
+                }
+                cts.Dispose();
+            }
+        }, CancellationToken.None);
+    }
+
+    private void CancelServiceStops()
+    {
+        lock (_serviceStopLock)
+        {
+            if (_pendingServiceStop is null) return;
+            _logger.LogInformation("Network changed — cancelling the pending service stop");
+            _pendingServiceStop.Cancel();
+            _pendingServiceStop = null;
+        }
     }
 
     // ── Bridge-lost / bridge-restored transition ────────────────────────────────
@@ -620,6 +754,7 @@ public sealed class NetworkMonitor : IDisposable
         _config.ConfigReloaded -= OnConfigReloaded;
         _debounceTimer.Dispose();
         CancelDisconnectActions();
+        CancelServiceStops();
         _evalLock.Dispose();
     }
 }

@@ -478,6 +478,10 @@ public sealed class ConfigManager : IDisposable
         VirtualSwitch = r.VirtualSwitch?.Trim() ?? string.Empty,
         TargetVms     = SettingsOptions.CleanVmList(r.TargetVms ?? []),
         AutoStart     = r.AutoStart,
+        // "None" is stored as absent, so a rule that never used the setting round-trips unchanged.
+        VmManagementService     = r.VmManagementService is RuleServiceAction.None ? null : r.VmManagementService,
+        HostComputeService      = r.HostComputeService  is RuleServiceAction.None ? null : r.HostComputeService,
+        ServiceStopDelaySeconds = SettingsOptions.NormalizeDelaySeconds(r.ServiceStopDelaySeconds),
         Conditions    = new RuleConditions
         {
             // IsValidMac/IsValidCidr treat null/blank as valid ("don't match"); an invalid, non-blank
@@ -503,6 +507,9 @@ public sealed class ConfigManager : IDisposable
                 || x.Priority != y.Priority
                 || !string.Equals(x.VirtualSwitch, y.VirtualSwitch, StringComparison.Ordinal)
                 || x.AutoStart != y.AutoStart
+                || x.VmManagementService != y.VmManagementService
+                || x.HostComputeService != y.HostComputeService
+                || x.ServiceStopDelaySeconds != y.ServiceStopDelaySeconds
                 || !string.Equals(x.Conditions?.AdapterMac, y.Conditions?.AdapterMac, StringComparison.Ordinal)
                 || !string.Equals(x.Conditions?.IpCidr, y.Conditions?.IpCidr, StringComparison.Ordinal)
                 || !x.TargetVms.SequenceEqual(y.TargetVms, StringComparer.Ordinal))

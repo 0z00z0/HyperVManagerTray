@@ -24,6 +24,7 @@ public partial class App : Application
     private HyperVManager?  _hyperV;   // switch binding / host-vNIC repair (native WMI, issue #17)
     private VmService?      _vm;       // VM status/metrics/power/IPs via WMI
     private HyperVServiceMonitor? _services;   // vmms / Host Compute Service state, start and stop (issue #114)
+    private HyperVServiceControl? _serviceControl;   // the one start/stop path for dashboard, rules and MQTT
     private NetworkMonitor? _monitor;
     private MqttService?    _mqtt;     // broker session and discovery document (issue #75)
     private StartupManager  _startup = null!;
@@ -236,13 +237,17 @@ public partial class App : Application
             _config  = new ConfigManager(configPath, uiLog, _logLevelSwitch);
             _hyperV  = new HyperVManager(_loggerFactory.CreateLogger<HyperVManager>());
             _vm      = new VmService(_loggerFactory.CreateLogger<VmService>(), powerLog);
-            _monitor = new NetworkMonitor(_config, _hyperV, _vm, _loggerFactory.CreateLogger<NetworkMonitor>(), powerLog);
 
             // Issue #114: vmms' state gates every VM read. Subscribed before the first poll so the
-            // first state read reaches VmService; the poll itself runs on the thread pool.
+            // first state read reaches VmService; the poll itself runs on the thread pool. Built before
+            // the network monitor, whose rules start and stop the services through the same control.
             _services = new HyperVServiceMonitor(powerLog);
             _services.StateChanged += OnServiceStateChanged;
             _services.Start();
+            _serviceControl = new HyperVServiceControl(_vm, _services, powerLog);
+
+            _monitor = new NetworkMonitor(_config, _hyperV, _vm, _serviceControl,
+                                          _loggerFactory.CreateLogger<NetworkMonitor>(), powerLog);
 
             InitTrayIcon();
 
@@ -981,7 +986,7 @@ public partial class App : Application
             (title, message, isError) => mqttLog.Log(isError ? LogLevel.Warning : LogLevel.Information,
                                                      "{Title}: {Message}", title, message));
 
-        _mqtt = new MqttService(_config!, _monitor!, _vm!, _hyperV!, mqttLog, AppInfo.Version,
+        _mqtt = new MqttService(_config!, _monitor!, _vm!, _hyperV!, _serviceControl!, mqttLog, AppInfo.Version,
                                 _ => actions.ReCheckNetworkAsync(),
                                 _ => actions.RepairHostNetworkingAsync(),
                                 AppInfo.DataDir);
@@ -1017,7 +1022,7 @@ public partial class App : Application
         // channel the tray's network actions use (issue #45), with suppression off for the same reason:
         // it answers a button the user just clicked, and the dashboard is visible by definition when
         // they click it, so the default suppress-when-visible would swallow the report.
-        _dashboard = new DashboardWindow(_config!, _monitor!, _hyperV!, _vm!, _services!,
+        _dashboard = new DashboardWindow(_config!, _monitor!, _hyperV!, _vm!, _serviceControl!,
                                          (title, message, isError) =>
                                              ShowBalloon(title, message, isError, suppressWhenDashboardVisible: false),
                                          _menu!.ShowSettings);   // issue #79 — same singleton the tray menu opens

@@ -4,9 +4,9 @@ namespace HyperVManagerTray.Helpers;
 
 /// <summary>
 /// Whether a Hyper-V service may be stopped now (issue #114). Stopping either service with a VM still
-/// running leaves that VM out of reach until the service is back, so a stop is refused while any managed
-/// VM is anything other than off or saved. Pure: the VM states arrive as arguments, so every refusal is
-/// testable without a host.
+/// running leaves that VM out of reach until the service is back, so a stop is refused while any VM on the
+/// host is anything other than off or saved — managed or not, since an unmanaged VM is stranded just the
+/// same. Pure: the VM states arrive as arguments, so every refusal is testable without a host.
 /// </summary>
 public static class ServiceStopGuard
 {
@@ -16,43 +16,37 @@ public static class ServiceStopGuard
         Allowed,
         /// <summary>Nothing is running, but the stop takes other software with it and must be confirmed.</summary>
         ConfirmSideEffects,
-        /// <summary>Managed VMs are running or paused: refused, with an offer to save them first.</summary>
+        /// <summary>VMs are running or paused: refused, with an offer to save them first.</summary>
         OfferSaveFirst,
-        /// <summary>A managed VM is mid-transition or unreadable: refused outright, nothing can be saved yet.</summary>
+        /// <summary>A VM is mid-transition or unreadable: refused outright, nothing can be saved yet.</summary>
         RefusedBusy,
         /// <summary>VM states cannot be read (vmms is not delivering them): refused, since a running VM would be invisible.</summary>
         RefusedStatesUnknown,
     }
 
     /// <param name="Verdict">What the caller may do.</param>
-    /// <param name="VmsToSave">Managed VMs that are running or paused, in config order.</param>
-    /// <param name="BusyVms">Managed VMs in a state that is neither stoppable nor saveable.</param>
+    /// <param name="VmsToSave">VMs that are running or paused, in the order the host listed them.</param>
+    /// <param name="BusyVms">VMs in a state that is neither stoppable nor saveable.</param>
     public sealed record Decision(Verdict Verdict, IReadOnlyList<string> VmsToSave, IReadOnlyList<string> BusyVms);
 
     /// <summary>
     /// Decides a stop of <paramref name="kind"/>.
     /// </summary>
-    /// <param name="managedVms">Names of the VMs in config.</param>
-    /// <param name="statuses">The last VM read. A managed VM absent from a known read does not exist on
-    /// the host, and so is not running.</param>
+    /// <param name="statuses">The last read of every VM on the host.</param>
     /// <param name="statesKnown">True only when <paramref name="statuses"/> came from a successful read
-    /// while vmms was running. False means a running VM could be invisible.</param>
+    /// while vmms was running. False means a running VM could be invisible, even with an empty list.</param>
     public static Decision Evaluate(
         HyperVServiceKind kind,
-        IReadOnlyList<string> managedVms,
         IReadOnlyList<VmStatus>? statuses,
         bool statesKnown)
     {
-        if (!statesKnown && managedVms.Count > 0)
+        if (!statesKnown)
             return new Decision(Verdict.RefusedStatesUnknown, [], []);
 
         var toSave = new List<string>();
         var busy   = new List<string>();
-        foreach (var name in managedVms)
+        foreach (var status in statuses ?? [])
         {
-            var status = statuses?.FirstOrDefault(s => s.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
-            if (status is null) continue;
-
             switch (VmStateUi.ClassifyShape(status.State))
             {
                 case VmStateUi.Shape.Off:
@@ -60,11 +54,11 @@ public static class ServiceStopGuard
                     break;
                 case VmStateUi.Shape.Running:
                 case VmStateUi.Shape.Paused:
-                    toSave.Add(name);
+                    toSave.Add(status.Name);
                     break;
                 default:
                     // Transition or Unknown: it may be running, and a save request would be rejected.
-                    busy.Add(name);
+                    busy.Add(status.Name);
                     break;
             }
         }
@@ -90,7 +84,7 @@ public static class ServiceStopGuard
     {
         var text = $"{HyperVServiceNames.DisplayName(kind)} cannot be stopped while these VMs are running: "
                    + $"{string.Join(", ", vmsToSave)}.\n\n"
-                   + "Save them first and then stop the service?";
+                   + "Save them all first and then stop the service?";
         return kind == HyperVServiceKind.HostCompute ? $"{text}\n\n{HostComputeSideEffects}" : text;
     }
 

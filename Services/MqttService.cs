@@ -34,6 +34,7 @@ public sealed class MqttService : IDisposable
     private readonly ConfigManager _config;
     private readonly NetworkMonitor _monitor;
     private readonly VmService _vm;
+    private readonly HyperVServiceControl _services;
     private readonly ILogger _log;
     private readonly Func<CancellationToken, Task> _reCheckNetwork;
     private readonly Func<CancellationToken, Task> _repairHostNetworking;
@@ -69,6 +70,7 @@ public sealed class MqttService : IDisposable
         NetworkMonitor monitor,
         VmService vm,
         HyperVManager hyperV,
+        HyperVServiceControl services,
         ILogger log,
         string version,
         Func<CancellationToken, Task> reCheckNetwork,
@@ -79,10 +81,12 @@ public sealed class MqttService : IDisposable
         ArgumentNullException.ThrowIfNull(monitor);
         ArgumentNullException.ThrowIfNull(vm);
         ArgumentNullException.ThrowIfNull(hyperV);
+        ArgumentNullException.ThrowIfNull(services);
 
         _config = config;
         _monitor = monitor;
         _vm = vm;
+        _services = services;
         _log = log;
         _reCheckNetwork = reCheckNetwork;
         _repairHostNetworking = repairHostNetworking;
@@ -145,6 +149,7 @@ public sealed class MqttService : IDisposable
         _monitor.SwitchApplied += OnSwitchApplied;
         _vm.StatusesChanged += OnVmStatuses;
         _vm.OperationProgress += OnVmOperation;
+        _services.Monitor.StateChanged += OnServiceState;
         _config.ConfigReloaded += OnConfigReloaded;
         _store.Changed += OnSettingsChanged;
         _groups.Changed += OnGroupsChanged;
@@ -224,6 +229,9 @@ public sealed class MqttService : IDisposable
         _state.SetOperation(progress);
         SignalPublish();
     }
+
+    /// <summary>A Hyper-V service moved (issue #114): its state sensor, and what the VM controls offer.</summary>
+    private void OnServiceState(HyperVServiceKind kind, HyperVServiceState state) => SignalPublish();
 
     /// <summary>The state cache has moved. Through the gate rather than straight at the connection: these
     /// events start arriving before the socket does, and a signal made then is fifty failed publishes for
@@ -397,7 +405,60 @@ public sealed class MqttService : IDisposable
             // Read once here, not per pass: the two shapes are different entities, so a flip has to
             // reach SetEntities for the shape being left behind to be evicted.
             PowerButtons         = config.Mqtt.PowerButtons,
+            ServiceState         = _services.Monitor.State,
+            // Returns once requested; the start, or the saves and the stop, run on and write their
+            // outcome to vm-power.log and mqtt.log.
+            ServiceCommand       = (kind, start, ct) =>
+            {
+                _ = RunServiceCommandAsync(kind, start);
+                return Task.CompletedTask;
+            },
+            AnyServiceDown       = () => _services.AnyServiceDown,
+            VmmsDown             = () => _services.VmmsDown,
+            StartViaServices     = (name, ct) =>
+            {
+                _ = RunStartViaServicesAsync(name);
+                return Task.CompletedTask;
+            },
         });
+
+    /// <summary>An MQTT start or stop of a service. A stop is unattended: every running VM is saved
+    /// first, and the guard's refusals are logged here. Never throws.</summary>
+    private async Task RunServiceCommandAsync(HyperVServiceKind kind, bool start)
+    {
+        var name = HyperVServiceNames.DisplayName(kind);
+        try
+        {
+            _log.LogInformation("MQTT: {Verb} '{Service}' requested", start ? "start" : "stop", name);
+            if (start)
+            {
+                var error = await _services.StartAsync(kind, VmOpOrigin.Mqtt).ConfigureAwait(false);
+                _log.Log(error is null ? LogLevel.Information : LogLevel.Warning,
+                         "MQTT: start '{Service}' — {Outcome}", name, error ?? "running");
+            }
+            else
+            {
+                var result = await _services.StopAsync(kind, VmOpOrigin.Mqtt, "MQTT command", confirm: null)
+                                            .ConfigureAwait(false);
+                _log.Log(result.Outcome == ServiceStopFlow.Outcome.Stopped ? LogLevel.Information : LogLevel.Warning,
+                         "MQTT: stop '{Service}' — {Outcome}: {Message}", name, result.Outcome, result.Message);
+            }
+        }
+        catch (Exception ex) { _log.LogError(ex, "MQTT: the service command for '{Service}' failed", name); }
+        SignalPublish();
+    }
+
+    /// <summary>An MQTT start of a VM while a service is down: the services first, then the VM. Never throws.</summary>
+    private async Task RunStartViaServicesAsync(string vmName)
+    {
+        try
+        {
+            _log.LogInformation("MQTT: start '{Vm}' with a Hyper-V service down — starting the services first", vmName);
+            if (await _services.StartServicesThenVmAsync(vmName, VmOpOrigin.Mqtt).ConfigureAwait(false) is { } error)
+                _log.LogWarning("MQTT: start '{Vm}' — {Error}", vmName, error);
+        }
+        catch (Exception ex) { _log.LogError(ex, "MQTT: starting '{Vm}' through the services failed", vmName); }
+    }
 
     /// <summary>Whether each VM's power verbs are published as one button per verb rather than as one
     /// select of them. Setting it writes config.json, whose reload rebuilds the entity table — see
@@ -442,6 +503,7 @@ public sealed class MqttService : IDisposable
         _monitor.SwitchApplied -= OnSwitchApplied;
         _vm.StatusesChanged -= OnVmStatuses;
         _vm.OperationProgress -= OnVmOperation;
+        _services.Monitor.StateChanged -= OnServiceState;
         _config.ConfigReloaded -= OnConfigReloaded;
         _store.Changed -= OnSettingsChanged;
         _groups.Changed -= OnGroupsChanged;
