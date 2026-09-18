@@ -10,16 +10,17 @@ namespace HyperVManagerTray.Services;
 /// broker and no WinUI.</summary>
 public sealed record MqttEntitySpec
 {
-    /// <summary>The managed VMs, in config order.</summary>
-    public required IReadOnlyList<string> VmNames { get; init; }
+    /// <summary>The managed VMs, in config order: the VM ID every entity id and command is built from,
+    /// and the name the entities are called by.</summary>
+    public required IReadOnlyList<VmRef> Vms { get; init; }
 
-    /// <summary>The switches the rules name — the options a switch-override may pick from. Read on
+    /// <summary>The switches the rules identify — the options a switch-override may pick from. Read on
     /// every announcement pass, so a rule edit reaches the receiver without the table being rebuilt.</summary>
-    public required Func<IReadOnlyList<string>> RuleSwitches { get; init; }
+    public required Func<IReadOnlyList<SwitchRef>> RuleSwitches { get; init; }
 
     public required MqttStateCache State { get; init; }
 
-    /// <summary>A VM's cached guest IP, or null when none is known.</summary>
+    /// <summary>A VM's cached guest IP by VM ID, or null when none is known.</summary>
     public required Func<string, string?> VmIp { get; init; }
 
     public required Func<CancellationToken, Task> ReCheckNetwork { get; init; }
@@ -27,7 +28,7 @@ public sealed record MqttEntitySpec
     public required Func<CancellationToken, Task> RepairHostNetworking { get; init; }
 
     /// <summary>Requests a power verb for one VM. Reached only through <see cref="MqttCommandGate"/>.</summary>
-    public required Func<string, VmOpKind, CancellationToken, Task> Power { get; init; }
+    public required Func<VmRef, VmOpKind, CancellationToken, Task> Power { get; init; }
 
     /// <summary>Which shape the power verbs take: one button per verb when true, a single select of
     /// them when false. A value read once at <see cref="MqttEntityTable.Build"/> rather than a delegate
@@ -35,8 +36,8 @@ public sealed record MqttEntitySpec
     /// has to rebuild the set so the shape being left behind is evicted rather than stranded.</summary>
     public bool PowerButtons { get; init; }
 
-    /// <summary>Forces one VM onto one switch.</summary>
-    public required Func<string, string, CancellationToken, Task> OverrideSwitch { get; init; }
+    /// <summary>Forces one VM (by VM ID) onto one switch.</summary>
+    public required Func<string, SwitchRef, CancellationToken, Task> OverrideSwitch { get; init; }
 
     /// <summary>A Hyper-V service's last read state (issue #114).</summary>
     public Func<HyperVServiceKind, HyperVServiceState> ServiceState { get; init; } = _ => HyperVServiceState.Unknown;
@@ -53,8 +54,8 @@ public sealed record MqttEntitySpec
     /// <summary>Whether vmms is down, in which case no VM state is known.</summary>
     public Func<bool> VmmsDown { get; init; } = () => false;
 
-    /// <summary>Starts the services, then the named VM.</summary>
-    public Func<string, CancellationToken, Task> StartViaServices { get; init; } = (_, _) => Task.CompletedTask;
+    /// <summary>Starts the services, then the given VM.</summary>
+    public Func<VmRef, CancellationToken, Task> StartViaServices { get; init; } = (_, _) => Task.CompletedTask;
 }
 
 /// <summary>
@@ -62,14 +63,12 @@ public sealed record MqttEntitySpec
 /// deliver. Nothing here samples anything.
 /// </summary>
 /// <remarks>
-/// <para>Per-VM ids are composed from a slug, and <see cref="VmSlugAllocator"/> settles it against the
-/// ids actually emitted rather than against the slug alone: a VM name is a runtime string, the id is
-/// both the state topic and the command topic, and a shared one routes one VM's commands to another.
-/// Slugs that differ still compose ids that clash — "X switch" reaches the very id "X"'s diagnostics
-/// sensor claims — so a slug is taken only once every id composed from it is free, which also keeps one
-/// collision suffix applying uniformly to that VM's entities. The slug is cut to leave room for the
-/// longest suffix as well, because <see cref="MqttEntityId.MaxLength"/> caps the composed id and a VM
-/// name of ordinary length would otherwise throw the whole table out.</para>
+/// <para>Per-VM ids are composed from a slug of the VM ID — never of the VM's name, which two VMs may
+/// share and a rename changes. The id is both the state topic and the command topic, so a shared one
+/// routes one VM's commands to another. <see cref="VmSlugAllocator"/> still settles each slug against the
+/// ids actually emitted: the slug is the start of the ID, cut to leave room for the longest suffix under
+/// <see cref="MqttEntityId.MaxLength"/>, and two IDs sharing that start — astronomically unlikely, never
+/// impossible — must not share entities. The VM's name appears only in the entity names.</para>
 /// <para>Group membership is what a user switches off. A withheld entity keeps its whole entry in the
 /// document and reads as unavailable, so a toggle never costs a receiver's registry record.</para>
 /// </remarks>
@@ -121,11 +120,12 @@ public static class MqttEntityTable
     /// single-component config (<see cref="MigratingEntity"/>), one that no longer exists at all
     /// (<see cref="RetiredEntity"/>), and a value topic no entity claims (<see cref="RetiredChannel"/>).
     ///
-    /// <para><b>All three are empty, and that is a statement rather than an omission.</b> No released
-    /// build of this app has ever published to a broker — every tag is free of the integration — so
-    /// there is no installed base to carry across and nothing retained under this topic root that a
-    /// declaration could reach. A guessed key would be worse than none: the publisher empties exactly
-    /// what is named, once, and writes the fact down permanently.</para>
+    /// <para><b>All three are empty, and that is a statement rather than an omission.</b> Every release
+    /// that publishes has done so through the one device document, and the discovery publisher keeps a
+    /// ledger of what it announced: an entity the table no longer contains — the per-VM entities whose
+    /// ids came from a VM's name, before they came from its ID — is removed from the receiver on the next
+    /// connect without being named here. A guessed key would be worse than none: the publisher empties
+    /// exactly what is named, once, and writes the fact down permanently.</para>
     /// </summary>
     public static IReadOnlyList<MigratingEntity> Migrating => [];
 
@@ -167,11 +167,13 @@ public static class MqttEntityTable
     /// <summary>Everything the composed table depends on, as one string. A config write that leaves it
     /// alone must not rebuild and re-announce the whole document; a write that moves it must, because
     /// the entities it names have changed — which is what evicts the power shape being left behind.</summary>
-    public static string Signature(IEnumerable<string?> vmNames, bool powerButtons)
+    public static string Signature(IEnumerable<VmRef?> vms, bool powerButtons)
     {
-        ArgumentNullException.ThrowIfNull(vmNames);
+        ArgumentNullException.ThrowIfNull(vms);
+        // The name is part of it because the entity names carry it: a rename re-announces the names and
+        // leaves every id where it was.
         return (powerButtons ? "buttons" : "select")
-             + "\n" + string.Join("\n", vmNames.Select(n => n ?? string.Empty));
+             + "\n" + string.Join("\n", vms.Select(v => $"{v?.Id}\t{v?.Name}"));
     }
 
     /// <summary>Builds the whole table. Called again — through
@@ -187,13 +189,16 @@ public static class MqttEntityTable
             entities.AddRange(ServiceEntities(spec, kind));
 
         var slugs = new VmSlugAllocator();
-        // A hand-edited "name": null must not throw the whole table out; it slugs to the id alphabet's
-        // own fallback and is separated from any sibling by the collision suffix.
-        foreach (string name in spec.VmNames.Select(n => n ?? string.Empty))
-            entities.AddRange(VmEntities(spec, name, slugs.Allocate(name)));
+        // A VM not identified yet has no ID to key entities on and is left out.
+        foreach (var vm in spec.Vms.Where(v => v is not null && !string.IsNullOrWhiteSpace(v.Id)))
+            entities.AddRange(VmEntities(spec, vm, slugs.Allocate(SlugSource(vm.Id))));
 
         return new MqttEntitySet(entities);
     }
+
+    /// <summary>The VM ID in the id alphabet: its hex digits, lower case, without the hyphens.</summary>
+    internal static string SlugSource(string vmId) =>
+        HostIdentity.Bare(vmId).Replace("-", "", StringComparison.Ordinal).ToLowerInvariant();
 
     /// <summary>Hands out one slug per VM, such that every id composed from it is free and inside
     /// <see cref="MqttEntityId.MaxLength"/>.</summary>
@@ -207,9 +212,9 @@ public static class MqttEntityTable
 
         private readonly HashSet<string> _taken = new(StringComparer.Ordinal);
 
-        public string Allocate(string? vmName)
+        public string Allocate(string? vmId)
         {
-            string stem = Cut(MqttEntityId.Normalise(vmName), Budget);
+            string stem = Cut(MqttEntityId.Normalise(vmId), Budget);
             if (Claim(stem)) return stem;
 
             // The stem is cut again to leave room for the suffix, so a truncated name cannot push a
@@ -261,7 +266,7 @@ public static class MqttEntityTable
             Name     = "Virtual switch",
             Group    = NetworkGroup,
             Icon     = "mdi:switch",
-            Read     = () => Text(state.Network?.VirtualSwitch),
+            Read     = () => Text(state.Network is { } r ? (string.IsNullOrWhiteSpace(r.SwitchName) ? r.SwitchId : r.SwitchName) : null),
         };
         yield return new MqttSensor
         {
@@ -392,9 +397,11 @@ public static class MqttEntityTable
 
     // ── Per VM ──────────────────────────────────────────────────────────────────
 
-    private static IEnumerable<MqttEntity> VmEntities(MqttEntitySpec spec, string vmName, string slug)
+    private static IEnumerable<MqttEntity> VmEntities(MqttEntitySpec spec, VmRef vm, string slug)
     {
-        var state = spec.State;
+        var state  = spec.State;
+        var vmId   = vm.Id;
+        var vmName = vm.Shown;
 
         yield return new MqttSensor
         {
@@ -402,7 +409,7 @@ public static class MqttEntityTable
             Name     = $"{vmName} state",
             Group    = VmGroup,
             Icon     = "mdi:server",
-            Read     = () => Text(state.Vm(vmName)?.State),
+            Read     = () => Text(state.Vm(vmId)?.State),
         };
         yield return new MqttBinarySensor
         {
@@ -410,7 +417,7 @@ public static class MqttEntityTable
             Name        = $"{vmName} running",
             Group       = VmGroup,
             DeviceClass = "running",
-            Read        = () => state.Vm(vmName)?.IsRunning,
+            Read        = () => state.Vm(vmId)?.IsRunning,
         };
         yield return new MqttSensor
         {
@@ -419,7 +426,7 @@ public static class MqttEntityTable
             Group    = DiagnosticsGroup,
             Category = MqttEntityCategory.Diagnostic,
             Icon     = "mdi:switch",
-            Read     = () => Text(state.Vm(vmName)?.Switch),
+            Read     = () => Text(state.Vm(vmId)?.Switch),
         };
         yield return new MqttSensor
         {
@@ -428,7 +435,7 @@ public static class MqttEntityTable
             Group    = DiagnosticsGroup,
             Category = MqttEntityCategory.Diagnostic,
             Icon     = "mdi:ip-network",
-            Read     = () => Text(spec.VmIp(vmName)),
+            Read     = () => Text(spec.VmIp(vmId)),
         };
         yield return new MqttSensor
         {
@@ -437,7 +444,7 @@ public static class MqttEntityTable
             Group    = DiagnosticsGroup,
             Category = MqttEntityCategory.Diagnostic,
             Icon     = "mdi:timer-outline",
-            Read     = () => Text(UptimeFormatter.Format(state.Vm(vmName))),
+            Read     = () => Text(UptimeFormatter.Format(state.Vm(vmId))),
         };
         yield return new MqttSensor
         {
@@ -446,7 +453,7 @@ public static class MqttEntityTable
             Group    = DiagnosticsGroup,
             Category = MqttEntityCategory.Diagnostic,
             Icon     = "mdi:history",
-            Read     = () => Text(state.Operation(vmName)),
+            Read     = () => Text(state.Operation(vmId)),
         };
 
         // CPU, memory and VHD only carry a reading while VmService.SubscribeMetrics() is held —
@@ -461,7 +468,7 @@ public static class MqttEntityTable
             StateClass = MqttStateClass.Measurement,
             Unit       = "%",
             Icon       = "mdi:cpu-64-bit",
-            Read       = () => state.Vm(vmName) is { } s ? MqttPayload.Number(s.Cpu) : null,
+            Read       = () => state.Vm(vmId) is { } s ? MqttPayload.Number(s.Cpu) : null,
         };
         yield return new MqttSensor
         {
@@ -472,7 +479,7 @@ public static class MqttEntityTable
             DeviceClass = "data_size",
             StateClass  = MqttStateClass.Measurement,
             Unit        = "MiB",
-            Read        = () => state.Vm(vmName) is { } s ? MqttPayload.Number(Math.Round(s.MemAssignedMb, 1)) : null,
+            Read        = () => state.Vm(vmId) is { } s ? MqttPayload.Number(Math.Round(s.MemAssignedMb, 1)) : null,
         };
         yield return new MqttSensor
         {
@@ -483,7 +490,7 @@ public static class MqttEntityTable
             DeviceClass = "data_size",
             StateClass  = MqttStateClass.Measurement,
             Unit        = "GiB",
-            Read        = () => state.Vm(vmName) is { } s ? MqttPayload.Number(Math.Round(s.VhdGb, 2)) : null,
+            Read        = () => state.Vm(vmId) is { } s ? MqttPayload.Number(Math.Round(s.VhdGb, 2)) : null,
         };
 
         yield return new MqttSwitch
@@ -492,20 +499,20 @@ public static class MqttEntityTable
             Name     = vmName,
             Group    = VmGroup,
             Icon     = "mdi:power",
-            Read     = () => state.Vm(vmName)?.IsRunning,
+            Read     = () => state.Vm(vmId)?.IsRunning,
             Apply    = on => spec.AnyServiceDown()
-                ? MqttCommandGate.PowerWhileServicesDown(state.Vm(vmName)?.State, spec.VmmsDown(),
-                      on ? VmOpKind.Start : VmOpKind.Shutdown, ct => spec.StartViaServices(vmName, ct))
+                ? MqttCommandGate.PowerWhileServicesDown(state.Vm(vmId)?.State, spec.VmmsDown(),
+                      on ? VmOpKind.Start : VmOpKind.Shutdown, ct => spec.StartViaServices(vm, ct))
                 : MqttCommandGate.Running(
-                      state.Vm(vmName)?.State, on, (kind, ct) => spec.Power(vmName, kind, ct)),
+                      state.Vm(vmId)?.State, on, (kind, ct) => spec.Power(vm, kind, ct)),
         };
 
         // Every power verb passes here: while a Hyper-V service is down, only a start that brings the
         // services up first is offered, as on the dashboard's greyed card (issue #114).
         MqttCommandVerdict PowerVerb(VmOpKind kind) => spec.AnyServiceDown()
-            ? MqttCommandGate.PowerWhileServicesDown(state.Vm(vmName)?.State, spec.VmmsDown(), kind,
-                  ct => spec.StartViaServices(vmName, ct))
-            : MqttCommandGate.Power(state.Vm(vmName)?.State, kind, ct => spec.Power(vmName, kind, ct));
+            ? MqttCommandGate.PowerWhileServicesDown(state.Vm(vmId)?.State, spec.VmmsDown(), kind,
+                  ct => spec.StartViaServices(vm, ct))
+            : MqttCommandGate.Power(state.Vm(vmId)?.State, kind, ct => spec.Power(vm, kind, ct));
 
         // The two power shapes, one or the other. Both reach MqttCommandGate.Power, so the state gating
         // and the refusal wording are the same whichever is published; only the controls differ.
@@ -550,16 +557,35 @@ public static class MqttEntityTable
             // WITHHELD rather than dropped: it keeps its entry and its registry record and returns the
             // moment a rule names a switch.
             Include  = () => spec.RuleSwitches().Count > 0,
-            Options  = spec.RuleSwitches,
-            // Only a switch the options carry, in the options' own spelling: a VM on a switch no rule
-            // names reads as no current value rather than as a choice the list does not offer. The
-            // diagnostics switch sensor still reports the actual switch.
-            Read     = () => Text(state.Vm(vmName)?.Switch) is { } current
-                ? spec.RuleSwitches().FirstOrDefault(s => string.Equals(s, current, StringComparison.OrdinalIgnoreCase))
+            Options  = () => SwitchOptionList(spec.RuleSwitches()),
+            // Only a switch the options carry, by switch ID: a VM on a switch no rule names reads as no
+            // current value rather than as a choice the list does not offer. The diagnostics switch
+            // sensor still reports the actual switch.
+            Read     = () => state.Vm(vmId)?.SwitchId is { Length: > 0 } current
+                && SwitchOptions(spec.RuleSwitches()).FirstOrDefault(o => HostIdentity.Same(o.Key, current)) is { Value: { } label }
+                ? label
                 : null,
             // Only reached for one of Options(): the module refuses a switch no rule names before this.
-            Apply    = option => MqttCommandVerdict.Accept(ct => spec.OverrideSwitch(vmName, option, ct)),
+            // The option is a label, turned back into the switch it was made from — never looked up by name.
+            Apply    = option => SwitchOptions(spec.RuleSwitches()).FirstOrDefault(o => o.Value == option) is { Key: { } id }
+                ? MqttCommandVerdict.Accept(ct => spec.OverrideSwitch(
+                      vmId, spec.RuleSwitches().First(s => HostIdentity.Same(s.Id, id)), ct))
+                : MqttCommandVerdict.Refuse($"'{option}' is no longer a switch a rule names."),
         };
+    }
+
+    /// <summary>
+    /// One option label per switch, telling switches that share a name apart. A select's options are its
+    /// values, so a label must map back to exactly one switch.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> SwitchOptions(IReadOnlyList<SwitchRef> switches) =>
+        HostIdentity.Labels(switches.Select(s => (s.Id, s.Name)));
+
+    /// <summary>The option labels in the rules' own order.</summary>
+    private static IReadOnlyList<string> SwitchOptionList(IReadOnlyList<SwitchRef> switches)
+    {
+        var labels = SwitchOptions(switches);
+        return [.. switches.Select(s => labels.GetValueOrDefault(s.Id) ?? s.Shown)];
     }
 
     /// <summary>The verb as a power button names it. "Shut down" rather than "Shutdown": it is the verb

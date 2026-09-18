@@ -4,6 +4,6 @@
   "rules": [],
   "fallback": {
     "virtualSwitch": "Default Switch",
-    "targetVms": []
+    "targetVmIds": []
   }
 }

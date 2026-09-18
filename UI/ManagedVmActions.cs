@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using HyperVManagerTray.Helpers;
+using HyperVManagerTray.Models;
 using HyperVManagerTray.Services;
 
 namespace HyperVManagerTray.UI;
@@ -41,23 +42,23 @@ internal sealed class ManagedVmActions
         _notify = notify;
     }
 
-    /// <summary>True when the config currently lists <paramref name="vmName"/> — the checkmark state of
-    /// the tray's "Manage VMs" list, and the post-write verification for both verbs below.</summary>
-    public bool IsManaged(string vmName) =>
-        _config.Current.VirtualMachines.Any(v => v.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase));
+    /// <summary>True when the config currently lists the VM with <paramref name="vmId"/> — the checkmark
+    /// state of the tray's "Manage VMs" list, and the post-write verification for both verbs below.</summary>
+    public bool IsManaged(string vmId) => _config.Current.FindVm(vmId) is not null;
 
     /// <summary>
-    /// Starts managing a VM. No confirmation: adding is non-destructive and trivially undone by the same
-    /// list. <paramref name="nicName"/> is the VM's own adapter as the host reports it; blank is fine —
-    /// <see cref="ConfigManager.AddVmToConfig"/> falls back to the Hyper-V default name.
+    /// Starts managing a host VM, by its VM ID. No confirmation: adding is non-destructive and trivially
+    /// undone by the same list. Its adapter is the one the host reports, as <see cref="VmConfigUi.SeedNic"/>
+    /// picks it.
     /// </summary>
     /// <returns>True only if the config was re-read and genuinely contains the VM afterwards.</returns>
-    public async Task<bool> AddAsync(string vmName, string nicName)
+    public async Task<bool> AddAsync(DiscoveredVm vm)
     {
-        UiActivityLog.Logger.LogInformation("Managed VMs: add '{Vm}'", vmName);
+        var vmName = vm.Name;
+        UiActivityLog.Logger.LogInformation("Managed VMs: add '{Vm}' ({Id})", vmName, vm.Id);
         try
         {
-            await Task.Run(() => _config.AddVmToConfig(vmName, nicName)).ConfigureAwait(true);
+            await Task.Run(() => _config.AddVmToConfig(vm)).ConfigureAwait(true);
         }
         catch (Exception ex)
         {
@@ -66,7 +67,7 @@ internal sealed class ManagedVmActions
             return false;
         }
 
-        var confirmed = IsManaged(vmName);
+        var confirmed = IsManaged(vm.Id);
         _notify(Title,
             confirmed ? VmConfigUi.AddedMessage(vmName) : VmConfigUi.AddNotConfirmedMessage(vmName),
             !confirmed);
@@ -82,15 +83,18 @@ internal sealed class ManagedVmActions
     /// False covers "the user said no" as well as "it did not work" — callers use it purely to decide
     /// whether to re-render, and both cases mean the same thing there.
     /// </returns>
-    public async Task<bool> RemoveAsync(string vmName)
+    /// <param name="vm">The managed VM. An entry not identified yet has an empty ID and is removed by its
+    /// label, since it has nothing else.</param>
+    public async Task<bool> RemoveAsync(VmRef vm)
     {
+        var vmName = vm.Shown;
         // The ONE confirmation. Deliberately before the log line: a cancelled dialog is not an action.
         if (!NativeMethods.Confirm(VmConfigUi.RemoveConfirmPrompt(vmName), Title)) return false;
 
-        UiActivityLog.Logger.LogInformation("Managed VMs: remove '{Vm}' (confirmed)", vmName);
+        UiActivityLog.Logger.LogInformation("Managed VMs: remove '{Vm}' ({Id}) (confirmed)", vmName, vm.Id);
         try
         {
-            await Task.Run(() => _config.RemoveVmFromConfig(vmName)).ConfigureAwait(true);
+            await Task.Run(() => _config.RemoveVmFromConfig(vm.Id, vm.Name)).ConfigureAwait(true);
         }
         catch (Exception ex)
         {
@@ -99,7 +103,9 @@ internal sealed class ManagedVmActions
             return false;
         }
 
-        var confirmed = !IsManaged(vmName);
+        var confirmed = string.IsNullOrWhiteSpace(vm.Id)
+            ? !_config.Current.VirtualMachines.Any(v => string.IsNullOrWhiteSpace(v.Id) && v.Name == vm.Name)
+            : !IsManaged(vm.Id);
         _notify(Title,
             confirmed ? VmConfigUi.RemovedMessage(vmName) : VmConfigUi.RemoveNotConfirmedMessage(vmName),
             !confirmed);

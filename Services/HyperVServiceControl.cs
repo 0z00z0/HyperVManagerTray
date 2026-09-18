@@ -116,15 +116,15 @@ public sealed class HyperVServiceControl
     /// A VM start from any source while a service is down: the services first, then the VM. Null when the
     /// VM start was requested (its outcome follows on VmService.OperationProgress), else what stopped it.
     /// </summary>
-    public async Task<string?> StartServicesThenVmAsync(string vmName, VmOpOrigin origin)
+    public async Task<string?> StartServicesThenVmAsync(VmRef vm, VmOpOrigin origin)
     {
-        if (await EnsureRunningForVmStartAsync(origin, $"VM '{vmName}' is to start").ConfigureAwait(true) is { } error)
+        if (await EnsureRunningForVmStartAsync(origin, $"VM '{vm.Shown}' ({vm.Id}) is to start").ConfigureAwait(true) is { } error)
         {
-            _powerLog.LogWarning("Start '{Vm}' not requested (origin={Origin}): {Error}", vmName, origin, error);
-            return $"{error} {vmName} was not started.";
+            _powerLog.LogWarning("Start '{Vm}' ({Id}) not requested (origin={Origin}): {Error}", vm.Shown, vm.Id, origin, error);
+            return $"{error} {vm.Shown} was not started.";
         }
 
-        _vm.BeginPowerAction(vmName, VmOpKind.Start, origin);
+        _vm.BeginPowerAction(vm, VmOpKind.Start, origin);
         return null;
     }
 
@@ -140,21 +140,23 @@ public sealed class HyperVServiceControl
         return new ServiceStopFlow.VmRead(_vm.GetCachedStatuses(), _vm.StatesKnown && _vm.LastReadUtc >= asked);
     }
 
-    /// <summary>Saves every named VM and waits for each to read Saved. Null when all did, else what failed.</summary>
-    private async Task<string?> SaveAllAsync(IReadOnlyList<string> names, VmOpOrigin origin)
+    /// <summary>Saves every VM given, each by its VM ID, and waits for each to read Saved. Null when all
+    /// did, else what failed.</summary>
+    private async Task<string?> SaveAllAsync(IReadOnlyList<VmRef> vms, VmOpOrigin origin)
     {
-        _powerLog.LogInformation("Saving before a service stop (origin={Origin}): {Vms}", origin, string.Join(", ", names));
+        _powerLog.LogInformation("Saving before a service stop (origin={Origin}): {Vms}",
+            origin, string.Join(", ", vms.Select(v => $"{v.Shown} ({v.Id})")));
 
         // Waits first, actions second: a save that fails at once must not report before anything listens.
-        var waits = names.Select(n => (Name: n, Wait: _vm.WaitUntilSavedAsync(n, SaveTimeout))).ToList();
-        foreach (var name in names) _vm.BeginPowerAction(name, VmOpKind.Save, origin);
+        var waits = vms.Select(v => (Vm: v, Wait: _vm.WaitUntilSavedAsync(v.Id, SaveTimeout))).ToList();
+        foreach (var vm in vms) _vm.BeginPowerAction(vm, VmOpKind.Save, origin);
 
         await Task.WhenAll(waits.Select(w => w.Wait)).ConfigureAwait(true);
 
         var failed = waits.Where(w => w.Wait.Result != VmService.StartReadiness.Running).ToList();
         if (failed.Count == 0) return null;
         return string.Join(" ", failed.Select(w => w.Wait.Result == VmService.StartReadiness.Failed
-            ? $"{w.Name} could not be saved."
-            : $"{w.Name} did not finish saving in time."));
+            ? $"{w.Vm.Shown} could not be saved."
+            : $"{w.Vm.Shown} did not finish saving in time."));
     }
 }

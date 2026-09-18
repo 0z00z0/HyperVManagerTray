@@ -30,7 +30,7 @@ public sealed class NetworkMonitor : IDisposable
     private MatchResult? _lastApplied;
     // Tracks which physical adapter each virtual SWITCH was last successfully bound to, so we can skip
     // redundant re-binds (which cause a brief VM network drop) when nothing has changed. Keyed by switch
-    // name (issue #29, finding 2): a single scalar wrongly suppressed binding a 2nd bridged switch that
+    // ID (issue #29, finding 2): a single scalar wrongly suppressed binding a 2nd bridged switch that
     // happened to sit on the same NIC as the first. An entry exists only after a Bound/AlreadyBound
     // outcome — a failed bind is never recorded, so the next network change retries it (finding 1).
     // ConcurrentDictionary because ManualOverrideAsync clears it WITHOUT _evalLock (it bypasses the
@@ -39,11 +39,11 @@ public sealed class NetworkMonitor : IDisposable
     // required rebind). Every access here is a single atomic operation, so no compound lock is needed.
     private readonly ConcurrentDictionary<string, string> _lastBoundAdapterBySwitch = new(StringComparer.OrdinalIgnoreCase);
 
-    // Per-VM cancellation tokens for the bridge-lost delay timers.
+    // Per-VM cancellation tokens for the bridge-lost delay timers, keyed by VM ID.
     // Protected by _disconnectLock (not _evalLock) so Dispose() can safely cancel pending
     // actions while an evaluation is still in flight without deadlocking on the semaphore.
     private readonly object _disconnectLock = new();
-    private readonly Dictionary<string, CancellationTokenSource> _pendingDisconnect = new();
+    private readonly Dictionary<string, CancellationTokenSource> _pendingDisconnect = new(StringComparer.OrdinalIgnoreCase);
 
     // The active rule's delayed service stops (issue #114), cancelled when another rule becomes active.
     // Its own lock for the same reason as _disconnectLock.
@@ -154,7 +154,8 @@ public sealed class NetworkMonitor : IDisposable
                 _logger.LogInformation("Network change — re-evaluating adapters...");
 
                 var result = AdapterMatcher.Evaluate(_config.Current);
-                _logger.LogInformation("Evaluated: rule='{Rule}' switch='{Switch}'", result.RuleName, result.VirtualSwitch);
+                _logger.LogInformation("Evaluated: rule='{Rule}' ({RuleId}) switch='{Switch}' ({SwitchId})",
+                    result.RuleName, result.RuleId, result.SwitchName, result.SwitchId);
 
                 // Skip the apply pass only when the last pass CONFIRMED this exact outcome — same rule,
                 // switch, host adapter and target VMs, and it actually succeeded. See
@@ -175,9 +176,9 @@ public sealed class NetworkMonitor : IDisposable
                     // (to or from "Fallback"), and the guard admits only an identical rule, so both
                     // flags are necessarily false here. Kept deliberately: it is the one line that
                     // kept this fast path correct when the guard was looser, and a future guard that
-                    // stops comparing RuleName would silently start missing bridge-lost actions
+                    // stops comparing RuleId would silently start missing bridge-lost actions
                     // without it. Cheap insurance against a re-loosening.
-                    HandleBridgeTransition(confirmed.RuleName, result);
+                    HandleBridgeTransition(confirmed.RuleId, result);
 
                     // Nothing was applied on this pass, so this result has no outcome of its own — carry
                     // the previous pass's outcome forward (issue #37). That is sound here and ONLY here:
@@ -363,20 +364,19 @@ public sealed class NetworkMonitor : IDisposable
     /// rules say. That lifespan was previously documented nowhere in the UI; the caller is expected to
     /// state it (see <see cref="NetworkStatusUi.OverrideAppliedMessage"/>).</para>
     /// </summary>
-    public async Task<OverrideOutcome> ManualOverrideAsync(string vmName, string switchName)
+    public async Task<OverrideOutcome> ManualOverrideAsync(string vmId, SwitchRef sw)
     {
-        _logger.LogInformation("Manual override: {Vm} → {Switch}", vmName, switchName);
-        // One shared, case-insensitive lookup — see VmConfigUi.FindManagedVm for why an ordinal compare
-        // here reported a config the app's own pickers created as an unmanaged VM.
-        if (VmConfigUi.FindManagedVm(_config.Current.VirtualMachines, vmName) is not { } vm)
+        _logger.LogInformation("Manual override: {Vm} → {Switch} ({SwitchId})", vmId, sw.Shown, sw.Id);
+        // One shared lookup by VM ID — see VmConfigUi.FindManagedVm.
+        if (VmConfigUi.FindManagedVm(_config.Current.VirtualMachines, vmId) is not { } vm)
         {
-            _logger.LogWarning("Manual override: VM '{Vm}' not found in config — nothing done", vmName);
+            _logger.LogWarning("Manual override: VM '{Vm}' not found in config — nothing done", vmId);
             // Nothing was attempted, so nothing is published: _lastApplied still describes the state the
             // app last confirmed, and claiming "Manual (…)" here would invent a state that never existed.
             return OverrideOutcome.NotConfigured;
         }
 
-        bool ok = await _hyperV.ApplySwitchAsync(vmName, vm.NicName, switchName);
+        bool ok = await _hyperV.ApplySwitchAsync(vm.Ref, vm.NicId, sw);
 
         // Manual override bypasses the binding logic; force a re-bind next time a rule fires.
         _lastBoundAdapterBySwitch.Clear();
@@ -384,11 +384,11 @@ public sealed class NetworkMonitor : IDisposable
         // Publish the attempt WITH its real outcome. A failed override still updates the surfaces —
         // reporting "we tried to move this VM here and could not" is truthful and actionable, whereas
         // the pre-#37 behaviour published the override as an accomplished fact either way.
-        var result = new MatchResult($"Manual ({switchName})", switchName, [vmName])
+        var result = new MatchResult(ManualRuleId, $"Manual ({sw.Shown})", sw.Id, sw.Name, [vm.Ref])
         {
             ApplyStatus = ok ? NetworkStatusUi.SwitchApplyStatus.Applied
                              : NetworkStatusUi.SwitchApplyStatus.VmConnectFailed,
-            FailedVms   = ok ? [] : new[] { vmName },
+            FailedVms   = ok ? [] : new[] { vm.Ref.Shown },
             // The override menu command reports this outcome itself (and can distinguish "not a managed
             // VM", which this path can't), so the automatic balloon stands down — one action, one report.
             UserInitiated = true,
@@ -397,6 +397,9 @@ public sealed class NetworkMonitor : IDisposable
         SwitchApplied?.Invoke(this, result);
         return ok ? OverrideOutcome.Applied : OverrideOutcome.Failed;
     }
+
+    /// <summary>The rule ID a manual override publishes under: neither a rule nor the fallback.</summary>
+    private const string ManualRuleId = "manual";
 
     /// <summary>
     /// Applies <paramref name="result"/> (bind the switch, reconnect the target VMs) and returns the
@@ -413,16 +416,16 @@ public sealed class NetworkMonitor : IDisposable
     {
         // Capture the previously-active rule before any state changes so autostart and
         // bridge-transition detection both see a consistent before/after snapshot.
-        var previousRule = _lastApplied?.RuleName;
+        var previousRule = _lastApplied?.RuleId;
 
         // The rule that has just become active, if any: its service and autostart settings act once, on
-        // the change, never on a re-apply of the same rule.
-        var activeRule = result.RuleName != previousRule && result.RuleName != "Fallback"
-            ? _config.Current.Rules.FirstOrDefault(r => r.Name == result.RuleName)
+        // the change, never on a re-apply of the same rule. Found by ID — two rules may share a name.
+        var activeRule = result.RuleId != previousRule && !result.IsFallback
+            ? _config.Current.Rules.FirstOrDefault(r => r.Id == result.RuleId)
             : null;
 
         // A stop the previous rule scheduled belongs to the network that has just gone.
-        if (result.RuleName != previousRule) CancelServiceStops();
+        if (result.RuleId != previousRule) CancelServiceStops();
 
         // Services the rule starts come up before the bind below, which goes through vmms (issue #114).
         if (activeRule is not null) await StartRuleServicesAsync(activeRule);
@@ -442,62 +445,69 @@ public sealed class NetworkMonitor : IDisposable
         // this session already CONFIRMED this switch on this adapter — both are legitimately NotNeeded.
         var bindStep = NetworkStatusUi.BindStep.NotNeeded;
 
-        if (result.RuleName == "Fallback")
+        var target = new SwitchRef(result.SwitchId, result.SwitchName);
+        if (result.IsFallback)
         {
             _lastBoundAdapterBySwitch.Clear();
         }
-        else if (result.HostAdapterInterfaceName != "—")
+        else if (string.IsNullOrWhiteSpace(result.SwitchId))
         {
-            _lastBoundAdapterBySwitch.TryGetValue(result.VirtualSwitch, out var lastAdapter);
-            if (result.HostAdapterInterfaceName != lastAdapter)
+            // The rule's switch is not identified yet (an older settings document whose switch name
+            // matched none or several). There is nothing to bind, and that is a failure to say.
+            _logger.LogWarning("Rule '{Rule}' has no identified virtual switch — nothing to bind", result.RuleName);
+            bindStep = NetworkStatusUi.BindStep.Failed;
+        }
+        else if (!string.IsNullOrWhiteSpace(result.HostAdapterInterfaceId))
+        {
+            _lastBoundAdapterBySwitch.TryGetValue(result.SwitchId, out var lastAdapter);
+            if (!HostIdentity.Same(result.HostAdapterInterfaceId, lastAdapter))
             {
-                var outcome = await _hyperV.UpdateSwitchBindingAsync(result.VirtualSwitch, result.HostAdapterInterfaceName);
+                var outcome = await _hyperV.UpdateSwitchBindingAsync(target, result.HostAdapterInterfaceId);
                 bindStep = NetworkStatusUi.FromBindOutcome(outcome);
                 if (outcome == SwitchBindOutcome.Failed)
                     // Leave the cache clear for this switch so the next NetworkChange retries the bind.
-                    _lastBoundAdapterBySwitch.TryRemove(result.VirtualSwitch, out _);
+                    _lastBoundAdapterBySwitch.TryRemove(result.SwitchId, out _);
                 else
-                    _lastBoundAdapterBySwitch[result.VirtualSwitch] = result.HostAdapterInterfaceName;
+                    _lastBoundAdapterBySwitch[result.SwitchId] = result.HostAdapterInterfaceId;
             }
         }
         else
         {
-            // A rule matched but no host interface alias was resolved, so there is nothing to bind the
-            // switch to. Today AdapterMatcher can only produce "—" for the Fallback branch (a matched
+            // A rule matched but no host interface was resolved, so there is nothing to bind the
+            // switch to. Today AdapterMatcher can only produce an empty one for the Fallback branch (a matched
             // rule always carries the NIC it matched), so this arm is unreachable in practice — but if
             // that ever changes, a non-fallback rule with no adapter is a bind that cannot happen, and
             // it must read as a failure rather than fall through to Applied.
             _logger.LogWarning("Rule '{Rule}' matched but no host adapter was resolved — cannot bind '{Switch}'",
-                result.RuleName, result.VirtualSwitch);
+                result.RuleName, target.Shown);
             bindStep = NetworkStatusUi.BindStep.Failed;
         }
 
         // Collect the VMs whose NIC could not be attached, so the UI can name them (issue #37). Before
         // #37 both failure paths below were log-only and the pass reported success regardless.
         var failedVms = new List<string>();
-        foreach (var vmName in result.TargetVms)
+        foreach (var targetVm in result.TargetVms)
         {
-            // Same shared lookup as ManualOverrideAsync (VmConfigUi.FindManagedVm). A casing-only
-            // mismatch is worse here: it lands in failedVms below, so the pass reports VmConnectFailed
-            // and pins a red icon for a VM that is present and perfectly connectable.
-            var vm = VmConfigUi.FindManagedVm(_config.Current.VirtualMachines, vmName);
+            // Same shared lookup as ManualOverrideAsync (VmConfigUi.FindManagedVm), by VM ID.
+            var vm = VmConfigUi.FindManagedVm(_config.Current.VirtualMachines, targetVm.Id);
             if (vm is null)
             {
-                // A rule targets a VM that isn't in config (typically a typo in TargetVms): its NIC name
-                // is unknown, so it can never be reconnected. That is a real failure to put this VM on
-                // the intended network, not something to skip quietly.
-                _logger.LogWarning("VM '{Vm}' not found in config", vmName);
-                failedVms.Add(vmName);
+                // A rule targets a VM that isn't managed: which adapter to reconnect is unknown, so it can
+                // never be reconnected. That is a real failure to put this VM on the intended network,
+                // not something to skip quietly.
+                _logger.LogWarning("VM '{Vm}' not found in config", targetVm.Id);
+                failedVms.Add(targetVm.Shown);
                 continue;
             }
-            if (!await _hyperV.ApplySwitchAsync(vmName, vm.NicName, result.VirtualSwitch))
-                failedVms.Add(vmName);
+            if (string.IsNullOrWhiteSpace(result.SwitchId)
+                || !await _hyperV.ApplySwitchAsync(vm.Ref, vm.NicId, target))
+                failedVms.Add(vm.Ref.Shown);
         }
 
         var status = NetworkStatusUi.Classify(bindStep, failedVms.Count);
         if (NetworkStatusUi.IsFailure(status))
             _logger.LogWarning("Apply INCOMPLETE: rule='{Rule}' switch='{Switch}' status={Status} failedVms=[{Vms}]",
-                result.RuleName, result.VirtualSwitch, status, string.Join(", ", failedVms));
+                result.RuleName, target.Shown, status, string.Join(", ", failedVms));
 
         // Stamp the outcome onto the result BEFORE it is published/remembered — from here on this is
         // what the icon, tooltip and dashboard render.
@@ -505,7 +515,7 @@ public sealed class NetworkMonitor : IDisposable
 
         // Per-network autostart: when this rule has just become active and opts in, start (or
         // resume) its target VMs.  Never auto-stop on leaving — by design.
-        if (activeRule is { AutoStart: true } rule && rule.TargetVms.Count > 0)
+        if (activeRule is { AutoStart: true } rule && rule.TargetVmIds.Count > 0)
         {
             // A stopped service is started before any VM start, whatever the rule says about it.
             string? servicesError = _services.AnyServiceDown
@@ -519,11 +529,11 @@ public sealed class NetworkMonitor : IDisposable
             }
             else
             {
-                foreach (var vmName in rule.TargetVms)
+                foreach (var vmRef in _config.Current.VmRefs(rule.TargetVmIds))
                 {
-                    _logger.LogInformation("Autostart: starting/resuming {Vm} for rule '{Rule}'", vmName, rule.Name);
-                    _powerLog.LogInformation("AUTO Start '{Vm}': rule '{Rule}' autostart (network became active)", vmName, rule.Name);
-                    _vm.BeginPowerAction(vmName, VmOpKind.Start, VmOpOrigin.Auto);
+                    _logger.LogInformation("Autostart: starting/resuming {Vm} ({Id}) for rule '{Rule}'", vmRef.Shown, vmRef.Id, rule.Name);
+                    _powerLog.LogInformation("AUTO Start '{Vm}' ({Id}): rule '{Rule}' autostart (network became active)", vmRef.Shown, vmRef.Id, rule.Name);
+                    _vm.BeginPowerAction(vmRef, VmOpKind.Start, VmOpOrigin.Auto);
                 }
             }
         }
@@ -643,15 +653,15 @@ public sealed class NetworkMonitor : IDisposable
     // Called from both the switchUnchanged fast path and ApplyAsync (full path) so that
     // disconnect actions are scheduled or cancelled regardless of whether the Hyper-V
     // switch binding itself needed to change.
-    private void HandleBridgeTransition(string? previousRule, MatchResult result)
+    private void HandleBridgeTransition(string? previousRuleId, MatchResult result)
     {
-        // previousRule == null means first evaluation at startup — never trigger on startup
-        // even if the initial result is Fallback.
-        bool bridgeJustLost     = previousRule != null
-                               && previousRule != "Fallback"
-                               && result.RuleName == "Fallback";
-        bool bridgeJustRestored = previousRule == "Fallback"
-                               && result.RuleName != "Fallback";
+        // previousRuleId == null means first evaluation at startup — never trigger on startup
+        // even if the initial result is Fallback. Compared by rule ID: a rule NAMED "Fallback" is a rule.
+        bool bridgeJustLost     = previousRuleId != null
+                               && previousRuleId != MatchResult.FallbackRuleId
+                               && result.IsFallback;
+        bool bridgeJustRestored = previousRuleId == MatchResult.FallbackRuleId
+                               && !result.IsFallback;
 
         if (bridgeJustLost)
             ScheduleDisconnectActions();
@@ -669,21 +679,25 @@ public sealed class NetworkMonitor : IDisposable
             {
                 var action = vm.OnBridgeLostAction;
                 if (string.IsNullOrEmpty(action) || action == "none") continue;
+                // An entry not identified yet names no VM this app could act on.
+                if (string.IsNullOrWhiteSpace(vm.Id)) continue;
 
                 // Cancel any existing timer for this VM (bridge may have flapped).
-                if (_pendingDisconnect.TryGetValue(vm.Name, out var existing))
+                if (_pendingDisconnect.TryGetValue(vm.Id, out var existing))
                 {
                     existing.Cancel();
                     existing.Dispose();
                 }
 
                 var cts      = new CancellationTokenSource();
-                var vmName   = vm.Name;
+                var vmRef    = vm.Ref;
+                var vmId     = vm.Id;
+                var vmName   = $"{vmRef.Shown} ({vmId})";
                 // One source of truth for "how long?", shared with the Settings picker — see
                 // SettingsOptions.EffectiveBridgeLostDelaySeconds for why 0 ("Immediate") is a real
                 // value and must not be read as "unset". This was `delay > 0 ? delay : 30` inline.
                 var delaySec = SettingsOptions.EffectiveBridgeLostDelaySeconds(vm);
-                _pendingDisconnect[vmName] = cts;
+                _pendingDisconnect[vmId] = cts;
 
                 _logger.LogInformation(
                     "Bridge lost — scheduling '{Action}' for {Vm} in {Delay}s",
@@ -704,9 +718,9 @@ public sealed class NetworkMonitor : IDisposable
 
                         switch (action)
                         {
-                            case "pause":    _vm.BeginPowerAction(vmName, VmOpKind.Pause,    VmOpOrigin.Auto); break;
-                            case "save":     _vm.BeginPowerAction(vmName, VmOpKind.Save,     VmOpOrigin.Auto); break;
-                            case "shutdown": _vm.BeginPowerAction(vmName, VmOpKind.Shutdown, VmOpOrigin.Auto); break;
+                            case "pause":    _vm.BeginPowerAction(vmRef, VmOpKind.Pause,    VmOpOrigin.Auto); break;
+                            case "save":     _vm.BeginPowerAction(vmRef, VmOpKind.Save,     VmOpOrigin.Auto); break;
+                            case "shutdown": _vm.BeginPowerAction(vmRef, VmOpKind.Shutdown, VmOpOrigin.Auto); break;
                         }
                     }
                     catch (OperationCanceledException) { /* bridge restored — expected */ }
@@ -720,9 +734,9 @@ public sealed class NetworkMonitor : IDisposable
                         // stale CTS objects after actions have already fired.
                         lock (_disconnectLock)
                         {
-                            if (_pendingDisconnect.TryGetValue(vmName, out var current) &&
+                            if (_pendingDisconnect.TryGetValue(vmId, out var current) &&
                                 ReferenceEquals(current, cts))
-                                _pendingDisconnect.Remove(vmName);
+                                _pendingDisconnect.Remove(vmId);
                         }
                     }
                 }, CancellationToken.None);

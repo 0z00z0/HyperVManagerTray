@@ -51,6 +51,11 @@
     <!-- Issues #34/#47: the managed-VM set arithmetic and copy behind the tray's Manage VMs list and
          Settings' add/remove. Pure (no WinUI), which is what lets it be linked and tested here. -->
     <Compile Include="..\Helpers\VmConfigUi.cs"       Link="Linked\VmConfigUi.cs" />
+    <!-- Identity by identifier: the rules that keep two same-named VMs apart, and the migration of an
+         older settings document's names to identifiers. Pure — the host arrives as a snapshot. -->
+    <Compile Include="..\Helpers\HostIdentity.cs"     Link="Linked\HostIdentity.cs" />
+    <Compile Include="..\Helpers\ConfigIdentityMigration.cs" Link="Linked\ConfigIdentityMigration.cs" />
+    <Compile Include="..\Models\DiscoveredVm.cs"      Link="Linked\DiscoveredVm.cs" />
     <!-- The three-name outcome enum HyperVManager returns. Pure vocabulary, its own file precisely so
          linking it here drags in no System.Management/WMI. -->
     <Compile Include="..\Services\SwitchBindOutcome.cs" Link="Linked\SwitchBindOutcome.cs" />

@@ -79,7 +79,7 @@ public class CultureBoundaryTests
                     {
                         Name          = "Home",
                         Priority      = 10,
-                        VirtualSwitch = "Bridged",
+                        SwitchId = "Bridged",
                         Conditions    = new RuleConditions { IpCidr = "10.0.0.0/23" },
                     },
                 ],

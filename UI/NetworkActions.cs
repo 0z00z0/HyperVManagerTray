@@ -94,15 +94,19 @@ internal sealed class NetworkActions
     /// override's transience (issue #37, recommendation 5). Previously this silently no-opped when the
     /// VM wasn't in config and never confirmed anything in any case.
     /// </summary>
-    public async Task OverrideSwitchAsync(string vmName, string switchName)
+    /// <param name="vm">The managed VM, by VM ID.</param>
+    /// <param name="sw">The switch, by switch ID.</param>
+    public async Task OverrideSwitchAsync(VmRef vm, SwitchRef sw)
     {
+        var vmName     = vm.Shown;
+        var switchName = sw.Shown;
         try
         {
             // As with Re-check, this command owns the report: ManualOverrideAsync marks its result
             // UserInitiated so the automatic balloon stands down. It has to be this path — only here is
             // the NotConfigured outcome visible (no apply pass ever runs for it), and only here is it
             // known that the user asked for an override rather than a rule having fired.
-            var outcome = await _monitor.ManualOverrideAsync(vmName, switchName);
+            var outcome = await _monitor.ManualOverrideAsync(vm.Id, sw);
             var (message, isError) = outcome switch
             {
                 NetworkMonitor.OverrideOutcome.Applied =>
@@ -153,7 +157,7 @@ internal sealed class NetworkActions
             foreach (var sw in switches)
             {
                 var state = await _hyperV.RepairHostVNicAsync(sw).ConfigureAwait(true);
-                outcomes.Add(new NetworkStatusUi.RepairStepOn(sw, StepFor(state)));
+                outcomes.Add(new NetworkStatusUi.RepairStepOn(sw.Shown, StepFor(state)));
             }
 
             var report = NetworkStatusUi.RepairReportFor(outcomes);
@@ -246,12 +250,25 @@ internal sealed class NetworkActions
             return;
         }
 
-        var fallbackSwitch = _config.Current.Fallback.VirtualSwitch;
-        var bridgedSwitch  = _config.Current.Rules
-            .Select(r => r.VirtualSwitch)
-            .Where(s => s != fallbackSwitch)
-            .OrderBy(s => s.Contains("bridge", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
-            .FirstOrDefault() ?? "Bridged";
+        // The switch to bridge on: one a rule already uses, else one on the host, never the fallback's.
+        // Chosen by ID; a switch called something with "bridge" in it is only preferred, and the choice is
+        // shown in the confirmation below before anything is written.
+        var fallbackSwitchId = _config.Current.Fallback.SwitchId;
+        var candidates = _config.Current.RuleSwitches.ToList();
+        if (candidates.Count == 0)
+        {
+            var host = await Task.Run(HostInventory.ReadHyperV);
+            candidates = [.. host.Switches.Select(s => new SwitchRef(s.Id, s.Name))];
+        }
+        var bridgedSwitch = candidates
+            .Where(s => !HostIdentity.Same(s.Id, fallbackSwitchId))
+            .OrderBy(s => s.Name.Contains("bridge", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .FirstOrDefault();
+        if (bridgedSwitch is null)
+        {
+            _notify(NetworkTitle, NetworkStatusUi.AddRuleNoSwitchMessage(), true);
+            return;
+        }
 
         // Ask for a memorable name ("Home", "Office", "Coffee shop …") instead of silently using
         // the raw adapter description (e.g. "Intel(R) Wi-Fi 6 AX201 160MHz") as the rule name —
@@ -277,7 +294,7 @@ internal sealed class NetworkActions
                 $"  Adapter description :  {info.AdapterDescription}\n" +
                 $"  MAC                 :  {info.Mac}\n" +
                 $"  Network             :  {info.IpCidr}\n" +
-                $"  Virtual switch      :  {bridgedSwitch}",
+                $"  Virtual switch      :  {bridgedSwitch.Shown}",
                 "Add current network"))
             return;
 
@@ -285,9 +302,11 @@ internal sealed class NetworkActions
         {
             Name          = name,
             Priority      = _config.Current.Rules.Count > 0 ? _config.Current.Rules.Max(r => r.Priority) + 10 : 10,
+            Id            = ConfigIdentityMigration.NewRuleId(),
             Conditions    = new RuleConditions { AdapterMac = info.Mac, IpCidr = info.IpCidr },
-            VirtualSwitch = bridgedSwitch,
-            TargetVms     = _config.Current.Fallback.TargetVms.ToList(),
+            SwitchId      = bridgedSwitch.Id,
+            SwitchName    = bridgedSwitch.Name,
+            TargetVmIds   = [.. _config.Current.Fallback.TargetVmIds],
         };
 
         try

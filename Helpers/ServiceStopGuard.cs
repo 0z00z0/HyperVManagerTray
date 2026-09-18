@@ -25,9 +25,10 @@ public static class ServiceStopGuard
     }
 
     /// <param name="Verdict">What the caller may do.</param>
-    /// <param name="VmsToSave">VMs that are running or paused, in the order the host listed them.</param>
+    /// <param name="VmsToSave">VMs that are running or paused, in the order the host listed them, each by
+    /// VM ID — two VMs may share a name, and each must be saved.</param>
     /// <param name="BusyVms">VMs in a state that is neither stoppable nor saveable.</param>
-    public sealed record Decision(Verdict Verdict, IReadOnlyList<string> VmsToSave, IReadOnlyList<string> BusyVms);
+    public sealed record Decision(Verdict Verdict, IReadOnlyList<VmRef> VmsToSave, IReadOnlyList<VmRef> BusyVms);
 
     /// <summary>
     /// Whether a stop of <paramref name="kind"/> may come from a source with nobody to ask — a network rule
@@ -54,8 +55,8 @@ public static class ServiceStopGuard
         if (!statesKnown)
             return new Decision(Verdict.RefusedStatesUnknown, [], []);
 
-        var toSave = new List<string>();
-        var busy   = new List<string>();
+        var toSave = new List<VmRef>();
+        var busy   = new List<VmRef>();
         foreach (var status in statuses ?? [])
         {
             switch (VmStateUi.ClassifyShape(status.State))
@@ -65,11 +66,11 @@ public static class ServiceStopGuard
                     break;
                 case VmStateUi.Shape.Running:
                 case VmStateUi.Shape.Paused:
-                    toSave.Add(status.Name);
+                    toSave.Add(new VmRef(status.Id, status.Name));
                     break;
                 default:
                     // Transition or Unknown: it may be running, and a save request would be rejected.
-                    busy.Add(status.Name);
+                    busy.Add(new VmRef(status.Id, status.Name));
                     break;
             }
         }
@@ -91,17 +92,17 @@ public static class ServiceStopGuard
         $"Stop {HyperVServiceNames.DisplayName(kind)}?\n\n{HostComputeSideEffects}";
 
     /// <summary>The refusal that offers to save the running VMs first.</summary>
-    public static string SaveFirstPrompt(HyperVServiceKind kind, IReadOnlyList<string> vmsToSave)
+    public static string SaveFirstPrompt(HyperVServiceKind kind, IReadOnlyList<VmRef> vmsToSave)
     {
         var text = $"{HyperVServiceNames.DisplayName(kind)} cannot be stopped while these VMs are running: "
-                   + $"{string.Join(", ", vmsToSave)}.\n\n"
+                   + $"{string.Join(", ", vmsToSave.Select(v => v.Shown))}.\n\n"
                    + "Save them all first and then stop the service?";
         return kind == HyperVServiceKind.HostCompute ? $"{text}\n\n{HostComputeSideEffects}" : text;
     }
 
     /// <summary>The refusal when a VM is mid-transition.</summary>
-    public static string BusyMessage(HyperVServiceKind kind, IReadOnlyList<string> busyVms) =>
-        $"{HyperVServiceNames.DisplayName(kind)} was not stopped: {string.Join(", ", busyVms)} "
+    public static string BusyMessage(HyperVServiceKind kind, IReadOnlyList<VmRef> busyVms) =>
+        $"{HyperVServiceNames.DisplayName(kind)} was not stopped: {string.Join(", ", busyVms.Select(v => v.Shown))} "
         + "is changing state. Try again once it has finished.";
 
     /// <summary>The refusal when VM states cannot be read.</summary>

@@ -1,3 +1,5 @@
+using HyperVManagerTray.Models;
+
 namespace HyperVManagerTray.Helpers;
 
 /// <summary>
@@ -75,9 +77,9 @@ public static class VmConnectFlow
     public readonly record struct Result(BindStep Bind, string? Warning, bool Launched, Exception? Error);
 
     /// <summary>
-    /// Runs the sequence. <paramref name="appliedSwitch"/> is <c>NetworkMonitor.LastApplied?.VirtualSwitch</c>;
-    /// <paramref name="applySwitchAsync"/> is <c>HyperVManager.ApplySwitchAsync</c> curried with the VM and
-    /// its adapter name; <paramref name="launchVmConnect"/> starts vmconnect.exe.
+    /// Runs the sequence. <paramref name="appliedSwitch"/> is the switch <c>NetworkMonitor.LastApplied</c>
+    /// names, by ID; <paramref name="applySwitchAsync"/> is <c>HyperVManager.ApplySwitchAsync</c> curried
+    /// with the VM and its adapter; <paramref name="launchVmConnect"/> starts vmconnect.exe.
     ///
     /// <para><paramref name="warn"/> shows the message to the user, and its task must not complete until
     /// the report is actually on screen — see the ordering note on the class. A caller whose report
@@ -86,9 +88,9 @@ public static class VmConnectFlow
     /// bug this signature exists to prevent.</para>
     /// </summary>
     public static async Task<Result> RunAsync(
-        string  vmName,
-        string? appliedSwitch,
-        Func<string, Task<bool>> applySwitchAsync,
+        string     vmName,
+        SwitchRef? appliedSwitch,
+        Func<SwitchRef, Task<bool>> applySwitchAsync,
         Func<string, Task>       warn,
         Action                   launchVmConnect)
     {
@@ -98,7 +100,7 @@ public static class VmConnectFlow
 
         // Nothing has been applied yet — there is no switch to bind to, so connect without claiming
         // anything about the network.
-        if (string.IsNullOrEmpty(appliedSwitch))
+        if (appliedSwitch is null || string.IsNullOrEmpty(appliedSwitch.Id))
         {
             launchVmConnect();
             return new Result(BindStep.NotAttempted, Warning: null, Launched: true, Error: null);
@@ -130,7 +132,7 @@ public static class VmConnectFlow
 
         // Report BEFORE launching — see the ordering note on the class. Awaited, so the report is on
         // screen before vmconnect takes the foreground, rather than merely having been queued.
-        var message = NetworkStatusUi.ConnectBindFailedMessage(vmName, appliedSwitch);
+        var message = NetworkStatusUi.ConnectBindFailedMessage(vmName, appliedSwitch.Shown);
         await warn(message);
         launchVmConnect();
         return new Result(BindStep.Failed, message, Launched: true, Error: error);

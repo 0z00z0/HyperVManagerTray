@@ -281,46 +281,24 @@ public class SwitchWmiHelpersTests
     public void ExternalPortMatchesAdapter_MacMatch_IgnoresSeparatorsAndCase()
     {
         Assert.True(SwitchWmiHelpers.ExternalPortMatchesAdapter(
-            candidateMac: "aa-bb-cc-dd-ee-ff", candidateDesc: "Intel NIC",
-            targetMac: "AABBCCDDEEFF", targetDesc: "something else"));
+            candidateMac: "aa-bb-cc-dd-ee-ff", candidateDeviceId: "Microsoft:11111111-1111-1111-1111-111111111111",
+            targetMac: "AABBCCDDEEFF", targetInterfaceGuid: "{22222222-2222-2222-2222-222222222222}"));
     }
 
     [Fact]
-    public void ExternalPortMatchesAdapter_MacTakesPrecedence_DescriptionNotConsultedOnMacHit()
+    public void ExternalPortMatchesAdapter_InterfaceGuidFallback_WhenMacDiffers()
     {
         Assert.True(SwitchWmiHelpers.ExternalPortMatchesAdapter(
-            "AA:BB:CC:DD:EE:FF", candidateDesc: null, targetMac: "aabbccddeeff", targetDesc: null));
+            candidateMac: "111111111111", candidateDeviceId: "Microsoft:ABCDEF01-2345-6789-ABCD-EF0123456789",
+            targetMac: "222222222222", targetInterfaceGuid: "{abcdef01-2345-6789-abcd-ef0123456789}"));
     }
 
     [Fact]
-    public void ExternalPortMatchesAdapter_DescriptionFallback_WhenMacDiffers()
+    public void ExternalPortMatchesAdapter_NeverMatchesOnADescription()
     {
-        Assert.True(SwitchWmiHelpers.ExternalPortMatchesAdapter(
-            candidateMac: "111111111111", candidateDesc: "Lenovo USB Ethernet",
-            targetMac: "222222222222", targetDesc: "lenovo usb ethernet"));
-    }
-
-    [Fact]
-    public void ExternalPortMatchesAdapter_NoMacNoDescMatch_IsFalse()
-    {
+        // The description is a display name this app can rename, so a port sharing it is not the adapter.
         Assert.False(SwitchWmiHelpers.ExternalPortMatchesAdapter(
-            "111111111111", "Adapter A", "222222222222", "Adapter B"));
-    }
-
-    [Fact]
-    public void ExternalPortMatchesAdapter_MissingCandidateMac_FallsBackToDescription()
-    {
-        Assert.True(SwitchWmiHelpers.ExternalPortMatchesAdapter(
-            candidateMac: null, candidateDesc: "NIC-1", targetMac: "AABBCCDDEEFF", targetDesc: "NIC-1"));
-        Assert.False(SwitchWmiHelpers.ExternalPortMatchesAdapter(
-            candidateMac: null, candidateDesc: null, targetMac: "AABBCCDDEEFF", targetDesc: "NIC-1"));
-    }
-
-    [Fact]
-    public void ExternalPortMatchesAdapter_NoTargetDesc_MacOnly()
-    {
-        // When we only know the target's MAC, a description-only candidate must not spuriously match.
-        Assert.False(SwitchWmiHelpers.ExternalPortMatchesAdapter(
-            candidateMac: "111111111111", candidateDesc: "NIC-1", targetMac: "222222222222", targetDesc: null));
+            candidateMac: "111111111111", candidateDeviceId: "Lenovo USB Ethernet",
+            targetMac: "222222222222", targetInterfaceGuid: null));
     }
 }

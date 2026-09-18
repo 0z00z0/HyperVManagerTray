@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 
 namespace HyperVManagerTray.Models;
@@ -6,13 +7,24 @@ namespace HyperVManagerTray.Models;
 /// The switch and VMs to use when no <see cref="NetworkRule"/> matches the current network
 /// (typically a NAT switch such as the Hyper-V "Default Switch").
 /// </summary>
-public sealed class FallbackAction
+public sealed class FallbackAction : ISwitchTarget
 {
-    /// <summary>Hyper-V virtual switch to connect the target VMs to when no rule matches.</summary>
-    public string VirtualSwitch { get; set; } = "Default Switch";
+    /// <inheritdoc/>
+    public string SwitchId { get; set; } = string.Empty;
 
-    /// <summary>Names of the VMs to reconnect to <see cref="VirtualSwitch"/>.</summary>
-    public List<string> TargetVms { get; set; } = [];
+    /// <inheritdoc/>
+    public string SwitchName { get; set; } = string.Empty;
+
+    /// <inheritdoc/>
+    [JsonPropertyName("virtualSwitch")]
+    public string? LegacyVirtualSwitch { get; set; }
+
+    /// <inheritdoc/>
+    public List<string> TargetVmIds { get; set; } = [];
+
+    /// <inheritdoc/>
+    [JsonPropertyName("targetVms")]
+    public List<string>? LegacyTargetVms { get; set; }
 }
 
 /// <summary>
@@ -61,7 +73,7 @@ public sealed class AdapterNameOverride
 /// </summary>
 public sealed class AppConfig
 {
-    /// <summary>VMs this app manages, keyed by Hyper-V VM name.</summary>
+    /// <summary>VMs this app manages, identified by VM ID.</summary>
     public List<VmTarget> VirtualMachines { get; set; } = [];
 
     /// <summary>Network-to-switch rules, evaluated in ascending <see cref="NetworkRule.Priority"/> order.</summary>
@@ -123,12 +135,35 @@ public sealed class AppConfig
     #endregion
 
     /// <summary>
-    /// The distinct, non-empty virtual-switch names referenced by the rules — the set of
-    /// bridged switches whose host vNICs may need repair.  Used by both the startup self-heal
-    /// and the tray "Repair host networking" action.
+    /// The distinct switches the rules identify — the set of bridged switches whose host vNICs may need
+    /// repair. Used by both the startup self-heal and the tray "Repair host networking" action. A rule
+    /// whose switch is not identified yet contributes nothing.
     /// </summary>
-    public IEnumerable<string> RuleSwitches => Rules
-        .Select(r => r.VirtualSwitch)
-        .Where(s => !string.IsNullOrWhiteSpace(s))
-        .Distinct(StringComparer.OrdinalIgnoreCase);
+    public IEnumerable<SwitchRef> RuleSwitches => Rules
+        .Where(r => !string.IsNullOrWhiteSpace(r.SwitchId))
+        .Select(r => new SwitchRef(r.SwitchId, r.SwitchName))
+        .DistinctBy(s => s.Id, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The managed VM with <paramref name="vmId"/>, or null. The one lookup every caller uses.</summary>
+    public VmTarget? FindVm(string? vmId) =>
+        string.IsNullOrWhiteSpace(vmId)
+            ? null
+            : VirtualMachines.FirstOrDefault(v => string.Equals(v.Id, vmId, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The managed VMs as references, in config order, the ones not identified yet left out.
+    /// Derived, so never written to the file.</summary>
+    [JsonIgnore]
+    public IReadOnlyList<VmRef> IdentifiedVms =>
+        [.. VirtualMachines.Where(v => !string.IsNullOrWhiteSpace(v.Id)).Select(v => v.Ref)];
+
+    /// <summary><paramref name="vmIds"/> as references carrying each managed VM's label.</summary>
+    public IReadOnlyList<VmRef> VmRefs(IEnumerable<string> vmIds) =>
+        [.. vmIds.Select(id => FindVm(id)?.Ref ?? new VmRef(id, ""))];
+}
+
+/// <summary>A virtual switch as the app passes it around: the ID that identifies it, the name shown.</summary>
+public sealed record SwitchRef(string Id, string Name)
+{
+    /// <summary>The name, or the ID when the name is blank, so a message never names nothing.</summary>
+    public string Shown => string.IsNullOrWhiteSpace(Name) ? Id : Name;
 }

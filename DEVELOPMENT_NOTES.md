@@ -274,8 +274,9 @@ System.Management replica of `ReadSummaries`, cross-checked against `Get-VM`):**
   Mem, switch name); every field from a plain-property query worked (state, guest IP, VHD size).
   **The fix (implemented in `VmService.cs`):**
   1. `ReadSummaries`: dropped the setting-data query entirely — calls `GetSummaryInformation` with
-     `SettingData` = `Array.Empty<string>()` (proven live: returns all VMs with real metrics keyed
-     by `ElementName`). Also checks `ReturnValue` and logs a warning on non-zero, and warns if the
+     `SettingData` = `Array.Empty<string>()` (proven live: returns all VMs with real metrics). The
+     result is keyed by `Name` (requested information code 0, the VM ID), never by `ElementName`:
+     two VMs may share a name. Also checks `ReturnValue` and logs a warning on non-zero, and warns if the
      result comes back empty.
   2. `ReadSwitchNames`: no longer projects `__PATH` in WQL — uses `SELECT *` and takes the path
      from `ManagementObject.Path.Path` instead.
@@ -381,6 +382,11 @@ costs nothing.  The WinUI 3 runtime raises the memory baseline versus the old Wi
   context gets its UAC prompt auto-cancelled ("operation was canceled by the user").
 - **Don't do unprompted elevated host-network surgery.** Reconfiguring a live `Set-VMSwitch` is
   the user's call; offer the commands or the Hyper-V Manager steps instead.
+- **Everything is identified by its identifier, never by its name**: VMs by VM ID, switches by
+  switch ID, a VM's adapter by its adapter ID, the host adapter by its interface GUID, rules by a
+  generated ID. Names are kept in `config.json` only to be shown. An older file's names are migrated
+  on the first start that can read Hyper-V (`Helpers\ConfigIdentityMigration.cs`); a name matching
+  none or several objects is kept and listed in Settings as needing attention, never guessed.
 - `config.json` rules match on **MAC + CIDR**. WiFi on the same subnet as a bridged cable will
   **not** match a cable rule (different MAC) — that's intended; it falls back to NAT.
 - Verify a healthy bridge with: one `Up` `vEthernet (Bridged)` carrying the LAN IP, and no

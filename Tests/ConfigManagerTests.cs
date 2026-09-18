@@ -100,7 +100,7 @@ public class ConfigManagerTests : IDisposable
     {
         var initial = new AppConfig
         {
-            Fallback = new FallbackAction { VirtualSwitch = "Default Switch" }
+            Fallback = new FallbackAction { SwitchId = "Default Switch" }
         };
         var path = WriteTempConfig(initial);
         using var mgr = MakeManager(path);
@@ -109,8 +109,8 @@ public class ConfigManagerTests : IDisposable
         {
             Name         = "Office LAN",
             Priority     = 1,
-            VirtualSwitch = "Bridged",
-            TargetVms    = ["TestVM"],
+            SwitchId = "Bridged",
+            TargetVmIds    = ["TestVM"],
             Conditions   = new RuleConditions { AdapterMac = "AA:BB:CC:DD:EE:FF" }
         };
 
@@ -119,8 +119,8 @@ public class ConfigManagerTests : IDisposable
         var saved = ReadConfig(path);
         var added = Assert.Single(saved.Rules);
         Assert.Equal("Office LAN", added.Name);
-        Assert.Equal("Bridged",    added.VirtualSwitch);
-        Assert.Equal(["TestVM"],   added.TargetVms);
+        Assert.Equal("Bridged",    added.SwitchId);
+        Assert.Equal(["TestVM"],   added.TargetVmIds);
     }
 
     [Fact]
@@ -128,20 +128,20 @@ public class ConfigManagerTests : IDisposable
     {
         var initial = new AppConfig
         {
-            Rules    = [ new NetworkRule { Name = "Existing", Priority = 10, VirtualSwitch = "OldSwitch" } ],
-            Fallback = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["VM1"] }
+            Rules    = [ new NetworkRule { Name = "Existing", Priority = 10, SwitchId = "OldSwitch" } ],
+            Fallback = new FallbackAction { SwitchId = "Default Switch", TargetVmIds = ["VM1"] }
         };
         var path = WriteTempConfig(initial);
         using var mgr = MakeManager(path);
 
-        mgr.AddBridgedRule(new NetworkRule { Name = "New", Priority = 5, VirtualSwitch = "Bridged" });
+        mgr.AddBridgedRule(new NetworkRule { Name = "New", Priority = 5, SwitchId = "Bridged" });
 
         var saved = ReadConfig(path);
         Assert.Equal(2, saved.Rules.Count);
         Assert.Contains(saved.Rules, r => r.Name == "Existing");
         Assert.Contains(saved.Rules, r => r.Name == "New");
-        Assert.Equal("Default Switch", saved.Fallback.VirtualSwitch);
-        Assert.Equal(["VM1"],          saved.Fallback.TargetVms);
+        Assert.Equal("Default Switch", saved.Fallback.SwitchId);
+        Assert.Equal(["VM1"],          saved.Fallback.TargetVmIds);
     }
 
     [Fact]
@@ -150,7 +150,7 @@ public class ConfigManagerTests : IDisposable
         var path = WriteTempConfig(new AppConfig());
         using var mgr = MakeManager(path);
 
-        mgr.AddBridgedRule(new NetworkRule { Name = "Test", VirtualSwitch = "Bridged" });
+        mgr.AddBridgedRule(new NetworkRule { Name = "Test", SwitchId = "Bridged" });
 
         Assert.Single(mgr.Current.Rules);
         Assert.Equal("Test", mgr.Current.Rules[0].Name);
@@ -164,38 +164,40 @@ public class ConfigManagerTests : IDisposable
         var path = WriteTempConfig(new AppConfig());
         using var mgr = MakeManager(path);
 
-        mgr.AddVmToConfig("TestVM", "Network Adapter");
+        mgr.AddVmToConfig(new DiscoveredVm(VmA, "TestVM", NicA, "Network Adapter"));
 
         var saved = ReadConfig(path);
         var vm = Assert.Single(saved.VirtualMachines);
+        Assert.Equal(VmA,               vm.Id);
         Assert.Equal("TestVM",          vm.Name);
+        Assert.Equal(NicA,              vm.NicId);
         Assert.Equal("Network Adapter", vm.NicName);
     }
 
     [Fact]
-    public void AddVmToConfig_NoDuplicate_WhenCalledTwiceWithSameName()
+    public void AddVmToConfig_NoDuplicate_WhenCalledTwiceWithSameVmId()
     {
         var path = WriteTempConfig(new AppConfig());
         using var mgr = MakeManager(path);
 
-        mgr.AddVmToConfig("TestVM", "Network Adapter");
-        mgr.AddVmToConfig("TestVM", "Network Adapter"); // second call — must be idempotent
+        mgr.AddVmToConfig(new DiscoveredVm(VmA, "TestVM", null, "Network Adapter"));
+        mgr.AddVmToConfig(new DiscoveredVm(VmA.ToLowerInvariant(), "Renamed", null, "Network Adapter")); // same VM ID
 
         var saved = ReadConfig(path);
         Assert.Single(saved.VirtualMachines);
     }
 
     [Fact]
-    public void AddVmToConfig_CaseInsensitiveDuplicateCheck()
+    public void AddVmToConfig_TwoVmsSharingANameAreBothManaged()
     {
+        // A VM is identified by its VM ID; a shared name is two VMs, not one.
         var path = WriteTempConfig(new AppConfig());
         using var mgr = MakeManager(path);
 
-        mgr.AddVmToConfig("testvm", "Network Adapter");
-        mgr.AddVmToConfig("TESTVM", "Network Adapter"); // same name, different case
+        mgr.AddVmToConfig(new DiscoveredVm(VmA, "TestVM", null, "Network Adapter"));
+        mgr.AddVmToConfig(new DiscoveredVm(VmB, "TestVM", null, "Network Adapter"));
 
-        var saved = ReadConfig(path);
-        Assert.Single(saved.VirtualMachines);
+        Assert.Equal([VmA, VmB], ReadConfig(path).VirtualMachines.Select(v => v.Id));
     }
 
     [Fact]
@@ -204,7 +206,7 @@ public class ConfigManagerTests : IDisposable
         var path = WriteTempConfig(new AppConfig());
         using var mgr = MakeManager(path);
 
-        mgr.AddVmToConfig("MyVM", "   "); // whitespace-only nicName
+        mgr.AddVmToConfig(new DiscoveredVm(VmA, "MyVM", null, "   ")); // whitespace-only adapter label
 
         var saved = ReadConfig(path);
         Assert.Equal("Network Adapter", saved.VirtualMachines[0].NicName);
@@ -216,11 +218,19 @@ public class ConfigManagerTests : IDisposable
         var path = WriteTempConfig(new AppConfig());
         using var mgr = MakeManager(path);
 
-        mgr.AddVmToConfig("TestVM", "Network Adapter");
+        mgr.AddVmToConfig(new DiscoveredVm(VmA, "TestVM", null, "Network Adapter"));
 
         Assert.Single(mgr.Current.VirtualMachines);
-        Assert.Equal("TestVM", mgr.Current.VirtualMachines[0].Name);
+        Assert.Equal(VmA, mgr.Current.VirtualMachines[0].Id);
     }
+
+    // A stand-in rule ID, in the shape the app generates.
+    private const string RuleId = "0123456789abcdef0123456789abcdef";
+
+    // Stand-in VM and adapter IDs: GUID-shaped, since that is what Hyper-V assigns.
+    private const string VmA  = "11111111-1111-1111-1111-111111111111";
+    private const string VmB  = "22222222-2222-2222-2222-222222222222";
+    private const string NicA = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA";
 
     // ── UpdateLogLevel (issue #18) ──────────────────────────────────────────────
 
@@ -241,9 +251,9 @@ public class ConfigManagerTests : IDisposable
     {
         var initial = new AppConfig
         {
-            VirtualMachines = [ new VmTarget { Name = "Alpha", NicName = "NIC 1" } ],
-            Rules           = [ new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "Bridged" } ],
-            Fallback        = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Alpha"] },
+            VirtualMachines = [ new VmTarget { Id = "Alpha", Name = "Alpha", NicName = "NIC 1" } ],
+            Rules           = [ new NetworkRule { Name = "R", Priority = 1, SwitchId = "Bridged" } ],
+            Fallback        = new FallbackAction { SwitchId = "Default Switch", TargetVmIds = ["Alpha"] },
             LogLevel        = Microsoft.Extensions.Logging.LogLevel.Debug,
         };
         var path = WriteTempConfig(initial);
@@ -255,7 +265,7 @@ public class ConfigManagerTests : IDisposable
         Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Error, saved.LogLevel);
         Assert.Single(saved.VirtualMachines);
         Assert.Single(saved.Rules);
-        Assert.Equal("Default Switch", saved.Fallback.VirtualSwitch);
+        Assert.Equal("Default Switch", saved.Fallback.SwitchId);
     }
 
     // ── SetVmBridgeLostAction (issue #18) ───────────────────────────────────────
@@ -265,7 +275,7 @@ public class ConfigManagerTests : IDisposable
     {
         var initial = new AppConfig
         {
-            VirtualMachines = [ new VmTarget { Name = "Alpha" } ],
+            VirtualMachines = [ new VmTarget { Id = "Alpha", Name = "Alpha" } ],
         };
         var path = WriteTempConfig(initial);
         using var mgr = MakeManager(path);
@@ -280,7 +290,7 @@ public class ConfigManagerTests : IDisposable
     [Fact]
     public void SetVmBridgeLostAction_CaseInsensitiveNameMatch()
     {
-        var path = WriteTempConfig(new AppConfig { VirtualMachines = [ new VmTarget { Name = "Alpha" } ] });
+        var path = WriteTempConfig(new AppConfig { VirtualMachines = [ new VmTarget { Id = "Alpha", Name = "Alpha" } ] });
         using var mgr = MakeManager(path);
 
         mgr.SetVmBridgeLostAction("alpha", "save", 10);
@@ -293,7 +303,7 @@ public class ConfigManagerTests : IDisposable
     {
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [ new VmTarget { Name = "Alpha", OnBridgeLostAction = "shutdown", OnBridgeLostDelaySeconds = 5 } ],
+            VirtualMachines = [ new VmTarget { Id = "Alpha", Name = "Alpha", OnBridgeLostAction = "shutdown", OnBridgeLostDelaySeconds = 5 } ],
         });
         using var mgr = MakeManager(path);
 
@@ -307,7 +317,7 @@ public class ConfigManagerTests : IDisposable
     [Fact]
     public void SetVmBridgeLostAction_UnknownVm_IsNoOp()
     {
-        var path = WriteTempConfig(new AppConfig { VirtualMachines = [ new VmTarget { Name = "Alpha" } ] });
+        var path = WriteTempConfig(new AppConfig { VirtualMachines = [ new VmTarget { Id = "Alpha", Name = "Alpha" } ] });
         using var mgr = MakeManager(path);
 
         mgr.SetVmBridgeLostAction("Missing", "pause", 10);   // must not throw or add a VM
@@ -321,7 +331,7 @@ public class ConfigManagerTests : IDisposable
     [Fact]
     public void SetVmBridgeLostAction_NegativeDelay_ClampedToDefault()
     {
-        var path = WriteTempConfig(new AppConfig { VirtualMachines = [ new VmTarget { Name = "Alpha" } ] });
+        var path = WriteTempConfig(new AppConfig { VirtualMachines = [ new VmTarget { Id = "Alpha", Name = "Alpha" } ] });
         using var mgr = MakeManager(path);
 
         mgr.SetVmBridgeLostAction("Alpha", "pause", -5);   // hand-edited nonsense → default 30
@@ -332,7 +342,7 @@ public class ConfigManagerTests : IDisposable
     [Fact]
     public void SetVmBridgeLostAction_HugeDelay_CappedToDayMax()
     {
-        var path = WriteTempConfig(new AppConfig { VirtualMachines = [ new VmTarget { Name = "Alpha" } ] });
+        var path = WriteTempConfig(new AppConfig { VirtualMachines = [ new VmTarget { Id = "Alpha", Name = "Alpha" } ] });
         using var mgr = MakeManager(path);
 
         mgr.SetVmBridgeLostAction("Alpha", "pause", 999_999);   // capped to a sane [0, 86400]
@@ -347,7 +357,7 @@ public class ConfigManagerTests : IDisposable
         // exactly as loaded (a failed write elsewhere can't arm a stale destructive action).
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [ new VmTarget { Name = "Alpha", OnBridgeLostAction = "pause", OnBridgeLostDelaySeconds = 30 } ],
+            VirtualMachines = [ new VmTarget { Id = "Alpha", Name = "Alpha", OnBridgeLostAction = "pause", OnBridgeLostDelaySeconds = 30 } ],
         });
         using var mgr = MakeManager(path);
         var before = mgr.Current.VirtualMachines[0];
@@ -365,61 +375,61 @@ public class ConfigManagerTests : IDisposable
     // WHOLE AppConfig per write, so anything omitted is serialised back as null and lost forever).
 
     [Fact]
-    public void SetVmNicName_PersistsTheName()
+    public void SetVmNic_PersistsTheName()
     {
-        var path = WriteTempConfig(new AppConfig { VirtualMachines = [new VmTarget { Name = "Alpha" }] });
+        var path = WriteTempConfig(new AppConfig { VirtualMachines = [new VmTarget { Id = "Alpha", Name = "Alpha" }] });
         using var mgr = MakeManager(path);
 
-        mgr.SetVmNicName("Alpha", "Ethernet 2");
+        mgr.SetVmNic("Alpha", null, "Ethernet 2");
 
         Assert.Equal("Ethernet 2", Assert.Single(ReadConfig(path).VirtualMachines).NicName);
     }
 
     [Fact]
-    public void SetVmNicName_BlankRestoresTheHyperVDefault()
+    public void SetVmNic_BlankRestoresTheHyperVDefault()
     {
         // An empty NIC name would match no adapter at all — worse than the default it replaced.
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [new VmTarget { Name = "Alpha", NicName = "Ethernet 2" }],
+            VirtualMachines = [new VmTarget { Id = "Alpha", Name = "Alpha", NicName = "Ethernet 2" }],
         });
         using var mgr = MakeManager(path);
 
-        mgr.SetVmNicName("Alpha", "   ");
+        mgr.SetVmNic("Alpha", null, "   ");
 
         Assert.Equal("Network Adapter", Assert.Single(ReadConfig(path).VirtualMachines).NicName);
     }
 
     [Fact]
-    public void SetVmNicName_ExoticHandEditedValueRoundTrips()
+    public void SetVmNic_ExoticHandEditedValueRoundTrips()
     {
         // A VM's adapter can be renamed to anything; this app is not the authority on what Hyper-V allows.
-        var path = WriteTempConfig(new AppConfig { VirtualMachines = [new VmTarget { Name = "Alpha" }] });
+        var path = WriteTempConfig(new AppConfig { VirtualMachines = [new VmTarget { Id = "Alpha", Name = "Alpha" }] });
         using var mgr = MakeManager(path);
 
-        mgr.SetVmNicName("Alpha", "  vNIC — LAN (2,5 Gb) ");
+        mgr.SetVmNic("Alpha", null, "  vNIC — LAN (2,5 Gb) ");
 
         Assert.Equal("vNIC — LAN (2,5 Gb)", Assert.Single(ReadConfig(path).VirtualMachines).NicName);
     }
 
     [Fact]
-    public void SetVmNicName_CaseInsensitiveNameMatch()
+    public void SetVmNic_CaseInsensitiveNameMatch()
     {
-        var path = WriteTempConfig(new AppConfig { VirtualMachines = [new VmTarget { Name = "Alpha" }] });
+        var path = WriteTempConfig(new AppConfig { VirtualMachines = [new VmTarget { Id = "Alpha", Name = "Alpha" }] });
         using var mgr = MakeManager(path);
 
-        mgr.SetVmNicName("alpha", "Ethernet 2");
+        mgr.SetVmNic("alpha", null, "Ethernet 2");
 
         Assert.Equal("Ethernet 2", Assert.Single(ReadConfig(path).VirtualMachines).NicName);
     }
 
     [Fact]
-    public void SetVmNicName_UnknownVm_IsNoOp()
+    public void SetVmNic_UnknownVm_IsNoOp()
     {
-        var path = WriteTempConfig(new AppConfig { VirtualMachines = [new VmTarget { Name = "Alpha" }] });
+        var path = WriteTempConfig(new AppConfig { VirtualMachines = [new VmTarget { Id = "Alpha", Name = "Alpha" }] });
         using var mgr = MakeManager(path);
 
-        mgr.SetVmNicName("Missing", "Ethernet 2");   // must not throw or add a VM
+        mgr.SetVmNic("Missing", null, "Ethernet 2");   // must not throw or add a VM
 
         var vm = Assert.Single(ReadConfig(path).VirtualMachines);
         Assert.Equal("Alpha", vm.Name);
@@ -427,22 +437,22 @@ public class ConfigManagerTests : IDisposable
     }
 
     [Fact]
-    public void SetVmNicName_DoesNotMutateLiveVmOnUnchangedNoOp()
+    public void SetVmNic_DoesNotMutateLiveVmOnUnchangedNoOp()
     {
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [new VmTarget { Name = "Alpha", NicName = "Ethernet 2" }],
+            VirtualMachines = [new VmTarget { Id = "Alpha", Name = "Alpha", NicName = "Ethernet 2" }],
         });
         using var mgr = MakeManager(path);
         var before = mgr.Current.VirtualMachines[0];
 
-        mgr.SetVmNicName("Alpha", "Ethernet 2");   // identical to stored → no-op
+        mgr.SetVmNic("Alpha", null, "Ethernet 2");   // identical to stored → no-op
 
         Assert.Same(before, mgr.Current.VirtualMachines[0]);
     }
 
     [Fact]
-    public void SetVmNicName_PreservesTheVmsOwnOtherFields()
+    public void SetVmNic_PreservesTheVmsOwnOtherFields()
     {
         // A NIC edit rebuilds the VmTarget — a field dropped there silently disarms (or re-arms) a
         // destructive bridge-lost action the user configured separately.
@@ -450,12 +460,12 @@ public class ConfigManagerTests : IDisposable
         {
             VirtualMachines =
             [
-                new VmTarget { Name = "Alpha", OnBridgeLostAction = "save", OnBridgeLostDelaySeconds = 120 },
+                new VmTarget { Id = "Alpha", Name = "Alpha", OnBridgeLostAction = "save", OnBridgeLostDelaySeconds = 120 },
             ],
         });
         using var mgr = MakeManager(path);
 
-        mgr.SetVmNicName("Alpha", "Ethernet 2");
+        mgr.SetVmNic("Alpha", null, "Ethernet 2");
 
         var vm = Assert.Single(ReadConfig(path).VirtualMachines);
         Assert.Equal("Ethernet 2", vm.NicName);
@@ -464,27 +474,27 @@ public class ConfigManagerTests : IDisposable
     }
 
     [Fact]
-    public void SetVmNicName_PreservesOtherVmsRulesFallbackLogLevelAndWindowRect()
+    public void SetVmNic_PreservesOtherVmsRulesFallbackLogLevelAndWindowRect()
     {
         // The With() regression guard: every field the writer does not name must survive the write.
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [new VmTarget { Name = "Alpha" }, new VmTarget { Name = "Beta", NicName = "Ethernet 9" }],
-            Rules           = [new NetworkRule { Name = "Office", Priority = 10, VirtualSwitch = "Bridged" }],
-            Fallback        = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Alpha"] },
+            VirtualMachines = [new VmTarget { Id = "Alpha", Name = "Alpha" }, new VmTarget { Id = "Beta", Name = "Beta", NicName = "Ethernet 9" }],
+            Rules           = [new NetworkRule { Name = "Office", Priority = 10, SwitchId = "Bridged" }],
+            Fallback        = new FallbackAction { SwitchId = "Default Switch", TargetVmIds = ["Alpha"] },
             LogLevel        = LogLevel.Warning,
             SettingsWindowX = 100, SettingsWindowY = 200, SettingsWindowWidth = 900, SettingsWindowHeight = 700,
         });
         using var mgr = MakeManager(path);
 
-        mgr.SetVmNicName("Alpha", "Ethernet 2");
+        mgr.SetVmNic("Alpha", null, "Ethernet 2");
 
         var cfg = ReadConfig(path);
         Assert.Equal("Ethernet 2", cfg.VirtualMachines[0].NicName);
         Assert.Equal("Ethernet 9", cfg.VirtualMachines[1].NicName);   // the other VM is untouched
         Assert.Equal("Office",         Assert.Single(cfg.Rules).Name);
-        Assert.Equal("Default Switch", cfg.Fallback.VirtualSwitch);
-        Assert.Equal(["Alpha"],        cfg.Fallback.TargetVms);
+        Assert.Equal("Default Switch", cfg.Fallback.SwitchId);
+        Assert.Equal(["Alpha"],        cfg.Fallback.TargetVmIds);
         Assert.Equal(LogLevel.Warning, cfg.LogLevel);
         Assert.Equal(100, cfg.SettingsWindowX);
         Assert.Equal(200, cfg.SettingsWindowY);
@@ -504,23 +514,23 @@ public class ConfigManagerTests : IDisposable
     {
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [new VmTarget { Name = "Alpha", NicName = "Ethernet 9" }],
-            Rules           = [new NetworkRule { Name = "Office", Priority = 10, VirtualSwitch = "Bridged" }],
-            Fallback        = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Alpha"] },
+            VirtualMachines = [new VmTarget { Id = "Alpha", Name = "Alpha", NicName = "Ethernet 9" }],
+            Rules           = [new NetworkRule { Name = "Office", Priority = 10, SwitchId = "Bridged" }],
+            Fallback        = new FallbackAction { SwitchId = "Default Switch", TargetVmIds = ["Alpha"] },
             LogLevel        = LogLevel.Warning,
             SettingsWindowX = 100, SettingsWindowY = 200, SettingsWindowWidth = 900, SettingsWindowHeight = 700,
         });
         using var mgr = MakeManager(path);
 
-        mgr.AddVmToConfig("Beta", "Ethernet 3");
+        mgr.AddVmToConfig(new DiscoveredVm("Beta", "Beta", null, "Ethernet 3"));
 
         var cfg = ReadConfig(path);
         Assert.Equal(["Alpha", "Beta"], cfg.VirtualMachines.Select(v => v.Name));
         Assert.Equal("Ethernet 9",     cfg.VirtualMachines[0].NicName);   // the existing VM is untouched
         Assert.Equal("Ethernet 3",     cfg.VirtualMachines[1].NicName);
         Assert.Equal("Office",         Assert.Single(cfg.Rules).Name);
-        Assert.Equal("Default Switch", cfg.Fallback.VirtualSwitch);
-        Assert.Equal(["Alpha"],        cfg.Fallback.TargetVms);
+        Assert.Equal("Default Switch", cfg.Fallback.SwitchId);
+        Assert.Equal(["Alpha"],        cfg.Fallback.TargetVmIds);
         Assert.Equal(LogLevel.Warning, cfg.LogLevel);
         Assert.Equal(100, cfg.SettingsWindowX);
         Assert.Equal(200, cfg.SettingsWindowY);
@@ -533,9 +543,9 @@ public class ConfigManagerTests : IDisposable
     {
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [new VmTarget { Name = "Alpha" }, new VmTarget { Name = "Beta", NicName = "Ethernet 9" }],
-            Rules           = [new NetworkRule { Name = "Office", Priority = 10, VirtualSwitch = "Bridged" }],
-            Fallback        = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Alpha"] },
+            VirtualMachines = [new VmTarget { Id = "Alpha", Name = "Alpha" }, new VmTarget { Id = "Beta", Name = "Beta", NicName = "Ethernet 9" }],
+            Rules           = [new NetworkRule { Name = "Office", Priority = 10, SwitchId = "Bridged" }],
+            Fallback        = new FallbackAction { SwitchId = "Default Switch", TargetVmIds = ["Alpha"] },
             LogLevel        = LogLevel.Warning,
             SettingsWindowX = 100, SettingsWindowY = 200, SettingsWindowWidth = 900, SettingsWindowHeight = 700,
         });
@@ -547,10 +557,10 @@ public class ConfigManagerTests : IDisposable
         Assert.Equal("Beta",           Assert.Single(cfg.VirtualMachines).Name);
         Assert.Equal("Ethernet 9",     cfg.VirtualMachines[0].NicName);   // the surviving VM keeps its fields
         Assert.Equal("Office",         Assert.Single(cfg.Rules).Name);
-        Assert.Equal("Default Switch", cfg.Fallback.VirtualSwitch);
+        Assert.Equal("Default Switch", cfg.Fallback.SwitchId);
         // Un-managing a VM must NOT quietly rewrite the rules that still name it — removing a VM from this
         // app's care is not a claim about what the user's rules should say.
-        Assert.Equal(["Alpha"],        cfg.Fallback.TargetVms);
+        Assert.Equal(["Alpha"],        cfg.Fallback.TargetVmIds);
         Assert.Equal(LogLevel.Warning, cfg.LogLevel);
         Assert.Equal(100, cfg.SettingsWindowX);
         Assert.Equal(200, cfg.SettingsWindowY);
@@ -565,14 +575,14 @@ public class ConfigManagerTests : IDisposable
         // un-manage followed immediately by a re-add must land back in a sane state.
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [new VmTarget { Name = "Alpha", NicName = "Ethernet 9" }],
+            VirtualMachines = [new VmTarget { Id = "Alpha", Name = "Alpha", NicName = "Ethernet 9" }],
         });
         using var mgr = MakeManager(path);
 
         mgr.RemoveVmFromConfig("Alpha");
         Assert.Empty(mgr.Current.VirtualMachines);
 
-        mgr.AddVmToConfig("Alpha", "Ethernet 9");
+        mgr.AddVmToConfig(new DiscoveredVm("Alpha", "Alpha", null, "Ethernet 9"));
 
         var vm = Assert.Single(ReadConfig(path).VirtualMachines);
         Assert.Equal("Alpha",      vm.Name);
@@ -593,8 +603,8 @@ public class ConfigManagerTests : IDisposable
             {
                 Name          = "  Office  ",
                 Priority      = -5,                       // clamped to 0
-                VirtualSwitch = "  Bridged  ",
-                TargetVms     = ["VM1", " VM1 ", "VM2"],  // deduped + trimmed
+                SwitchId = "  Bridged  ",
+                TargetVmIds     = ["VM1", " VM1 ", "VM2"],  // deduped + trimmed
                 Conditions    = new RuleConditions { AdapterMac = "aa-bb-cc-dd-ee-ff", IpCidr = " 10.0.0.0/23 " },
             }
         ]);
@@ -602,8 +612,8 @@ public class ConfigManagerTests : IDisposable
         var rule = Assert.Single(ReadConfig(path).Rules);
         Assert.Equal("Office", rule.Name);
         Assert.Equal(0, rule.Priority);
-        Assert.Equal("Bridged", rule.VirtualSwitch);
-        Assert.Equal(["VM1", "VM2"], rule.TargetVms);
+        Assert.Equal("Bridged", rule.SwitchId);
+        Assert.Equal(["VM1", "VM2"], rule.TargetVmIds);
         Assert.Equal("AA:BB:CC:DD:EE:FF", rule.Conditions.AdapterMac);   // canonicalised
         Assert.Equal("10.0.0.0/23", rule.Conditions.IpCidr);             // trimmed
     }
@@ -613,19 +623,19 @@ public class ConfigManagerTests : IDisposable
     {
         var initial = new AppConfig
         {
-            VirtualMachines = [ new VmTarget { Name = "Alpha" } ],
-            Fallback        = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Alpha"] },
+            VirtualMachines = [ new VmTarget { Id = "Alpha", Name = "Alpha" } ],
+            Fallback        = new FallbackAction { SwitchId = "Default Switch", TargetVmIds = ["Alpha"] },
             LogLevel        = Microsoft.Extensions.Logging.LogLevel.Warning,
         };
         var path = WriteTempConfig(initial);
         using var mgr = MakeManager(path);
 
-        mgr.SaveRules([ new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "Bridged" } ]);
+        mgr.SaveRules([ new NetworkRule { Name = "R", Priority = 1, SwitchId = "Bridged" } ]);
 
         var saved = ReadConfig(path);
         Assert.Single(saved.Rules);
         Assert.Single(saved.VirtualMachines);
-        Assert.Equal("Default Switch", saved.Fallback.VirtualSwitch);
+        Assert.Equal("Default Switch", saved.Fallback.SwitchId);
         Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Warning, saved.LogLevel);
     }
 
@@ -634,7 +644,7 @@ public class ConfigManagerTests : IDisposable
     {
         var path = WriteTempConfig(new AppConfig
         {
-            Rules = [ new NetworkRule { Name = "Old", VirtualSwitch = "X" } ],
+            Rules = [ new NetworkRule { Name = "Old", SwitchId = "X" } ],
         });
         using var mgr = MakeManager(path);
 
@@ -651,7 +661,7 @@ public class ConfigManagerTests : IDisposable
 
         mgr.SaveRules(
         [
-            new NetworkRule { Name = "R", VirtualSwitch = "X", Conditions = new RuleConditions { AdapterMac = "  ", IpCidr = "" } }
+            new NetworkRule { Name = "R", SwitchId = "X", Conditions = new RuleConditions { AdapterMac = "  ", IpCidr = "" } }
         ]);
 
         var rule = Assert.Single(ReadConfig(path).Rules);
@@ -673,7 +683,7 @@ public class ConfigManagerTests : IDisposable
             new NetworkRule
             {
                 Name          = "R",
-                VirtualSwitch = "X",
+                SwitchId = "X",
                 Conditions    = new RuleConditions { AdapterMac = "GG:BB:CC:DD:EE:FF", IpCidr = "10.0.0.0/99" },
             }
         ]);
@@ -688,13 +698,13 @@ public class ConfigManagerTests : IDisposable
     {
         var path = WriteTempConfig(new AppConfig
         {
-            Rules = [ new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "X", TargetVms = ["A"] } ],
+            Rules = [ new NetworkRule { Id = RuleId, Name = "R", Priority = 1, SwitchId = "X", TargetVmIds = ["A"] } ],
         });
         using var mgr = MakeManager(path);
         var before = mgr.Current.Rules;
 
-        // Re-saving an identical (already-clean) rule set must not rewrite/reload.
-        mgr.SaveRules([ new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "X", TargetVms = ["A"] } ]);
+        // Re-saving an identical (already-clean) rule set — the same rule, by its ID — must not rewrite/reload.
+        mgr.SaveRules([ new NetworkRule { Id = RuleId, Name = "R", Priority = 1, SwitchId = "X", TargetVmIds = ["A"] } ]);
 
         Assert.Same(before, mgr.Current.Rules);
     }
@@ -705,7 +715,7 @@ public class ConfigManagerTests : IDisposable
         var path = WriteTempConfig(new AppConfig());
         using var mgr = MakeManager(path);
 
-        mgr.SaveRules([ new NetworkRule { Name = "Live", Priority = 3, VirtualSwitch = "S" } ]);
+        mgr.SaveRules([ new NetworkRule { Name = "Live", Priority = 3, SwitchId = "S" } ]);
 
         Assert.Equal("Live", Assert.Single(mgr.Current.Rules).Name);
     }
@@ -718,27 +728,28 @@ public class ConfigManagerTests : IDisposable
         var path = WriteTempConfig(new AppConfig());
         using var mgr = MakeManager(path);
 
-        mgr.SetFallback("External", ["VM1", " VM1 ", "VM2"]);
+        mgr.SetFallback(new SwitchRef("External", "External switch"), ["VM1", " vm1 ", "VM2"]);
 
         var fb = ReadConfig(path).Fallback;
-        Assert.Equal("External", fb.VirtualSwitch);
-        Assert.Equal(["VM1", "VM2"], fb.TargetVms);
+        Assert.Equal("External", fb.SwitchId);
+        Assert.Equal("External switch", fb.SwitchName);
+        Assert.Equal(["VM1", "VM2"], fb.TargetVmIds);
     }
 
     [Fact]
-    public void SetFallback_BlankSwitch_KeepsCurrent()
+    public void SetFallback_NoSwitch_KeepsCurrent()
     {
         var path = WriteTempConfig(new AppConfig
         {
-            Fallback = new FallbackAction { VirtualSwitch = "Default Switch" },
+            Fallback = new FallbackAction { SwitchId = "Default Switch" },
         });
         using var mgr = MakeManager(path);
 
-        mgr.SetFallback("   ", ["VM1"]);   // blank switch must not overwrite with empty
+        mgr.SetFallback(null, ["VM1"]);   // no switch given must not overwrite with empty
 
         var fb = ReadConfig(path).Fallback;
-        Assert.Equal("Default Switch", fb.VirtualSwitch);
-        Assert.Equal(["VM1"], fb.TargetVms);
+        Assert.Equal("Default Switch", fb.SwitchId);
+        Assert.Equal(["VM1"], fb.TargetVmIds);
     }
 
     [Fact]
@@ -746,12 +757,12 @@ public class ConfigManagerTests : IDisposable
     {
         var path = WriteTempConfig(new AppConfig
         {
-            Fallback = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Alpha"] },
+            Fallback = new FallbackAction { SwitchId = "Default Switch", TargetVmIds = ["Alpha"] },
         });
         using var mgr = MakeManager(path);
         var before = mgr.Current.Fallback;
 
-        mgr.SetFallback("Default Switch", ["Alpha"]);
+        mgr.SetFallback(new SwitchRef("Default Switch", ""), ["Alpha"]);
 
         Assert.Same(before, mgr.Current.Fallback);
     }
@@ -761,16 +772,16 @@ public class ConfigManagerTests : IDisposable
     {
         var initial = new AppConfig
         {
-            VirtualMachines = [ new VmTarget { Name = "Alpha" } ],
-            Rules           = [ new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "Bridged" } ],
+            VirtualMachines = [ new VmTarget { Id = "Alpha", Name = "Alpha" } ],
+            Rules           = [ new NetworkRule { Name = "R", Priority = 1, SwitchId = "Bridged" } ],
         };
         var path = WriteTempConfig(initial);
         using var mgr = MakeManager(path);
 
-        mgr.SetFallback("NewFallback", []);
+        mgr.SetFallback(new SwitchRef("NewFallback", "New fallback"), []);
 
         var saved = ReadConfig(path);
-        Assert.Equal("NewFallback", saved.Fallback.VirtualSwitch);
+        Assert.Equal("NewFallback", saved.Fallback.SwitchId);
         Assert.Single(saved.Rules);
         Assert.Single(saved.VirtualMachines);
     }
@@ -841,7 +852,7 @@ public class ConfigManagerTests : IDisposable
         var before = File.ReadAllBytes(path);
 
         mgr.UpdateLogLevel(Microsoft.Extensions.Logging.LogLevel.Warning);       // same level
-        mgr.SetFallback("Default Switch", ["Alpha"]);                            // same fallback
+        mgr.SetFallback(null, mgr.Current.Fallback.TargetVmIds);                // same fallback
 
         Assert.Equal(before, File.ReadAllBytes(path));
     }
@@ -853,20 +864,20 @@ public class ConfigManagerTests : IDisposable
     {
         var original = new AppConfig
         {
-            VirtualMachines = [ new VmTarget { Name = "Alpha", NicName = "NIC 1" } ],
+            VirtualMachines = [ new VmTarget { Id = "Alpha", Name = "Alpha", NicName = "NIC 1" } ],
             Rules =
             [
                 new NetworkRule
                 {
                     Name          = "Home",
                     Priority      = 5,
-                    VirtualSwitch = "ExternalSwitch",
-                    TargetVms     = ["Alpha"],
+                    SwitchId = "ExternalSwitch",
+                    TargetVmIds     = ["Alpha"],
                     AutoStart     = true,
                     Conditions    = new RuleConditions { AdapterMac = "AA:BB:CC:DD:EE:FF", IpCidr = "192.168.1.0/24" }
                 }
             ],
-            Fallback = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Alpha"] }
+            Fallback = new FallbackAction { SwitchId = "Default Switch", TargetVmIds = ["Alpha"] }
         };
 
         var path = WriteTempConfig(original);
@@ -881,14 +892,14 @@ public class ConfigManagerTests : IDisposable
         var rule = Assert.Single(roundTripped.Rules);
         Assert.Equal("Home",            rule.Name);
         Assert.Equal(5,                 rule.Priority);
-        Assert.Equal("ExternalSwitch",  rule.VirtualSwitch);
-        Assert.Equal(["Alpha"],         rule.TargetVms);
+        Assert.Equal("ExternalSwitch",  rule.SwitchId);
+        Assert.Equal(["Alpha"],         rule.TargetVmIds);
         Assert.True(rule.AutoStart);
         Assert.Equal("AA:BB:CC:DD:EE:FF", rule.Conditions.AdapterMac);
         Assert.Equal("192.168.1.0/24",    rule.Conditions.IpCidr);
 
-        Assert.Equal("Default Switch", roundTripped.Fallback.VirtualSwitch);
-        Assert.Equal(["Alpha"],        roundTripped.Fallback.TargetVms);
+        Assert.Equal("Default Switch", roundTripped.Fallback.SwitchId);
+        Assert.Equal(["Alpha"],        roundTripped.Fallback.TargetVmIds);
     }
 
     // ── SaveSettingsWindowRect (issue #31) ────────────────────────────────────
@@ -960,8 +971,8 @@ public class ConfigManagerTests : IDisposable
         mgr.SaveSettingsWindowRect(new WindowRect(120, 80, 1000, 800));
 
         mgr.UpdateLogLevel(LogLevel.Warning);
-        mgr.AddBridgedRule(new NetworkRule { Name = "New", Priority = 5, VirtualSwitch = "Bridged" });
-        mgr.AddVmToConfig("Alpha", "NIC 1");
+        mgr.AddBridgedRule(new NetworkRule { Name = "New", Priority = 5, SwitchId = "Bridged" });
+        mgr.AddVmToConfig(new DiscoveredVm("Alpha", "Alpha", null, "NIC 1"));
 
         var saved = ReadConfig(path);
         Assert.Equal(120,  saved.SettingsWindowX);
@@ -1014,7 +1025,7 @@ public class ConfigManagerTests : IDisposable
         Assert.Equal(120, mgr.Current.SettingsWindowX);
 
         // …while a change the NetworkMonitor actually acts on still says so.
-        mgr.AddBridgedRule(new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "Bridged" });
+        mgr.AddBridgedRule(new NetworkRule { Name = "R", Priority = 1, SwitchId = "Bridged" });
         Assert.Equal([false, true], affected);
     }
 
@@ -1078,12 +1089,12 @@ public class ConfigManagerTests : IDisposable
     {
         static AppConfig Base() => new()
         {
-            VirtualMachines = [new VmTarget { Name = "Dev", NicName = "Network Adapter",
+            VirtualMachines = [new VmTarget { Id = "Dev", Name = "Dev", NicName = "Network Adapter",
                                               OnBridgeLostAction = "pause", OnBridgeLostDelaySeconds = 30 }],
-            Rules           = [new NetworkRule { Name = "Office", Priority = 1, VirtualSwitch = "Bridged",
-                                                 TargetVms = ["Dev"], AutoStart = false,
+            Rules           = [new NetworkRule { Name = "Office", Priority = 1, SwitchId = "Bridged",
+                                                 TargetVmIds = ["Dev"], AutoStart = false,
                                                  Conditions = new RuleConditions { IpCidr = "10.0.0.0/24" } }],
-            Fallback        = new FallbackAction { VirtualSwitch = "Default Switch", TargetVms = ["Dev"] },
+            Fallback        = new FallbackAction { SwitchId = "Default Switch", TargetVmIds = ["Dev"] },
         };
 
         static AppConfig With(Action<AppConfig> edit) { var c = Base(); edit(c); return c; }
@@ -1091,27 +1102,30 @@ public class ConfigManagerTests : IDisposable
         return new TheoryData<string, AppConfig, AppConfig>
         {
             // ── Rules: AdapterMatcher.Evaluate walks these to pick the switch ──
-            { "rule added",        Base(), With(c => c.Rules.Add(new NetworkRule { Name = "Home", Priority = 2, VirtualSwitch = "Bridged2" })) },
+            { "rule added",        Base(), With(c => c.Rules.Add(new NetworkRule { Name = "Home", Priority = 2, SwitchId = "Bridged2" })) },
             { "rule removed",      Base(), With(c => c.Rules.Clear()) },
             { "rule name",         Base(), With(c => c.Rules[0].Name = "Office2") },
             { "rule priority",     Base(), With(c => c.Rules[0].Priority = 5) },
-            { "rule switch",       Base(), With(c => c.Rules[0].VirtualSwitch = "Bridged2") },
+            { "rule switch",       Base(), With(c => c.Rules[0].SwitchId = "Bridged2") },
             // AutoStart and TargetVms START VMs — ApplyAsync reads both off the matched rule.
             { "rule autostart",    Base(), With(c => c.Rules[0].AutoStart = true) },
-            { "rule target VMs",   Base(), With(c => c.Rules[0].TargetVms = ["Dev", "Build"]) },
+            { "rule target VMs",   Base(), With(c => c.Rules[0].TargetVmIds = ["Dev", "Build"]) },
             { "rule CIDR",         Base(), With(c => c.Rules[0].Conditions!.IpCidr = "192.168.1.0/24") },
             { "rule MAC",          Base(), With(c => c.Rules[0].Conditions!.AdapterMac = "AA:BB:CC:DD:EE:FF") },
 
             // ── Fallback: the other half of Evaluate ──
-            { "fallback switch",   Base(), With(c => c.Fallback.VirtualSwitch = "NAT Switch") },
-            { "fallback targets",  Base(), With(c => c.Fallback.TargetVms = ["Dev", "Build"]) },
+            { "fallback switch",   Base(), With(c => c.Fallback.SwitchId = "NAT Switch") },
+            { "fallback targets",  Base(), With(c => c.Fallback.TargetVmIds = ["Dev", "Build"]) },
 
             // ── VirtualMachines: ApplyAsync binds vm.NicName; ScheduleDisconnectActions can stop the VM ──
-            { "VM added",          Base(), With(c => c.VirtualMachines.Add(new VmTarget { Name = "Build", NicName = "Network Adapter" })) },
+            { "VM added",          Base(), With(c => c.VirtualMachines.Add(new VmTarget { Id = "Build", Name = "Build", NicName = "Network Adapter" })) },
             { "VM removed",        Base(), With(c => c.VirtualMachines.Clear()) },
             { "VM name",           Base(), With(c => c.VirtualMachines[0].Name = "Dev2") },
             // The one the issue calls out by name: a NIC-name edit changes what ApplySwitchAsync binds.
             { "VM NIC name",       Base(), With(c => c.VirtualMachines[0].NicName = "Network Adapter 2") },
+            // What ApplySwitchAsync actually finds the adapter by.
+            { "VM NIC ID",         Base(), With(c => c.VirtualMachines[0].NicId = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA") },
+            { "rule ID",           Base(), With(c => c.Rules[0].Id = "0123456789abcdef0123456789abcdef") },
             { "VM bridge-lost",    Base(), With(c => c.VirtualMachines[0].OnBridgeLostAction = "shutdown") },
             { "VM bridge delay",   Base(), With(c => c.VirtualMachines[0].OnBridgeLostDelaySeconds = 5) },
         };
@@ -1121,8 +1135,8 @@ public class ConfigManagerTests : IDisposable
     [Fact]
     public void AffectsNetwork_IsFalse_ForAnIdenticalConfig()
     {
-        var a = new AppConfig { Rules = [new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "S" }] };
-        var b = new AppConfig { Rules = [new NetworkRule { Name = "R", Priority = 1, VirtualSwitch = "S" }] };
+        var a = new AppConfig { Rules = [new NetworkRule { Name = "R", Priority = 1, SwitchId = "S" }] };
+        var b = new AppConfig { Rules = [new NetworkRule { Name = "R", Priority = 1, SwitchId = "S" }] };
         Assert.False(ConfigManager.AffectsNetwork(a, b));
     }
 
@@ -1144,7 +1158,7 @@ public class ConfigManagerTests : IDisposable
             .OrderBy(n => n, StringComparer.Ordinal);
 
         // Read by the NetworkMonitor (transitively) — so a change to any of these must re-evaluate.
-        string[] network = ["fallback", "ruleSwitches", "rules", "virtualMachines"];
+        string[] network = ["fallback", "identifiedVms", "ruleSwitches", "rules", "virtualMachines"];
 
         Assert.Equal(
             network.Concat(ConfigManager.NonNetworkProperties).OrderBy(n => n, StringComparer.Ordinal),
@@ -1175,7 +1189,7 @@ public class ConfigManagerTests : IDisposable
         File.WriteAllText(path, JsonSerializer.Serialize(new AppConfig
         {
             LogLevel = LogLevel.Error,
-            Rules    = [new NetworkRule { Name = "Office", Priority = 1, VirtualSwitch = "Bridged" }],
+            Rules    = [new NetworkRule { Name = "Office", Priority = 1, SwitchId = "Bridged" }],
         }, WriteOpts));
         Assert.True(await seen.WaitAsync(TimeSpan.FromSeconds(10)), "the file watcher never fired");
         Assert.Equal([false, true], affected);
@@ -1189,9 +1203,9 @@ public class ConfigManagerTests : IDisposable
     {
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [new VmTarget { Name = "A", NicName = "Network Adapter" },
-                               new VmTarget { Name = "B", NicName = "Network Adapter" }],
-            Rules           = [new NetworkRule { Name = "R1", Priority = 1, VirtualSwitch = "Bridged" }],
+            VirtualMachines = [new VmTarget { Id = "A", Name = "A", NicName = "Network Adapter" },
+                               new VmTarget { Id = "B", Name = "B", NicName = "Network Adapter" }],
+            Rules           = [new NetworkRule { Name = "R1", Priority = 1, SwitchId = "Bridged" }],
         });
         using var mgr = MakeManager(path);
 
@@ -1213,7 +1227,7 @@ public class ConfigManagerTests : IDisposable
     {
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [new VmTarget { Name = "Original", NicName = "Network Adapter" }],
+            VirtualMachines = [new VmTarget { Id = "Original", Name = "Original", NicName = "Network Adapter" }],
         });
         using var mgr = MakeManager(path);
         Assert.True(mgr.LastLoad.Succeeded);
@@ -1310,15 +1324,15 @@ public class ConfigManagerTests : IDisposable
     {
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [new VmTarget { Name = "vm1", NicName = "Network Adapter" }],
+            VirtualMachines = [new VmTarget { Id = "vm1", Name = "vm1", NicName = "Network Adapter" }],
         });
         _tempFiles.Add(path);
 
         ConfigManager? mgr = null;
         Task? rectSave = null;
 
-        // Fires inside SetVmNicName's lock: file written, _config NOT yet reloaded.
-        var logger = new HookLogger("NIC name for VM 'vm1'", () =>
+        // Fires inside SetVmNic's lock: file written, _config NOT yet reloaded.
+        var logger = new HookLogger("Network adapter for VM 'vm1'", () =>
         {
             rectSave = Task.Run(() => mgr!.SaveSettingsWindowRect(new WindowRect(10, 20, 900, 700)));
             // Long enough for the rect save to reach its snapshot/lock. If it snapshots here it snapshots
@@ -1328,7 +1342,7 @@ public class ConfigManagerTests : IDisposable
 
         using (mgr = new ConfigManager(path, logger))
         {
-            mgr.SetVmNicName("vm1", "Ethernet 2");
+            mgr.SetVmNic("vm1", null, "Ethernet 2");
             await rectSave!.WaitAsync(TimeSpan.FromSeconds(10));
         }
 
@@ -1373,7 +1387,7 @@ public class ConfigManagerTests : IDisposable
     {
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [new VmTarget { Name = "vm1", NicName = "Network Adapter" }],
+            VirtualMachines = [new VmTarget { Id = "vm1", Name = "vm1", NicName = "Network Adapter" }],
         });
         _tempFiles.Add(path);
 
@@ -1418,7 +1432,7 @@ public class ConfigManagerTests : IDisposable
     {
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [new VmTarget { Name = "vm1", NicName = "Network Adapter" }],
+            VirtualMachines = [new VmTarget { Id = "vm1", Name = "vm1", NicName = "Network Adapter" }],
         });
         using var mgr = MakeManager(path);
 
@@ -1428,7 +1442,7 @@ public class ConfigManagerTests : IDisposable
         {
             // Which exception the OS raises for the blocked rename is not the property under test; that
             // the file survives it is. A direct write raises nothing here and still destroys the file.
-            try { mgr.SetVmNicName("vm1", "Ethernet 2"); }
+            try { mgr.SetVmNic("vm1", null, "Ethernet 2"); }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
         }
@@ -1477,14 +1491,14 @@ public class ConfigManagerTests : IDisposable
     {
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [new VmTarget { Name = "vm1", NicName = "Network Adapter" }],
+            VirtualMachines = [new VmTarget { Id = "vm1", Name = "vm1", NicName = "Network Adapter" }],
         });
         using var mgr = MakeManager(path);
 
         File.WriteAllText(path, "{ broken by hand");
         Assert.False(mgr.Load().Succeeded);   // forced directly — no watcher, no debounce
 
-        mgr.SetVmNicName("vm1", "Ethernet 2");
+        mgr.SetVmNic("vm1", null, "Ethernet 2");
 
         Assert.Equal("Ethernet 2", Assert.Single(ReadConfig(path).VirtualMachines).NicName);
     }
@@ -1501,7 +1515,7 @@ public class ConfigManagerTests : IDisposable
     {
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [new VmTarget { Name = "vm1", NicName = "Network Adapter" }],
+            VirtualMachines = [new VmTarget { Id = "vm1", Name = "vm1", NicName = "Network Adapter" }],
         });
         using var mgr = MakeManager(path);
 
@@ -1509,7 +1523,7 @@ public class ConfigManagerTests : IDisposable
         File.WriteAllText(path, handEdit);
         Assert.False(mgr.Load().Succeeded);
 
-        mgr.SetVmNicName("vm1", "Ethernet 2");
+        mgr.SetVmNic("vm1", null, "Ethernet 2");
 
         var kept = Assert.Single(BrokenCopiesOf(path));
         Assert.Equal(handEdit, File.ReadAllText(kept));                  // the user's edit is recoverable
@@ -1525,11 +1539,11 @@ public class ConfigManagerTests : IDisposable
     {
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [new VmTarget { Name = "vm1", NicName = "Network Adapter" }],
+            VirtualMachines = [new VmTarget { Id = "vm1", Name = "vm1", NicName = "Network Adapter" }],
         });
         using var mgr = MakeManager(path);
 
-        mgr.SetVmNicName("vm1", "Ethernet 2");
+        mgr.SetVmNic("vm1", null, "Ethernet 2");
 
         Assert.Empty(BrokenCopiesOf(path));
     }
@@ -1543,7 +1557,7 @@ public class ConfigManagerTests : IDisposable
     {
         var path = WriteTempConfig(new AppConfig
         {
-            VirtualMachines = [new VmTarget { Name = "vm1", NicName = "Network Adapter" }],
+            VirtualMachines = [new VmTarget { Id = "vm1", Name = "vm1", NicName = "Network Adapter" }],
         });
         using var mgr = MakeManager(path);
 
@@ -1556,7 +1570,7 @@ public class ConfigManagerTests : IDisposable
 
         File.WriteAllText(path, "{ broken by hand");
         Assert.False(mgr.Load().Succeeded);
-        mgr.SetVmNicName("vm1", "Ethernet 2");
+        mgr.SetVmNic("vm1", null, "Ethernet 2");
 
         var kept = BrokenCopiesOf(path);
         Assert.Equal(ConfigManager.KeptBrokenCopies, kept.Length);

@@ -10,7 +10,7 @@ namespace HyperVManagerTray.Tests;
 /// </summary>
 public class ServiceStopGuardTests
 {
-    private static VmStatus Vm(string name, string state) => new() { Name = name, State = state };
+    private static VmStatus Vm(string name, string state) => new() { Id = name, Name = name, State = state };
 
     [Theory]
     [InlineData(HyperVServiceKind.VirtualMachineManagement, "Running")]
@@ -23,7 +23,37 @@ public class ServiceStopGuardTests
         var decision = ServiceStopGuard.Evaluate(kind, [Vm("Dev", "Off"), Vm("Scratch", state)], statesKnown: true);
 
         Assert.Equal(ServiceStopGuard.Verdict.OfferSaveFirst, decision.Verdict);
-        Assert.Equal(["Scratch"], decision.VmsToSave);
+        Assert.Equal(["Scratch"], decision.VmsToSave.Select(v => v.Id));
+    }
+
+    /// <summary>
+    /// Hyper-V lets two VMs share a name. Read keyed by name, the host's rows collapsed into one and the
+    /// last row read hid the other — here a running VM the guard then never saw, so the service stopped
+    /// under it. Keyed by VM ID, both reach the guard and the running one is saved first.
+    /// </summary>
+    [Fact]
+    public void Two_vms_sharing_a_name_are_both_seen_by_the_stop_guard()
+    {
+        const string running = "11111111-1111-1111-1111-111111111111";
+        const string off     = "22222222-2222-2222-2222-222222222222";
+        VmRow[] rows =
+        [
+            new(running, "Dev", 2),   // EnabledState 2: running
+            new(off,     "Dev", 3),   // EnabledState 3: off — read last, so a name-keyed read kept only this one
+        ];
+
+        var statuses = HostIdentity.IndexVms(rows).Values
+            .Select(r =>
+            {
+                var s = WmiVmMapper.BuildStatus(r.Name, r.EnabledState, 0, 0, 0, 0, "", null);
+                s.Id = r.Id;
+                return s;
+            })
+            .ToList();
+        var decision = ServiceStopGuard.Evaluate(HyperVServiceKind.VirtualMachineManagement, statuses, statesKnown: true);
+
+        Assert.Equal(ServiceStopGuard.Verdict.OfferSaveFirst, decision.Verdict);
+        Assert.Equal([running], decision.VmsToSave.Select(v => v.Id));
     }
 
     [Theory]
@@ -104,7 +134,7 @@ public class ServiceStopGuardTests
             read:    () => Task.FromResult(new ServiceStopFlow.VmRead(
                          saved ? [Vm("Dev", "Saved"), Vm("Scratch", "Saved")]
                                : [Vm("Dev", "Running"), Vm("Scratch", "Paused")], true)),
-            saveAll: names => { steps.Add("save " + string.Join(",", names)); saved = true; return Task.FromResult<string?>(null); },
+            saveAll: vms => { steps.Add("save " + string.Join(",", vms.Select(v => v.Id))); saved = true; return Task.FromResult<string?>(null); },
             stop:    () => { steps.Add("stop"); return Task.FromResult<string?>(null); });
 
         Assert.Equal(["save Dev,Scratch", "stop"], steps);

@@ -40,14 +40,14 @@ public static class ServiceStopFlow
     /// <param name="kind">The service to stop.</param>
     /// <param name="read">Reads the states of every VM on the host now.</param>
     /// <param name="confirm">Shows a yes/no prompt; true is yes.</param>
-    /// <param name="saveAll">Saves the named VMs and returns null when every one reached Saved, or a
+    /// <param name="saveAll">Saves the given VMs, each by VM ID, and returns null when every one reached Saved, or a
     /// sentence naming what failed.</param>
     /// <param name="stop">Stops the service and returns null on success, or the reason it failed.</param>
     public static Task<Result> RunAsync(
         HyperVServiceKind kind,
         Func<Task<VmRead>> read,
         Func<string, bool> confirm,
-        Func<IReadOnlyList<string>, Task<string?>> saveAll,
+        Func<IReadOnlyList<VmRef>, Task<string?>> saveAll,
         Func<Task<string?>> stop) =>
         RunCoreAsync(kind, read, confirm, saveAll, stop);
 
@@ -60,7 +60,7 @@ public static class ServiceStopFlow
     public static Task<Result> RunUnattendedAsync(
         HyperVServiceKind kind,
         Func<Task<VmRead>> read,
-        Func<IReadOnlyList<string>, Task<string?>> saveAll,
+        Func<IReadOnlyList<VmRef>, Task<string?>> saveAll,
         Func<Task<string?>> stop) =>
         ServiceStopGuard.MayStopUnattended(kind)
             ? RunCoreAsync(kind, read, confirm: null, saveAll, stop)
@@ -71,7 +71,7 @@ public static class ServiceStopFlow
         HyperVServiceKind kind,
         Func<Task<VmRead>> read,
         Func<string, bool>? confirm,
-        Func<IReadOnlyList<string>, Task<string?>> saveAll,
+        Func<IReadOnlyList<VmRef>, Task<string?>> saveAll,
         Func<Task<string?>> stop)
     {
         var first    = await read().ConfigureAwait(true);

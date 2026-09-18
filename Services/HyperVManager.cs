@@ -2,6 +2,7 @@ using System.Management;
 using System.Net.NetworkInformation;
 using Microsoft.Extensions.Logging;
 using HyperVManagerTray.Helpers;
+using HyperVManagerTray.Models;
 
 namespace HyperVManagerTray.Services;
 
@@ -62,14 +63,17 @@ public sealed class HyperVManager : IDisposable
     /// an unchanged connection briefly bounces the VM's network, so the "already on that switch" case is
     /// a no-op (e.g. on every app launch, where the in-session guards start empty).
     ///
-    /// <para><b>Returns true only when the NIC is confirmed to be on <paramref name="switchName"/></b> —
+    /// <para><b>Returns true only when the NIC is confirmed to be on <paramref name="sw"/></b> —
     /// whether this call moved it there or it was already there. False means the reconnect could not be
     /// performed (switch/VM/NIC not found, or the WMI modify failed) and the VM is NOT on that switch.
     /// Before issue #37 this returned <c>void</c> and swallowed every failure into a log line, so
     /// <see cref="NetworkMonitor"/> had no way to tell the UI that a reconnect had failed.</para>
     /// </summary>
-    public Task<bool> ApplySwitchAsync(string vmName, string nicName, string switchName) =>
-        WithLock(() => ApplySwitchCore(vmName, nicName, switchName));
+    /// <param name="vm">The VM, found by its VM ID; the name is for the log.</param>
+    /// <param name="nicId">The adapter's ID, or null for the VM's only adapter.</param>
+    /// <param name="sw">The switch, found by its ID; the name is for the log.</param>
+    public Task<bool> ApplySwitchAsync(VmRef vm, string? nicId, SwitchRef sw) =>
+        WithLock(() => ApplySwitchCore(vm, nicId, sw));
 
     /// <summary>
     /// Opens this manager's WMI connection ahead of the first caller that needs it, on the thread pool.
@@ -108,24 +112,30 @@ public sealed class HyperVManager : IDisposable
         }
     });
 
-    /// <summary>Performs the VM-NIC reconnect; true = the NIC is now on <paramref name="switchName"/>.</summary>
-    private bool ApplySwitchCore(string vmName, string nicName, string switchName)
+    /// <summary>Performs the VM-NIC reconnect; true = the NIC is now on <paramref name="target"/>.</summary>
+    private bool ApplySwitchCore(VmRef vm, string? nicId, SwitchRef target)
     {
+        var vmName     = $"{vm.Shown} ({vm.Id})";
+        var switchName = $"{target.Shown} ({target.Id})";
         try
         {
             EnsureScope();
             var scope = _scope!;
 
-            using var sw = FindSwitch(scope, switchName);
+            using var sw = FindSwitch(scope, target.Id);
             if (sw is null) { _logger.LogError("ApplySwitchAsync: switch '{Switch}' not found", switchName); return false; }
             var switchPath = sw.Path.Path;
             var switchId   = sw["Name"] as string ?? "";   // switch GUID, embedded in a connection's HostResource path
 
-            using var vmSettings = FindVmSettings(scope, vmName);
+            using var vmSettings = FindVmSettings(scope, vm.Id);
             if (vmSettings is null) { _logger.LogError("ApplySwitchAsync: VM '{Vm}' not found", vmName); return false; }
 
-            using var nic = FindSyntheticNic(vmSettings, nicName);
-            if (nic is null) { _logger.LogError("ApplySwitchAsync: NIC '{Nic}' on VM '{Vm}' not found", nicName, vmName); return false; }
+            using var nic = FindSyntheticNic(vmSettings, nicId);
+            if (nic is null)
+            {
+                _logger.LogError("ApplySwitchAsync: network adapter '{Nic}' on VM '{Vm}' not found", nicId ?? "(the only adapter)", vmName);
+                return false;
+            }
 
             using var connection = FindNicConnection(scope, nic);
 
@@ -180,29 +190,33 @@ public sealed class HyperVManager : IDisposable
     /// untouched. After a real rebind, <see cref="RepairHostVNicAsync"/> runs to collapse any duplicate
     /// host vNIC (kept as a safety net; the WMI re-home is not expected to create one).</para>
     /// </summary>
-    public Task<SwitchBindOutcome> UpdateSwitchBindingAsync(string switchName, string adapterName) =>
+    /// <param name="target">The switch, found by its ID.</param>
+    /// <param name="adapterInterfaceId">The physical adapter's interface GUID (<c>NetworkInterface.Id</c>).</param>
+    public Task<SwitchBindOutcome> UpdateSwitchBindingAsync(SwitchRef target, string adapterInterfaceId) =>
         WithLock(() =>
         {
-            var outcome = UpdateSwitchBindingCore(switchName, adapterName);
+            var outcome = UpdateSwitchBindingCore(target, adapterInterfaceId);
             // The vNIC-repair safety net only makes sense after a REAL rebind — an AlreadyBound no-op
             // touched nothing, and a Failed attempt must not be papered over as success.
             if (outcome == SwitchBindOutcome.Bound)
-                RepairHostVNicCore(switchName);
+                RepairHostVNicCore(target);
             return outcome;
         });
 
     /// <summary>Performs the bind and reports its <see cref="SwitchBindOutcome"/> — only <see cref="SwitchBindOutcome.Bound"/> did real work.</summary>
-    private SwitchBindOutcome UpdateSwitchBindingCore(string switchName, string adapterName)
+    private SwitchBindOutcome UpdateSwitchBindingCore(SwitchRef target, string adapterInterfaceId)
     {
+        var switchName  = $"{target.Shown} ({target.Id})";
+        var adapterName = adapterInterfaceId;
         try
         {
             EnsureScope();
             var scope = _scope!;
 
-            // The caller passes the physical NIC's Windows connection alias (NetworkInterface.Name, what
-            // Set-VMSwitch -NetAdapterName took). Map it to the adapter's MAC + description so we can find
-            // the matching Msvm_ExternalEthernetPort (which has no notion of the Windows alias).
-            var (mac, desc) = ResolveAdapter(adapterName);
+            // The caller passes the physical NIC's interface GUID (NetworkInterface.Id), which neither a
+            // rename nor a new connection alias changes. Map it to the adapter's MAC so we can find the
+            // matching Msvm_ExternalEthernetPort, which has no notion of the Windows alias.
+            var (mac, desc) = ResolveAdapter(adapterInterfaceId);
             if (mac is null)
             {
                 // Adapter genuinely absent (e.g. USB NIC unplugged). Treat as Failed so the caller leaves
@@ -211,7 +225,7 @@ public sealed class HyperVManager : IDisposable
                 return SwitchBindOutcome.Failed;
             }
 
-            using var sw = FindSwitch(scope, switchName);
+            using var sw = FindSwitch(scope, target.Id);
             if (sw is null) { _logger.LogWarning("Virtual switch '{Switch}' not found — cannot bind", switchName); return SwitchBindOutcome.Failed; }
             using var settings = SwitchSettings(sw);
             if (settings is null) { _logger.LogWarning("Switch '{Switch}' has no settings data — cannot bind", switchName); return SwitchBindOutcome.Failed; }
@@ -276,21 +290,22 @@ public sealed class HyperVManager : IDisposable
     /// keeps a management vNIC throughout (strictly safer). If the switch is External but sharing was
     /// left off (count 0), one internal port is added back. No-op when already healthy.</para>
     /// </summary>
-    public async Task<HostVNicState> RepairHostVNicAsync(string switchName)
+    public async Task<HostVNicState> RepairHostVNicAsync(SwitchRef target)
     {
         var state = HostVNicState.Ok;
-        await WithLock(() => state = RepairHostVNicCore(switchName)).ConfigureAwait(false);
+        await WithLock(() => state = RepairHostVNicCore(target)).ConfigureAwait(false);
         return state;
     }
 
-    private HostVNicState RepairHostVNicCore(string switchName)
+    private HostVNicState RepairHostVNicCore(SwitchRef target)
     {
+        var switchName = $"{target.Shown} ({target.Id})";
         try
         {
             EnsureScope();
             var scope = _scope!;
 
-            using var sw = FindSwitch(scope, switchName);
+            using var sw = FindSwitch(scope, target.Id);
             if (sw is null) return HostVNicState.NoSwitch;
             using var settings = SwitchSettings(sw);
             if (settings is null) return HostVNicState.NoSwitch;
@@ -351,9 +366,9 @@ public sealed class HyperVManager : IDisposable
 
     // ── VM NIC lookups ───────────────────────────────────────────────────────────
 
-    private static ManagementObject? FindVmSettings(ManagementScope scope, string vmName)
+    private static ManagementObject? FindVmSettings(ManagementScope scope, string vmId)
     {
-        using var vm = FindVm(scope, vmName);
+        using var vm = FindVm(scope, vmId);
         if (vm is null) return null;
         // Msvm_SettingsDefineState associates a computer system to its single REALIZED (active) settings —
         // NOT any checkpoint's snapshot settings (those hang off Msvm_SnapshotOfVirtualSystem /
@@ -365,19 +380,33 @@ public sealed class HyperVManager : IDisposable
         return null;
     }
 
-    private static ManagementObject? FindSyntheticNic(ManagementObject vmSettings, string nicName)
+    /// <summary>
+    /// The VM's adapter with <paramref name="nicId"/>, or — when no ID is stored — the VM's only adapter.
+    /// A VM with several adapters and no stored ID gets none: which one is meant cannot be known.
+    /// </summary>
+    private static ManagementObject? FindSyntheticNic(ManagementObject vmSettings, string? nicId)
     {
         ManagementObject? onlyOne = null;
         int count = 0;
         foreach (ManagementObject sepsd in vmSettings.GetRelated("Msvm_SyntheticEthernetPortSettingData"))
         {
             count++;
-            if (string.Equals(sepsd["ElementName"] as string, nicName, StringComparison.OrdinalIgnoreCase))
-                return sepsd;
-            // Remember a lone NIC as a lenient fallback for a config name mismatch, but dispose extras.
+            if (nicId is not null)
+            {
+                if (HostIdentity.Same(HostIdentity.NicIdFromInstanceId(sepsd["InstanceID"] as string), nicId))
+                {
+                    onlyOne?.Dispose();
+                    return sepsd;
+                }
+                sepsd.Dispose();
+                continue;
+            }
             if (onlyOne is null) onlyOne = sepsd; else sepsd.Dispose();
         }
-        return count == 1 ? onlyOne : null;
+        if (nicId is not null) return null;
+        if (count == 1) return onlyOne;
+        onlyOne?.Dispose();
+        return null;
     }
 
     /// <summary>Finds the VM NIC's existing Ethernet port allocation (its switch connection), or null if
@@ -403,12 +432,13 @@ public sealed class HyperVManager : IDisposable
 
     // ── Switch lookups ───────────────────────────────────────────────────────────
 
-    private static ManagementObject? FindSwitch(ManagementScope scope, string name)
+    /// <summary>The switch with this switch ID (<c>Msvm_VirtualEthernetSwitch.Name</c>), or null.</summary>
+    private static ManagementObject? FindSwitch(ManagementScope scope, string switchId)
     {
         ManagementObject? found = null;
         foreach (ManagementObject sw in Query(scope, "SELECT * FROM Msvm_VirtualEthernetSwitch"))
         {
-            if (found is null && string.Equals(sw["ElementName"] as string, name, StringComparison.OrdinalIgnoreCase))
+            if (found is null && HostIdentity.Same(sw["Name"] as string, switchId))
                 found = sw;
             else sw.Dispose();
         }
@@ -464,19 +494,19 @@ public sealed class HyperVManager : IDisposable
 
     // ── External-adapter resolution ──────────────────────────────────────────────
 
-    /// <summary>Resolves a Windows connection alias to its (normalised MAC, description), or (null, null)
-    /// if no such live adapter exists.</summary>
-    private static (string? Mac, string? Desc) ResolveAdapter(string alias)
+    /// <summary>Resolves an adapter's interface GUID to its (normalised MAC, interface GUID), or
+    /// (null, null) if no such live adapter exists.</summary>
+    private static (string? Mac, string? Guid) ResolveAdapter(string interfaceId)
     {
         var nic = NetworkInterface.GetAllNetworkInterfaces()
-            .FirstOrDefault(n => string.Equals(n.Name, alias, StringComparison.OrdinalIgnoreCase));
+            .FirstOrDefault(n => HostIdentity.Same(n.Id, interfaceId));
         if (nic is null) return (null, null);
         var mac = AdapterMatcher.NormalizeMac(nic.GetPhysicalAddress().ToString());
-        return (mac.Length == 12 ? mac : null, nic.Description);
+        return (mac.Length == 12 ? mac : null, HostIdentity.Bare(nic.Id));
     }
 
     /// <summary>Finds the <c>Msvm_ExternalEthernetPort</c> for a physical adapter, preferring a MAC
-    /// (<c>PermanentAddress</c>) match and falling back to the adapter description (<c>ElementName</c>).
+    /// (<c>PermanentAddress</c>) match and falling back to the adapter's interface GUID in <c>DeviceID</c>.
     ///
     /// <para><b>Wi-Fi caveat (U5):</b> this queries only <c>Msvm_ExternalEthernetPort</c>. A wireless
     /// adapter surfaces as <c>Msvm_WiFiPort</c> instead and would not be found here — binding a switch onto
@@ -488,7 +518,7 @@ public sealed class HyperVManager : IDisposable
         foreach (var p in candidates)
         {
             var portMac  = p["PermanentAddress"] as string;
-            var portDesc = p["ElementName"] as string;
+            var portDesc = p["DeviceID"] as string;
             // A MAC hit is authoritative; only accept a description hit if it's NOT also a MAC mismatch we
             // could distinguish — but MAC always wins, so track the two independently and prefer byMac.
             if (byMac is null && SwitchWmiHelpers.ExternalPortMatchesAdapter(portMac, null, mac, null))
@@ -502,7 +532,7 @@ public sealed class HyperVManager : IDisposable
     }
 
     /// <summary>True when an external port allocation currently points at the given adapter (MAC or
-    /// description). Dereferences the allocation's <c>HostResource</c> path to the live
+    /// interface GUID). Dereferences the allocation's <c>HostResource</c> path to the live
     /// <c>Msvm_ExternalEthernetPort</c> and compares; a broken/stale path reads as "no match".</summary>
     private static bool ExternalPortMatches(ManagementScope scope, ManagementObject externalEpasd, string mac, string? desc)
     {
@@ -513,7 +543,7 @@ public sealed class HyperVManager : IDisposable
             using var port = new ManagementObject(scope, new ManagementPath(hr[0]), WmiLimits.Get());
             port.Get();
             return SwitchWmiHelpers.ExternalPortMatchesAdapter(
-                port["PermanentAddress"] as string, port["ElementName"] as string, mac, desc);
+                port["PermanentAddress"] as string, port["DeviceID"] as string, mac, desc);
         }
         catch { return false; }
     }
@@ -558,12 +588,13 @@ public sealed class HyperVManager : IDisposable
     private static ManagementObject SwitchService(ManagementScope scope) =>
         Query(scope, "SELECT * FROM Msvm_VirtualEthernetSwitchManagementService").First();
 
-    private static ManagementObject? FindVm(ManagementScope scope, string name)
+    /// <summary>The VM with this VM ID (<c>Msvm_ComputerSystem.Name</c>), or null.</summary>
+    private static ManagementObject? FindVm(ManagementScope scope, string vmId)
     {
         ManagementObject? found = null;
         foreach (ManagementObject vm in Query(scope, "SELECT * FROM Msvm_ComputerSystem WHERE Caption='Virtual Machine'"))
         {
-            if (found is null && string.Equals(vm["ElementName"] as string, name, StringComparison.OrdinalIgnoreCase))
+            if (found is null && HostIdentity.Same(vm["Name"] as string, vmId))
                 found = vm;
             else vm.Dispose();
         }

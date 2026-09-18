@@ -13,98 +13,75 @@ public class VmConfigUiTests
 {
     // ── UnmanagedVms ────────────────────────────────────────────────────────────
 
+    private const string IdA = "AAAAAAAA-0000-0000-0000-000000000001";
+    private const string IdB = "BBBBBBBB-0000-0000-0000-000000000002";
+    private const string IdC = "CCCCCCCC-0000-0000-0000-000000000003";
+
+    private static VmTarget Managed(string id, string name) => new() { Id = id, Name = name };
+
     [Fact]
     public void UnmanagedVms_ReturnsHostVmsNotInConfig()
     {
-        var result = VmConfigUi.UnmanagedVms(["Alpha", "Beta", "Gamma"], ["Beta"]);
-        Assert.Equal(["Alpha", "Gamma"], result);
+        var result = VmConfigUi.UnmanagedVms(
+            [new HostVm(IdA, "Alpha"), new HostVm(IdB, "Beta"), new HostVm(IdC, "Gamma")], [Managed(IdB, "Beta")]);
+        Assert.Equal([IdA, IdC], result.Select(v => v.Id));
     }
 
+    /// <summary>Managed is a question about the VM ID, not the name: a host VM sharing its name with a
+    /// managed one is a different VM and is still offered.</summary>
     [Fact]
-    public void UnmanagedVms_IsCaseInsensitive()
+    public void UnmanagedVms_OffersAVmThatSharesItsNameWithAManagedOne()
     {
-        // Hyper-V VM names are case-insensitive; a managed "devbox" must not be offered again as "DevBox".
-        var result = VmConfigUi.UnmanagedVms(["DevBox", "Other"], ["devbox"]);
-        Assert.Equal(["Other"], result);
+        var result = VmConfigUi.UnmanagedVms([new HostVm(IdA, "Dev"), new HostVm(IdB, "Dev")], [Managed(IdA, "Dev")]);
+        Assert.Equal([IdB], result.Select(v => v.Id));
+    }
+
+    /// <summary>WMI and the config may spell a GUID in different cases; it is still the same VM.</summary>
+    [Fact]
+    public void UnmanagedVms_ComparesIdsWithoutRegardToCase()
+    {
+        var result = VmConfigUi.UnmanagedVms([new HostVm(IdA.ToLowerInvariant(), "Dev")], [Managed(IdA, "Dev")]);
+        Assert.Empty(result);
     }
 
     [Fact]
     public void UnmanagedVms_IsOrderedByName_SoTheMenuDoesNotReshuffleBetweenOpens()
     {
-        var result = VmConfigUi.UnmanagedVms(["zeta", "Alpha", "mid"], []);
-        Assert.Equal(["Alpha", "mid", "zeta"], result);
-    }
-
-    [Fact]
-    public void UnmanagedVms_DeduplicatesAndTrims()
-    {
-        var result = VmConfigUi.UnmanagedVms([" Alpha ", "Alpha", "ALPHA"], []);
-        Assert.Equal(["Alpha"], result);
-    }
-
-    [Fact]
-    public void UnmanagedVms_SkipsBlankNames()
-    {
-        var result = VmConfigUi.UnmanagedVms(["", "   ", "Real"], []);
-        Assert.Equal(["Real"], result);
-    }
-
-    [Fact]
-    public void UnmanagedVms_EverythingManaged_ReturnsEmpty()
-    {
-        Assert.Empty(VmConfigUi.UnmanagedVms(["A", "B"], ["A", "B"]));
+        var result = VmConfigUi.UnmanagedVms(
+            [new HostVm(IdA, "zeta"), new HostVm(IdB, "Alpha"), new HostVm(IdC, "mid")], []);
+        Assert.Equal(["Alpha", "mid", "zeta"], result.Select(v => v.Name));
     }
 
     [Fact]
     public void UnmanagedVms_NoHostVms_ReturnsEmpty_RatherThanThrowing()
     {
         // The cache is null / the host is unreachable for the whole of the app's first few seconds.
-        Assert.Empty(VmConfigUi.UnmanagedVms([], ["A"]));
+        Assert.Empty(VmConfigUi.UnmanagedVms([], [Managed(IdA, "A")]));
+        Assert.Empty(VmConfigUi.UnmanagedVms(null, null));
+    }
+
+    // ── OverrideSwitches ────────────────────────────────────────────────────────
+
+    [Fact]
+    public void OverrideSwitches_IncludesFallbackAndEveryRuleSwitch_ByIdOnce()
+    {
+        var fallback = new FallbackAction { SwitchId = "SW-DEFAULT", SwitchName = "Default Switch" };
+        NetworkRule[] rules =
+        [
+            new() { SwitchId = "SW-BRIDGED", SwitchName = "Bridged" },
+            new() { SwitchId = "sw-default", SwitchName = "Default Switch" },   // the fallback's, again
+            new() { SwitchId = "",           SwitchName = "" },                 // not identified: nothing to offer
+        ];
+
+        var result = VmConfigUi.OverrideSwitches(fallback, rules);
+
+        Assert.Equal(["SW-BRIDGED", "SW-DEFAULT"], result.Select(s => s.Id));
     }
 
     [Fact]
-    public void UnmanagedVms_ManagedVmAbsentFromHost_DoesNotAppear()
+    public void OverrideSwitches_NoRulesAndNoFallback_ReturnsEmpty()
     {
-        // A config may name a VM that does not exist on this host. It is managed, so it is not "unmanaged"
-        // — it simply isn't in the host list at all, and must not be conjured into the add-list.
-        var result = VmConfigUi.UnmanagedVms(["OnHost"], ["Ghost"]);
-        Assert.Equal(["OnHost"], result);
-    }
-
-    // ── OverrideSwitchNames ─────────────────────────────────────────────────────
-
-    [Fact]
-    public void OverrideSwitchNames_IncludesFallbackAndEveryRuleSwitch()
-    {
-        var result = VmConfigUi.OverrideSwitchNames("Default Switch", ["Bridged", "Office"]);
-        Assert.Equal(["Bridged", "Default Switch", "Office"], result);
-    }
-
-    [Fact]
-    public void OverrideSwitchNames_DeduplicatesFallbackAlsoNamedByARule()
-    {
-        var result = VmConfigUi.OverrideSwitchNames("Bridged", ["Bridged", "Bridged"]);
-        Assert.Equal(["Bridged"], result);
-    }
-
-    [Fact]
-    public void OverrideSwitchNames_SkipsBlanks()
-    {
-        var result = VmConfigUi.OverrideSwitchNames("  ", ["Bridged", "", "   "]);
-        Assert.Equal(["Bridged"], result);
-    }
-
-    [Fact]
-    public void OverrideSwitchNames_TrimsNames()
-    {
-        var result = VmConfigUi.OverrideSwitchNames(" Default Switch ", [" Bridged "]);
-        Assert.Equal(["Bridged", "Default Switch"], result);
-    }
-
-    [Fact]
-    public void OverrideSwitchNames_NoRulesAndNoFallback_ReturnsEmpty()
-    {
-        Assert.Empty(VmConfigUi.OverrideSwitchNames(null, []));
+        Assert.Empty(VmConfigUi.OverrideSwitches(null, []));
     }
 
     // ── The messages ────────────────────────────────────────────────────────────
@@ -167,122 +144,55 @@ public class VmConfigUiTests
 
     // ── FindManagedVm: the one lookup behind "is this VM ours?" ───────────────────
 
-    private static readonly VmTarget[] Managed =
+    private static readonly VmTarget[] ManagedSet =
     [
-        new() { Name = "DevBox",  NicName = "Network Adapter" },   // as the "Add VM" picker stores it
-        new() { Name = "vBuild",  NicName = "NIC 2" },
+        new() { Id = IdA, Name = "DevBox", NicName = "Network Adapter" },
+        new() { Id = IdB, Name = "DevBox", NicName = "NIC 2" },   // a second VM of the same name
     ];
 
+    /// <summary>By VM ID: two VMs of one name are two answers, and a name found only the first of them.</summary>
     [Fact]
-    public void FindManagedVm_FindsTheVmAndItsNic()
+    public void FindManagedVm_FindsTheVmByIdEvenWhenItsNameIsShared()
     {
-        var vm = VmConfigUi.FindManagedVm(Managed, "DevBox");
-
-        Assert.NotNull(vm);
-        Assert.Equal("Network Adapter", vm.NicName);
+        Assert.Equal("NIC 2", VmConfigUi.FindManagedVm(ManagedSet, IdB)?.NicName);
+        Assert.Equal("Network Adapter", VmConfigUi.FindManagedVm(ManagedSet, IdA.ToLowerInvariant())?.NicName);
     }
+
+    /// <summary>A name is never an identifier, so looking one up finds nothing.</summary>
+    [Fact]
+    public void FindManagedVm_NeverFindsAVmByItsName() =>
+        Assert.Null(VmConfigUi.FindManagedVm(ManagedSet, "DevBox"));
+
+    [Fact]
+    public void FindManagedVm_HandlesAnEmptyOrNullManagedSetOrId()
+    {
+        Assert.Null(VmConfigUi.FindManagedVm([], IdA));
+        Assert.Null(VmConfigUi.FindManagedVm(null, IdA));
+        Assert.Null(VmConfigUi.FindManagedVm(ManagedSet, null));
+    }
+
+    // ── SeedNic: the one answer both add-a-VM surfaces use (issue #41) ────────────────
 
     /// <summary>
-    /// THE defect. The two surfaces that name a VM disagree on casing BY CONSTRUCTION: issue #47's
-    /// "Start managing a VM" prompt takes free text ("devbox"), while issue #41's "Add VM" picker
-    /// carries Hyper-V's exact casing ("DevBox"). An ordinal compare never matched them, so a rule
-    /// targeting a VM the app's own picker added landed in failedVms → VmConnectFailed → a permanently
-    /// red icon and a VM that was never reconnected.
-    /// </summary>
-    [Theory]
-    [InlineData("devbox")]   // typed into the free-text "Start managing a VM" prompt
-    [InlineData("DEVBOX")]
-    [InlineData("DevBox")]   // exactly as the picker sources it from the host
-    public void FindManagedVm_MatchesRegardlessOfCasing(string typed)
-    {
-        var vm = VmConfigUi.FindManagedVm(Managed, typed);
-
-        Assert.NotNull(vm);
-        Assert.Equal("Network Adapter", vm.NicName);   // resolved the NIC, so the VM can be reconnected
-    }
-
-    // A genuinely unmanaged VM must still be reported as such — the casing fix must not make the lookup
-    // match things it shouldn't.
-    [Fact]
-    public void FindManagedVm_ReturnsNullForAVmThisAppDoesNotManage() =>
-        Assert.Null(VmConfigUi.FindManagedVm(Managed, "SomeoneElsesVm"));
-
-    [Fact]
-    public void FindManagedVm_HandlesAnEmptyOrNullManagedSet()
-    {
-        Assert.Null(VmConfigUi.FindManagedVm([], "DevBox"));
-        Assert.Null(VmConfigUi.FindManagedVm(null, "DevBox"));
-    }
-
-    /// <summary>
-    /// The lookup and the add-picker must agree on identity: a VM the picker considers already managed
-    /// (so does NOT offer to add) must be findable by the monitor. If these two drift, one surface says
-    /// "already managed" while the other says "not a managed VM" for the same name.
+    /// The tray seeded a new managed VM's adapter from the order WMI returned the rows in, and Settings
+    /// from a sorted list — two surfaces, two adapters persisted. The pick among several adapters is
+    /// arbitrary; what matters is that it is the same pick whatever the order the adapters arrive in.
     /// </summary>
     [Fact]
-    public void FindManagedVm_AgreesWithUnmanagedVmsAboutIdentity()
+    public void SeedNic_IsIndependentOfTheOrderTheAdaptersArriveIn()
     {
-        var offered = VmConfigUi.UnmanagedVms(["devbox"], Managed.Select(v => v.Name));
+        HostNic ethernet = new("NIC-E", "Ethernet 2"), standard = new("NIC-S", "Network Adapter");
 
-        Assert.Empty(offered);                                        // the picker: already managed
-        Assert.NotNull(VmConfigUi.FindManagedVm(Managed, "devbox"));  // the monitor must agree
+        Assert.Equal(VmConfigUi.SeedNic([ethernet, standard]), VmConfigUi.SeedNic([standard, ethernet]));
+        Assert.Equal("NIC-E", VmConfigUi.SeedNic([standard, ethernet])!.Id);
     }
 
-    // ── SeedNicName: the one answer both add-a-VM surfaces use (issue #41) ────────────────
-
-    /// <summary>
-    /// THE property, and the bug that made it necessary. The tray seeded a new managed VM's NIC from
-    /// <c>VmService.ReadDiscovered</c>, which assigned into a dictionary per WMI row — so the LAST row
-    /// won, in whatever order WMI returned them. Settings seeded from
-    /// <c>HostInventory.NicNamesFor(vm).FirstOrDefault()</c>, and that list is sorted. Same act, two
-    /// surfaces, two different adapters persisted; whichever one picked the non-primary NIC wrote a name
-    /// <c>FindSyntheticNic</c> never matches, so <c>ApplySwitchAsync</c> failed every pass and the VM was
-    /// silently never reconnected — the failure #41 exists to fix.
-    ///
-    /// <para>Order-independence is exactly what the tray's path lacked, so it is what this asserts.</para>
-    /// </summary>
+    /// <summary>A VM with no adapter seeds none, which leaves "its only adapter" to be decided later.</summary>
     [Fact]
-    public void SeedNicName_IsIndependentOfTheOrderTheNamesArriveIn()
+    public void SeedNic_NoAdapter_SeedsNone()
     {
-        // The order WMI happens to return the rows in ("last row wins" gave "Network Adapter") …
-        var asWmiReturnedThem = VmConfigUi.SeedNicName(["Ethernet 2", "Network Adapter"]);
-        // … versus the sorted order the inventory hands Settings ("first wins" gave "Ethernet 2").
-        var asSettingsSawThem = VmConfigUi.SeedNicName(["Network Adapter", "Ethernet 2"]);
-
-        Assert.Equal(asSettingsSawThem, asWmiReturnedThem);
-    }
-
-    /// <summary>Deterministic between reads, matching HostInventory's OrdinalIgnoreCase ordering: the
-    /// pick among several adapters is arbitrary, but it must be the SAME arbitrary pick every time.</summary>
-    [Fact]
-    public void SeedNicName_PicksTheFirstNameInOrdinalIgnoreCaseOrder()
-    {
-        Assert.Equal("Ethernet 2", VmConfigUi.SeedNicName(["Network Adapter", "Ethernet 2"]));
-        Assert.Equal("Ethernet 2", VmConfigUi.SeedNicName(["Ethernet 2"]));
-        // Case-insensitive ordering, so a lowercase name still sorts ahead of a later letter rather than
-        // ahead of everything (an Ordinal sort would put "ethernet 2" AFTER "Network Adapter").
-        Assert.Equal("ethernet 2", VmConfigUi.SeedNicName(["Network Adapter", "ethernet 2"]));
-    }
-
-    /// <summary>
-    /// A VM the host couldn't be read for (or that doesn't exist yet) seeds the Hyper-V default — the
-    /// same value <c>ConfigManager.AddVmToConfig</c> falls back to for a blank, so the two agree by
-    /// construction. Never an empty name, which would match no adapter at all.
-    /// </summary>
-    [Fact]
-    public void SeedNicName_FallsBackToTheHyperVDefault()
-    {
-        Assert.Equal(SettingsOptions.DefaultNicName, VmConfigUi.SeedNicName(null));
-        Assert.Equal(SettingsOptions.DefaultNicName, VmConfigUi.SeedNicName([]));
-    }
-
-    /// <summary>Blank/whitespace rows are not names — they must not be seeded in place of a real one.</summary>
-    [Fact]
-    public void SeedNicName_IgnoresBlankNames()
-    {
-        Assert.Equal("Network Adapter", VmConfigUi.SeedNicName(["", "   ", "Network Adapter"]));
-        Assert.Equal(SettingsOptions.DefaultNicName, VmConfigUi.SeedNicName(["", "  "]));
-        Assert.Equal("Ethernet 2", VmConfigUi.SeedNicName(["  Ethernet 2  "]));   // trimmed
+        Assert.Null(VmConfigUi.SeedNic(null));
+        Assert.Null(VmConfigUi.SeedNic([]));
     }
 
     // ── The dashboard's empty state (issues #38 / #42) ────────────────────────────────────

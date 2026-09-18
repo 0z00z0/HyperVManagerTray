@@ -269,8 +269,9 @@ public static class NetworkStatusUi
     /// <para><b>Takes the whole <see cref="MatchResult"/> on purpose.</b> It previously took a loose
     /// <c>adapterName</c> string, and both call sites passed <see cref="MatchResult.HostAdapterName"/> —
     /// the DisplayNameResolver's <i>description</i> ("Realtek USB GbE Family Controller") — while this
-    /// message is about the bind, which targets <see cref="MatchResult.HostAdapterInterfaceName"/> (the
-    /// OS alias, "Ethernet 5"). Two adapters can share a description, so the one message the user reads
+    /// message is about the bind, which targets the adapter's interface GUID and is named here by its
+    /// connection alias (<see cref="MatchResult.HostAdapterAlias"/>, "Ethernet 5"), which Windows keeps
+    /// unique. Two adapters can share a description, so the one message the user reads
     /// when the network is broken named a string that need not identify the adapter that actually
     /// failed. That is the exact description-vs-alias conflation <c>docs/STYLE.md</c> exists to
     /// eliminate. Selecting the field HERE, once, means no call site can reintroduce it.</para>
@@ -281,9 +282,9 @@ public static class NetworkStatusUi
         // so each is a first mention, and "switch" next to "network" in the same sentence is precisely
         // the pair the pinned vocabulary exists to keep apart.
         SwitchApplyStatus.BindFailed =>
-            $"Could not bind virtual switch '{result.VirtualSwitch}' to '{result.HostAdapterInterfaceName}'. " +
+            $"Could not bind virtual switch '{ShownSwitch(result)}' to '{result.HostAdapterAlias}'. " +
             "The VM is not on this network — see switcher.log.",
-        SwitchApplyStatus.VmConnectFailed => ConnectFailedSentence(result.FailedVms, result.VirtualSwitch),
+        SwitchApplyStatus.VmConnectFailed => ConnectFailedSentence(result.FailedVms, ShownSwitch(result)),
         _ => null,
     };
 
@@ -300,6 +301,13 @@ public static class NetworkStatusUi
     /// repointing "switcher.log" after the #20/#21 log split would have changed one and silently left the
     /// other — the exact drift <c>docs/DISPLAY-VOCABULARY.md</c> corollary 4 exists to prevent.</para>
     /// </summary>
+    /// <summary>The switch as a message names it: its name, or its ID when it has none, or a plain
+    /// statement that no switch is identified.</summary>
+    private static string ShownSwitch(MatchResult result) =>
+        !string.IsNullOrWhiteSpace(result.SwitchName) ? result.SwitchName
+        : !string.IsNullOrWhiteSpace(result.SwitchId) ? result.SwitchId
+        : "(not identified)";
+
     private static string ConnectFailedSentence(IReadOnlyList<string> vms, string switchName) =>
         $"Could not connect {DescribeVms(vms)} to virtual switch '{switchName}' — see switcher.log.";
 
@@ -338,7 +346,7 @@ public static class NetworkStatusUi
     /// </summary>
     public static string ReCheckMessage(MatchResult result)
     {
-        var headline = $"Re-checked: {result.RuleName} → {result.VirtualSwitch}";
+        var headline = $"Re-checked: {result.RuleName} → {ShownSwitch(result)}";
         var failure  = FailureMessage(result);
         if (failure is not null) return $"{headline}\n\n{failure}";
         return result.ApplyStatus == SwitchApplyStatus.Applied
@@ -545,6 +553,11 @@ public static class NetworkStatusUi
     /// <summary>No adapter to capture — the command cannot proceed and says why.</summary>
     public static string AddRuleNoAdapterMessage() =>
         "No active network adapter with an IPv4 address was found, so there is no current network to add.";
+
+    /// <summary>No virtual switch other than the fallback's is known, so there is nothing to bridge on.</summary>
+    public static string AddRuleNoSwitchMessage() =>
+        "No virtual switch to bridge on was found besides the fallback's. Create one in Hyper-V Manager, "
+        + "or add the rule by hand and pick its virtual switch.";
 
     /// <summary>
     /// The Wi-Fi rejection (issue #29, finding 5). Shortened from its modal wording for the balloon —

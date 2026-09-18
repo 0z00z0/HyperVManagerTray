@@ -20,27 +20,38 @@ public class MqttEntityTableTests
     private sealed class Spy
     {
         public readonly MqttStateCache State = new();
+        /// <summary>The rule switches, by name; each one's switch ID is <see cref="SwitchIdOf"/> of its name.</summary>
         public List<string> Switches = [];
         public readonly Dictionary<string, string> Ips = new(StringComparer.OrdinalIgnoreCase);
         public int ReChecks;
         public int Repairs;
         public readonly List<(string Vm, VmOpKind Kind)> Power = [];
+        /// <summary>Each override as the VM ID and the switch ID it was bound by.</summary>
         public readonly List<(string Vm, string Switch)> Overrides = [];
 
         /// <summary>Names no power shape, deliberately: a spec that says nothing gets the type's own
         /// default, which is what an installation that never chose one publishes. Tests wanting the
         /// other shape say so with <c>with { PowerButtons = true }</c>.</summary>
-        public MqttEntitySpec Spec(params string[] vmNames) => new()
+        /// <param name="vms">Each string is one VM's ID and its name at once, which keeps the ids these
+        /// tests read short; the tests about the ID itself pass a <see cref="VmRef"/>.</param>
+        public MqttEntitySpec Spec(params string[] vms) => Build([.. vms.Select(v => new VmRef(v, v))]);
+
+        public MqttEntitySpec Spec(VmRef first, params VmRef[] more) => Build([first, .. more]);
+
+        private MqttEntitySpec Build(IReadOnlyList<VmRef> vms) => new()
         {
-            VmNames             = vmNames,
-            RuleSwitches        = () => Switches,
+            Vms                 = vms,
+            RuleSwitches        = () => [.. Switches.Select(n => new SwitchRef(SwitchIdOf(n), n))],
             State               = State,
-            VmIp                = name => Ips.GetValueOrDefault(name),
+            VmIp                = id => Ips.GetValueOrDefault(id),
             ReCheckNetwork      = _ => { ReChecks++; return Task.CompletedTask; },
             RepairHostNetworking = _ => { Repairs++; return Task.CompletedTask; },
-            Power               = (vm, kind, _) => { Power.Add((vm, kind)); return Task.CompletedTask; },
-            OverrideSwitch      = (vm, sw, _) => { Overrides.Add((vm, sw)); return Task.CompletedTask; },
+            Power               = (vm, kind, _) => { Power.Add((vm.Id, kind)); return Task.CompletedTask; },
+            OverrideSwitch      = (vm, sw, _) => { Overrides.Add((vm, sw.Id)); return Task.CompletedTask; },
         };
+
+        /// <summary>The stand-in switch ID of a rule switch the spy names.</summary>
+        public static string SwitchIdOf(string name) => "SW-" + name.ToUpperInvariant().Replace(' ', '-');
     }
 
     /// <summary>The group state as a publish pass sees it. Built over a store rather than hand-made:
@@ -157,114 +168,104 @@ public class MqttEntityTableTests
                    .Select(e => e.EntityId));
     }
 
-    /// <summary>A VM name is a runtime string, so the id is slugged. The slug is per VM rather than per
-    /// entity, so every entity of one VM carries the same one.</summary>
+    // Stand-in VM IDs, GUID-shaped as Hyper-V assigns them. A and B share their first 29 hex digits —
+    // everything the slug budget keeps — and differ after it.
+    private const string GuidA = "3F2A9C1B-0D4E-4F60-8718-293A4B5C6D7E";
+    private const string GuidB = "3F2A9C1B-0D4E-4F60-8718-293A4B5C6FFF";
+    private const string GuidC = "0123ABCD-4567-89EF-0123-456789ABCDEF";
+
+    /// <summary>What GuidA's entity ids carry: its hex digits, lower case, cut to the slug budget.</summary>
+    private const string SlugA = "3f2a9c1b0d4e4f608718293a4b5c6";
+
+    private static VmRef Guest(string id, string name) => new(id, name);
+
+    /// <summary>
+    /// A VM's entity ids come from its VM ID, never from its name, and are pinned: an id that moves
+    /// between versions is a new entity to a receiver, and one derived from a name moves on a rename and
+    /// is shared by two VMs of one name. The longest of them sits exactly on the cap.
+    /// </summary>
     [Fact]
-    public void Build_SlugsAVmNameIntoTheTopicSafeAlphabet()
+    public void Build_KeysEveryVmEntityOnTheVmId()
     {
-        var set = MqttEntityTable.Build(new Spy().Spec("Web Server (2)"));
-
-        Assert.NotNull(set.Find("vm_web_server_2_state"));
-        Assert.NotNull(set.Find("vm_web_server_2"));
-        Assert.NotNull(set.Find("vm_web_server_2_switch_override"));
-    }
-
-    /// <summary>Two names that slug alike must not share a slug: the id is the command topic, so one
-    /// VM's commands would run on the other.</summary>
-    [Fact]
-    public void Build_SeparatesTwoVmNamesThatSlugAlike()
-    {
-        var set = MqttEntityTable.Build(new Spy().Spec("Web Server (2)", "web-server-2"));
-
-        Assert.NotNull(set.Find("vm_web_server_2_state"));
-        Assert.NotNull(set.Find("vm_web_server_2_2_state"));
-        Assert.Equal(set.All.Count, set.All.Select(e => e.EntityId).Distinct(StringComparer.Ordinal).Count());
-    }
-
-    /// <summary>A hand-edited <c>"name": null</c>, or one of nothing but punctuation, must not throw the
-    /// whole table out — the app would then publish nothing at all because of one bad config line.</summary>
-    [Fact]
-    public void Build_SurvivesAVmNameWithNothingSluggableInIt()
-    {
-        var set = MqttEntityTable.Build(new Spy().Spec(null!, "..."));
-
-        Assert.NotNull(set.Find("vm_entity_state"));
-        Assert.NotNull(set.Find("vm_entity_2_state"));
-    }
-
-    /// <summary>The cap is on the COMPOSED id, so the slug budget has to leave room for the longest
-    /// suffix any of a VM's entities carries. "Windows Server 2022 Domain Controller" is an ordinary
-    /// Hyper-V name, and an over-length id throws the whole table out — at startup, outside the
-    /// publisher's guard, which takes the app down with it.</summary>
-    [Fact]
-    public void Build_SurvivesAVmNameLongerThanTheEntityIdCapAllows()
-    {
-        var set = MqttEntityTable.Build(new Spy().Spec("Windows Server 2022 Domain Controller"));
+        var set = MqttEntityTable.Build(new Spy().Spec(Guest(GuidA, "Web Server (2)")));
 
         Assert.All(set.All, e => Assert.True(e.EntityId.Length <= MqttEntityId.MaxLength, e.EntityId));
-        // Pinned, not merely bounded: an id that moves between versions is a new entity to a receiver,
-        // and the longest of them sits exactly on the cap.
-        Assert.NotNull(set.Find("vm_windows_server_2022_domain_co"));
-        Assert.NotNull(set.Find("vm_windows_server_2022_domain_co_switch_override"));
+        Assert.NotNull(set.Find($"vm_{SlugA}_state"));
+        Assert.NotNull(set.Find($"vm_{SlugA}"));
+        Assert.NotNull(set.Find($"vm_{SlugA}_switch_override"));
+        Assert.Equal("Web Server (2) state", Get(set, $"vm_{SlugA}_state").Name);   // the name is only shown
+    }
+
+    /// <summary>Two VMs sharing a name are two sets of entities. Keyed by name they were one, and one
+    /// VM's commands ran on the other.</summary>
+    [Fact]
+    public void Build_GivesTwoVmsSharingANameTheirOwnEntities()
+    {
+        var set = MqttEntityTable.Build(new Spy().Spec(Guest(GuidA, "Dev"), Guest(GuidC, "Dev")));
+
+        Assert.Equal(set.All.Count, set.All.Select(e => e.EntityId).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(2, set.All.Count(e => e is MqttSwitch));   // one power switch per VM, both present
+    }
+
+    /// <summary>A rename changes the entities' names and no id, so a receiver keeps every entity.</summary>
+    [Fact]
+    public void Build_ARenameMovesNoId()
+    {
+        var before = MqttEntityTable.Build(new Spy().Spec(Guest(GuidA, "Dev")));
+        var after  = MqttEntityTable.Build(new Spy().Spec(Guest(GuidA, "Dev renamed")));
+
+        Assert.Equal(before.All.Select(e => e.EntityId), after.All.Select(e => e.EntityId));
+        Assert.Equal("Dev renamed state", Get(after, $"vm_{SlugA}_state").Name);
     }
 
     /// <summary>
-    /// The budget is cut from both shapes at once, so the same VM name reaches the same slug under
-    /// either. If it followed the active shape instead, a name that fits today would throw the whole
-    /// table out the moment the setting is flipped — the same startup crash, triggered by a setting
-    /// rather than by a rename — and every one of that VM's entities would move to a new id.
+    /// The budget is cut from both shapes at once, so the same VM reaches the same slug under either. If
+    /// it followed the active shape instead, flipping the setting would move every one of that VM's
+    /// entities to a new id.
     /// </summary>
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void ASlugIsTheSameUnderEitherPowerShape(bool powerButtons)
     {
-        var set = Shaped(powerButtons, "Windows Server 2022 Domain Controller");
+        var set = MqttEntityTable.Build(new Spy().Spec(Guest(GuidA, "Dev")) with { PowerButtons = powerButtons });
 
         Assert.All(set.All, e => Assert.True(e.EntityId.Length <= MqttEntityId.MaxLength, e.EntityId));
-        Assert.NotNull(set.Find("vm_windows_server_2022_domain_co"));
-        Assert.NotNull(set.Find("vm_windows_server_2022_domain_co_switch_override"));
+        Assert.NotNull(set.Find($"vm_{SlugA}"));
+        Assert.NotNull(set.Find($"vm_{SlugA}_switch_override"));
     }
 
     /// <summary>The longest power-button id, pinned. It is shorter than the switch override's, so it
-    /// does not set the budget — but nothing else fixes it in place, and an id that moves between
-    /// versions is a new entity to a receiver.</summary>
+    /// does not set the budget — but nothing else fixes it in place.</summary>
     [Fact]
-    public void ThePowerButtonIdsFitALongVmName()
+    public void ThePowerButtonIdsFitAVmId()
     {
-        var set = Buttons(new Spy(), "Windows Server 2022 Domain Controller");
+        var set = MqttEntityTable.Build(new Spy().Spec(Guest(GuidA, "Dev")) with { PowerButtons = true });
 
-        Assert.NotNull(set.Find("vm_windows_server_2022_domain_co_power_shutdown"));
-        Assert.All(
-            PowerButtonIds("windows_server_2022_domain_co"),
-            id => Assert.NotNull(set.Find(id)));
+        Assert.NotNull(set.Find($"vm_{SlugA}_power_shutdown"));
+        Assert.All(PowerButtonIds(SlugA), id => Assert.NotNull(set.Find(id)));
     }
 
-    /// <summary>Truncation happens before the collision check, not after it: two names that differ only
-    /// past the slug budget still have to reach distinct ids.</summary>
+    /// <summary>Two VM IDs alike as far as the slug budget reaches still get distinct ids: the collision
+    /// check runs on the ids actually emitted, after the cut.</summary>
     [Fact]
-    public void Build_SeparatesTwoLongVmNamesThatTruncateAlike()
+    public void Build_SeparatesTwoVmIdsThatTruncateAlike()
     {
-        var set = MqttEntityTable.Build(new Spy().Spec(
-            "Windows Server 2022 Domain Controller", "Windows Server 2022 Domain Controller (spare)"));
+        var set = MqttEntityTable.Build(new Spy().Spec(Guest(GuidA, "One"), Guest(GuidB, "Two")));
 
         Assert.All(set.All, e => Assert.True(e.EntityId.Length <= MqttEntityId.MaxLength, e.EntityId));
         Assert.Equal(set.All.Count, set.All.Select(e => e.EntityId).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal("One state", Get(set, $"vm_{SlugA}_state").Name);   // the first keeps the plain slug
     }
 
-    /// <summary>Uniqueness has to hold over the ids actually emitted, not over the slugs they are
-    /// composed from: "X switch" slugs to <c>x_switch</c>, whose own switch control lands on the id "X"'s
-    /// diagnostics sensor already claims. Asserted both ways round, because whichever VM is allocated
-    /// first is the one that keeps the plain id.</summary>
-    [Theory]
-    [InlineData("Dev", "Dev switch")]
-    [InlineData("Dev switch", "Dev")]
-    public void Build_SeparatesAVmWhoseIdWouldLandOnAnothersEntity(string first, string second)
+    /// <summary>A managed VM an older settings document left unidentified has no ID to key entities on,
+    /// so it publishes nothing rather than something keyed on its name.</summary>
+    [Fact]
+    public void Build_LeavesOutAVmNotIdentifiedYet()
     {
-        var set = MqttEntityTable.Build(new Spy().Spec(first, second));
+        var set = MqttEntityTable.Build(new Spy().Spec(Guest("", "Old entry")));
 
-        Assert.Equal(set.All.Count, set.All.Select(e => e.EntityId).Distinct(StringComparer.Ordinal).Count());
-        Assert.Equal(2, set.All.Count(e => e is MqttSwitch));   // one power switch per VM, both present
+        Assert.DoesNotContain(set.All, e => e.EntityId.StartsWith(MqttEntityTable.VmIdPrefix, StringComparison.Ordinal));
     }
 
     /// <summary>The slug budget and the collision check are both composed from the declared suffix list,
@@ -308,16 +309,17 @@ public class MqttEntityTableTests
             suffix => Assert.Contains(suffix, MqttEntityTable.VmIdSuffixes));
     }
 
-    /// <summary>Ids are allocated in config order, so the same VM list always produces the same ids —
-    /// an entity whose id moved between runs looks like a different entity to a receiver.</summary>
+    /// <summary>A VM keeps its ids whatever its place in the list: they come from its own VM ID, so an
+    /// entity whose id moved between runs — a different entity to a receiver — cannot come from a
+    /// reordering.</summary>
     [Fact]
-    public void Build_AllocatesIdsInConfigOrder()
+    public void Build_GivesAVmTheSameIdsWhateverItsPlaceInTheList()
     {
-        var forwards = MqttEntityTable.Build(new Spy().Spec("Web Server (2)", "web-server-2"));
-        var reversed = MqttEntityTable.Build(new Spy().Spec("web-server-2", "Web Server (2)"));
+        var forwards = MqttEntityTable.Build(new Spy().Spec(Guest(GuidA, "Web"), Guest(GuidC, "Db")));
+        var reversed = MqttEntityTable.Build(new Spy().Spec(Guest(GuidC, "Db"), Guest(GuidA, "Web")));
 
-        Assert.Equal("Web Server (2) state", Get(forwards, "vm_web_server_2_state").Name);
-        Assert.Equal("web-server-2 state",   Get(reversed, "vm_web_server_2_state").Name);
+        Assert.Equal("Web state", Get(forwards, $"vm_{SlugA}_state").Name);
+        Assert.Equal("Web state", Get(reversed, $"vm_{SlugA}_state").Name);
     }
 
     // ── The VM list changing at runtime ─────────────────────────────────────────
@@ -341,7 +343,7 @@ public class MqttEntityTableTests
     public void Build_DropsAVmRemovedAtRuntime()
     {
         var spy = new Spy();
-        spy.State.SetVms([new VmStatus { Name = "Build", State = "Running" }]);
+        spy.State.SetVms([new VmStatus { Id = "Build", Name = "Build", State = "Running" }]);
         MqttEntityTable.Build(spy.Spec("Dev", "Build"));
 
         var after = MqttEntityTable.Build(spy.Spec("Dev"));
@@ -369,7 +371,7 @@ public class MqttEntityTableTests
 
         Assert.Equal(MqttPayload.None, state.ReadState());
 
-        spy.State.SetVms([new VmStatus { Name = "Dev", State = "Running" }]);
+        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Running" }]);
 
         Assert.Equal("Running", state.ReadState());
     }
@@ -398,8 +400,8 @@ public class MqttEntityTableTests
         var spy = new Spy();
         spy.Ips["Dev"] = "   ";
         var set = MqttEntityTable.Build(spy.Spec("Dev"));
-        spy.State.SetVms([new VmStatus { Name = "Dev", State = "Off", Switch = "" }]);
-        spy.State.SetNetwork(new MatchResult("Office", "Bridged", []) { HostAdapterName = "" });
+        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Off", Switch = "" }]);
+        spy.State.SetNetwork(new MatchResult("office", "Office", "SW-BRIDGED", "Bridged", []) { HostAdapterName = "" });
 
         Assert.Equal(MqttPayload.None, Get(set, "vm_dev_switch").ReadState());
         Assert.Equal(MqttPayload.None, Get(set, "vm_dev_ip").ReadState());
@@ -413,7 +415,7 @@ public class MqttEntityTableTests
     {
         var spy = new Spy();
         var set = MqttEntityTable.Build(spy.Spec());
-        spy.State.SetNetwork(new MatchResult("Office", "Bridged", ["Dev"])
+        spy.State.SetNetwork(new MatchResult("office", "Office", "SW-BRIDGED", "Bridged", [new VmRef("Dev", "Dev")])
         {
             HostAdapterName = "Dock LAN",
             HostIp          = "10.0.0.5",
@@ -442,7 +444,7 @@ public class MqttEntityTableTests
     {
         var spy = new Spy();
         var set = MqttEntityTable.Build(spy.Spec());
-        spy.State.SetNetwork(new MatchResult("Office", "Bridged", []) { ApplyStatus = status });
+        spy.State.SetNetwork(new MatchResult("office", "Office", "SW-BRIDGED", "Bridged", []) { ApplyStatus = status });
 
         Assert.Equal(expected, Get(set, "network_bridge_healthy").ReadState());
     }
@@ -455,7 +457,7 @@ public class MqttEntityTableTests
         var set = MqttEntityTable.Build(spy.Spec("Dev"));
         spy.State.SetVms([new VmStatus
         {
-            Name = "Dev", State = "Running", Switch = "Bridged", Uptime = "03:14:00",
+            Id = "Dev", Name = "Dev", State = "Running", Switch = "Bridged", Uptime = "03:14:00",
         }]);
         spy.State.SetOperation(new VmOperationProgress("Dev", VmOpKind.Start, VmOpPhase.Succeeded, null, null));
 
@@ -475,7 +477,7 @@ public class MqttEntityTableTests
     {
         var spy = new Spy();
         var set = MqttEntityTable.Build(spy.Spec("Dev"));
-        spy.State.SetVms([new VmStatus { Name = "Dev", State = "Running" }]);
+        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Running" }]);
 
         Send(set.Find("vm_dev_power")!, "Shutdown").Run!(CancellationToken.None).Wait();
 
@@ -500,7 +502,7 @@ public class MqttEntityTableTests
             var set = MqttEntityTable.Build(spy.Spec("Dev"));
             spy.State.SetVms([new VmStatus
             {
-                Name = "Dev", State = "Running", Cpu = 17,
+                Id = "Dev", Name = "Dev", State = "Running", Cpu = 17,
                 MemAssigned = 1_234_567_890, VhdBytes = 1_234_567_890,
             }]);
 
@@ -540,7 +542,7 @@ public class MqttEntityTableTests
     {
         var spy = new Spy();
         var set = MqttEntityTable.Build(spy.Spec("Dev"));
-        spy.State.SetVms([new VmStatus { Name = "Dev", State = state }]);
+        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = state }]);
 
         var verdict = Send(Get(set, "vm_dev"), payload);
         Assert.True(verdict.IsAccepted);
@@ -554,7 +556,7 @@ public class MqttEntityTableTests
     {
         var spy = new Spy();
         var set = MqttEntityTable.Build(spy.Spec("Dev"));
-        spy.State.SetVms([new VmStatus { Name = "Dev", State = "Off" }]);
+        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Off" }]);
 
         var verdict = Send(Get(set, "vm_dev"), MqttPayload.Off);
 
@@ -568,7 +570,7 @@ public class MqttEntityTableTests
     {
         var spy = new Spy();
         var set = MqttEntityTable.Build(spy.Spec("Dev", "Build"));
-        spy.State.SetVms([new VmStatus { Name = "Build", State = "Running" }]);
+        spy.State.SetVms([new VmStatus { Id = "Build", Name = "Build", State = "Running" }]);
 
         var verdict = Send(Get(set, "vm_build_power"), "Pause");
         Assert.True(verdict.IsAccepted);
@@ -582,7 +584,7 @@ public class MqttEntityTableTests
     {
         var spy = new Spy();
         var set = MqttEntityTable.Build(spy.Spec("Dev"));
-        spy.State.SetVms([new VmStatus { Name = "Dev", State = "Running" }]);
+        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Running" }]);
 
         var verdict = Send(Get(set, "vm_dev_power"), "Start");
 
@@ -598,7 +600,7 @@ public class MqttEntityTableTests
     {
         var spy = new Spy();
         var set = MqttEntityTable.Build(spy.Spec("Dev"));
-        spy.State.SetVms([new VmStatus { Name = "Dev", State = "Off" }]);
+        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Off" }]);
 
         var verdict = Send(Get(set, "vm_dev_power"), "Reboot");
 
@@ -647,7 +649,7 @@ public class MqttEntityTableTests
     {
         var spy = new Spy();
         var set = Buttons(spy, "Dev");
-        spy.State.SetVms([new VmStatus { Name = "Dev", State = "Running" }]);
+        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Running" }]);
 
         Assert.All(PowerButtonIds("dev"), id =>
         {
@@ -669,7 +671,7 @@ public class MqttEntityTableTests
     {
         var spy = new Spy();
         var set = Buttons(spy, "Dev", "Build");
-        spy.State.SetVms([new VmStatus { Name = "Build", State = state }]);
+        spy.State.SetVms([new VmStatus { Id = "Build", Name = "Build", State = state }]);
 
         string id = $"vm_build{MqttEntityTable.PowerButtonSuffix(kind)}";
         var verdict = Send(Get(set, id), MqttButton.DefaultPress);
@@ -686,7 +688,7 @@ public class MqttEntityTableTests
     {
         var spy = new Spy();
         var set = Buttons(spy, "Dev");
-        spy.State.SetVms([new VmStatus { Name = "Dev", State = "Running" }]);
+        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Running" }]);
 
         var verdict = Send(Get(set, "vm_dev_power_start"), MqttButton.DefaultPress);
 
@@ -710,7 +712,7 @@ public class MqttEntityTableTests
     {
         var spy = new Spy();
         var set = Buttons(spy, "Dev");
-        spy.State.SetVms([new VmStatus { Name = "Dev", State = state }]);
+        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = state }]);
 
         var accepted = MqttCommandGate.PowerVerbs
             .Where(kind => Send(
@@ -765,17 +767,28 @@ public class MqttEntityTableTests
     /// <summary>The signature is what decides whether the document is rebuilt and re-announced. A shape
     /// change has to move it — otherwise the flip is saved, nothing is re-announced, and the old shape
     /// stands on the broker until something unrelated changes the VM list.</summary>
+    private static readonly VmRef Dev   = new(GuidA, "Dev");
+    private static readonly VmRef Build = new(GuidC, "Build");
+
     [Fact]
     public void Signature_MovesWhenThePowerShapeChanges()
         => Assert.NotEqual(
-            MqttEntityTable.Signature(["Dev", "Build"], powerButtons: false),
-            MqttEntityTable.Signature(["Dev", "Build"], powerButtons: true));
+            MqttEntityTable.Signature([Dev, Build], powerButtons: false),
+            MqttEntityTable.Signature([Dev, Build], powerButtons: true));
 
     [Fact]
     public void Signature_MovesWhenTheVmListChanges()
         => Assert.NotEqual(
-            MqttEntityTable.Signature(["Dev"], powerButtons: false),
-            MqttEntityTable.Signature(["Dev", "Build"], powerButtons: false));
+            MqttEntityTable.Signature([Dev], powerButtons: false),
+            MqttEntityTable.Signature([Dev, Build], powerButtons: false));
+
+    /// <summary>A rename moves no id but does move the entities' names, which only a re-announcement
+    /// carries to the receiver.</summary>
+    [Fact]
+    public void Signature_MovesWhenAVmIsRenamed()
+        => Assert.NotEqual(
+            MqttEntityTable.Signature([Dev], powerButtons: false),
+            MqttEntityTable.Signature([Dev with { Name = "Dev renamed" }], powerButtons: false));
 
     /// <summary>…and stands still otherwise, including for a hand-edited <c>"name": null</c>: a config
     /// write that left the table alone must not re-announce the whole document.</summary>
@@ -783,11 +796,11 @@ public class MqttEntityTableTests
     public void Signature_StandsStillWhenNothingTheTableReadsMoved()
     {
         Assert.Equal(
-            MqttEntityTable.Signature(["Dev", "Build"], powerButtons: true),
-            MqttEntityTable.Signature(["Dev", "Build"], powerButtons: true));
+            MqttEntityTable.Signature([Dev, Build], powerButtons: true),
+            MqttEntityTable.Signature([new VmRef(GuidA, "Dev"), new VmRef(GuidC, "Build")], powerButtons: true));
         Assert.Equal(
-            MqttEntityTable.Signature([null, "Build"], powerButtons: false),
-            MqttEntityTable.Signature(["", "Build"], powerButtons: false));
+            MqttEntityTable.Signature([new VmRef(GuidA, null!), Build], powerButtons: false),
+            MqttEntityTable.Signature([new VmRef(GuidA, ""), Build], powerButtons: false));
     }
 
     // ── The switch override ─────────────────────────────────────────────────────
@@ -832,7 +845,7 @@ public class MqttEntityTableTests
         Assert.True(verdict.IsAccepted);
         verdict.Run!(CancellationToken.None).Wait();
 
-        Assert.Equal(("Dev", "Bridged"), Assert.Single(spy.Overrides));
+        Assert.Equal(("Dev", Spy.SwitchIdOf("Bridged")), Assert.Single(spy.Overrides));   // bound by switch ID
     }
 
     /// <summary>The shown selection is always one of the options (issue #84): a VM on a switch no rule
@@ -846,11 +859,12 @@ public class MqttEntityTableTests
         var set = MqttEntityTable.Build(spy.Spec("Dev"));
         var entity = Get(set, "vm_dev_switch_override");
 
-        spy.State.SetVms([new VmStatus { Name = "Dev", State = "Running", Switch = "Default Switch" }]);
+        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Running", Switch = "Default Switch", SwitchId = "SW-DEFAULT" }]);
         Assert.Equal(MqttPayload.None, entity.ReadState());
         Assert.Equal("Default Switch", Get(set, "vm_dev_switch").ReadState());   // the actual switch stays readable
 
-        spy.State.SetVms([new VmStatus { Name = "Dev", State = "Running", Switch = "bridged" }]);
+        // Matched by switch ID, whatever the case WMI spells it in, and shown in the options' own label.
+        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Running", Switch = "renamed", SwitchId = Spy.SwitchIdOf("Bridged").ToLowerInvariant() }]);
         Assert.Equal("Bridged", entity.ReadState());
         Assert.True(Send(entity, entity.ReadState()!).IsAccepted);
     }

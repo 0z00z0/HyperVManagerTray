@@ -275,7 +275,14 @@ public partial class App : Application
             // every WMI entry point still connects for itself if this has not landed (or failed).
             _ = _hyperV.PrewarmAsync();
 
-            _monitor.Start();
+            // The first evaluation waits for the identity migration: an older settings document names
+            // its switches and VMs, and a pass over names nothing can be found by would bind nothing.
+            // Later reloads that bring a rule without an ID (a hand edit) have it written down too.
+            _config.ConfigReloaded += (_, e) =>
+            {
+                if (e.Config.Rules.Any(r => r.IdGeneratedOnLoad)) _ = Task.Run(RunIdentityMigration);
+            };
+            _ = StartAfterIdentityMigrationAsync();
 
             // Drive the tray tooltip off VmService's push channel (issue #16, conversion #2):
             //   • OnVmStatuses rebuilds the tooltip from VmService's caches whenever a refresh raises
@@ -605,9 +612,9 @@ public partial class App : Application
             {
                 // The rules' INTENT (a non-fallback switch was picked) only decides WHICH success colour
                 // to use once the apply is confirmed — NetworkStatusUi.IconFor gates it on the outcome.
-                // Deriving the icon straight from result.VirtualSwitch, as this did before issue #37, is
-                // what let a failed bind show a confident green "bridged".
-                bool bridgedTarget = result.VirtualSwitch != _config!.Current.Fallback.VirtualSwitch;
+                // Deriving the icon straight from the switch, as this did before issue #37, is
+                // what let a failed bind show a confident green "bridged". Compared by switch ID.
+                bool bridgedTarget = !HostIdentity.Same(result.SwitchId, _config!.Current.Fallback.SwitchId);
                 var  state         = NetworkStatusUi.IconFor(result.ApplyStatus, bridgedTarget);
                 if (state != _iconState)
                 {
@@ -668,7 +675,70 @@ public partial class App : Application
     {
         if (kind == Models.HyperVServiceKind.VirtualMachineManagement && state != Models.HyperVServiceState.Unknown)
             _vm?.SetServiceAvailable(state == Models.HyperVServiceState.Running);
+        // A host that could not be read at start-up can be now: names left waiting get their identifiers.
+        if (kind == Models.HyperVServiceKind.VirtualMachineManagement && state == Models.HyperVServiceState.Running)
+            _ = Task.Run(RunIdentityMigration);
         PostTooltipFromCaches();
+    }
+
+    // ── Identity migration ──────────────────────────────────────────────────────
+
+    // One migration pass at a time. Waited on rather than skipped: start-up and vmms reaching running
+    // arrive together, and the first evaluation must not begin while the other trigger's pass is writing.
+    private readonly SemaphoreSlim _migrationGate = new(1, 1);
+    // The unresolved names already reported, so each is logged once per run however often it is seen.
+    private readonly HashSet<string> _reportedUnresolved = new(StringComparer.Ordinal);
+    private bool _unresolvedAnnounced;
+
+    /// <summary>Runs the identity migration once, then starts the network monitor whatever it found. A
+    /// host that cannot be read within the bound starts the monitor on the names as they are.</summary>
+    private async Task StartAfterIdentityMigrationAsync()
+    {
+        try { await Task.Run(RunIdentityMigration).WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false); }
+        catch (Exception ex) { _loggerFactory?.CreateLogger("App").LogWarning(ex, "Identity migration did not finish before the first evaluation"); }
+        _monitor?.Start();
+    }
+
+    /// <summary>
+    /// Turns the names an older settings document holds into identifiers, against the live host, and has
+    /// ConfigManager write the result. A name matching exactly one object is migrated; one matching none
+    /// or several stays as it is and is reported once in the log and, the first time, in a balloon —
+    /// Settings lists it for as long as it remains. Never throws.
+    /// </summary>
+    private void RunIdentityMigration()
+    {
+        if (_config is null) return;
+        var log = _loggerFactory?.CreateLogger("App");
+        _migrationGate.Wait();
+        try
+        {
+            if (!ConfigIdentityMigration.HasWork(_config.Current)) return;
+
+            var host   = HostInventory.ReadHyperV();
+            var result = _config.ApplyIdentityMigration(current => ConfigIdentityMigration.Plan(current, host));
+            if (result is null) return;
+
+            foreach (var line in result.Resolved) log?.LogInformation("Identity migration: {Line}", line);
+
+            // Only a judged name is news: with the host unreadable nothing was decided yet.
+            var judged = result.Unresolved.Where(u => u.Matches is not null).ToList();
+            List<UnresolvedName> fresh;
+            lock (_reportedUnresolved) fresh = [.. judged.Where(u => _reportedUnresolved.Add(u.Key))];
+            foreach (var item in fresh) log?.LogWarning("Identity migration: {Item}", item.Describe());
+            if (!host.Readable)
+                log?.LogInformation("Identity migration: Hyper-V could not be read — names are kept until it can be");
+
+            if (fresh.Count > 0 && !_unresolvedAnnounced)
+            {
+                _unresolvedAnnounced = true;
+                ShowBalloon($"{AppInfo.Name} — settings",
+                            "Some settings name a VM, virtual switch or network adapter that could not be "
+                            + "identified on this host. Settings lists them; nothing acts on them until they are fixed.",
+                            isError: true, suppressWhenDashboardVisible: false);
+            }
+        }
+        catch (Exception ex) { log?.LogWarning(ex, "Identity migration failed"); }
+        finally { _migrationGate.Release(); }
     }
 
     /// <summary>
@@ -816,7 +886,7 @@ public partial class App : Application
     private string BuildTooltipText()
     {
         var applied = _monitor?.LastApplied;
-        var vmNames = _config!.Current.VirtualMachines.Select(v => v.Name).ToList();
+        var vms = _config!.Current.IdentifiedVms;
 
         // No published result yet ⇒ the first evaluation is still in flight ⇒ the app is starting up
         // (issue #56). This is the ONLY thing a null LastApplied can mean: _lastApplied is set by the
@@ -827,7 +897,8 @@ public partial class App : Application
         // failed bind must not read as a plain, healthy "Switch: Bridged". Empty for a confirmed apply.
         // Both halves of the row are composed in NetworkStatusUi now — the name used to be built here as
         // `?? "No switch"`, which asserted an unlooked-at host for the whole startup window (issue #56).
-        var switchName   = NetworkStatusUi.TooltipSwitchName(applied?.VirtualSwitch, status);
+        var switchName   = NetworkStatusUi.TooltipSwitchName(
+            applied is null ? null : string.IsNullOrWhiteSpace(applied.SwitchName) ? applied.SwitchId : applied.SwitchName, status);
         var switchSuffix = NetworkStatusUi.TooltipSwitchSuffix(status);
 
         var lines = new System.Collections.Generic.List<string>
@@ -864,11 +935,11 @@ public partial class App : Application
             }
 
         int vmsWithIp = 0;
-        foreach (var name in vmNames)
+        foreach (var vm in vms)
         {
-            if (_vm!.GetCachedVmIp(name) is { } ip)
+            if (_vm!.GetCachedVmIp(vm.Id) is { } ip)
             {
-                lines.Add(TruncateLine($"\U0001F4E6 {name}: {ip}", 63));   // 📦 box (VM) — distinct from the 🖥 app row; one row per VM with a known IP
+                lines.Add(TruncateLine($"\U0001F4E6 {vm.Shown}: {ip}", 63));   // 📦 box (VM) — distinct from the 🖥 app row; one row per VM with a known IP
                 vmsWithIp++;
             }
         }
@@ -877,10 +948,10 @@ public partial class App : Application
         // like "the VM is running but its IP never shows" otherwise unfalsifiable from the log
         // alone. This line gives a next occurrence something concrete to compare against
         // VmService's own state/summary logging.
-        if (vmNames.Count > 0 && vmsWithIp < vmNames.Count)
+        if (vms.Count > 0 && vmsWithIp < vms.Count)
             _loggerFactory?.CreateLogger("App").LogDebug(
                 "Tooltip: {WithIp}/{Total} configured VM(s) have a cached guest IP (switch: {Switch})",
-                vmsWithIp, vmNames.Count, switchName);
+                vmsWithIp, vms.Count, switchName);
 
         return ClampTooltip(string.Join("\n", lines));
     }
@@ -965,7 +1036,7 @@ public partial class App : Application
         {
             await Task.Delay(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
 
-            foreach (var sw in _config.Current.RuleSwitches)
+            foreach (var sw in _config.Current.RuleSwitches.ToList())
                 await _hyperV.RepairHostVNicAsync(sw).ConfigureAwait(false);
         }
         catch { /* best-effort cleanup; never surface */ }
