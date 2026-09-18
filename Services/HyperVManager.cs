@@ -215,7 +215,7 @@ public sealed class HyperVManager : IDisposable
 
             // The caller passes the physical NIC's interface GUID (NetworkInterface.Id), which neither a
             // rename nor a new connection alias changes. Map it to the adapter's MAC so we can find the
-            // matching Msvm_ExternalEthernetPort, which has no notion of the Windows alias.
+            // matching wired or Wi-Fi port, which has no notion of the Windows alias.
             var (mac, desc) = ResolveAdapter(adapterInterfaceId);
             if (mac is null)
             {
@@ -231,7 +231,8 @@ public sealed class HyperVManager : IDisposable
             if (settings is null) { _logger.LogWarning("Switch '{Switch}' has no settings data — cannot bind", switchName); return SwitchBindOutcome.Failed; }
 
             using var extPort = FindExternalPort(scope, mac, desc);
-            if (extPort is null) { _logger.LogWarning("No external Ethernet port matches adapter '{Adapter}' — cannot bind '{Switch}'", adapterName, switchName); return SwitchBindOutcome.Failed; }
+            if (extPort is null) { _logger.LogWarning("No Hyper-V wired or Wi-Fi port matches adapter '{Adapter}' — cannot bind '{Switch}'", adapterName, switchName); return SwitchBindOutcome.Failed; }
+            _logger.LogInformation("Binding '{Switch}' to adapter '{Adapter}' through {PortClass}", switchName, adapterName, extPort.ClassPath.ClassName);
             var extPortPath = extPort.Path.Path;
 
             var ports = SwitchPorts(scope, sw);
@@ -505,15 +506,28 @@ public sealed class HyperVManager : IDisposable
         return (mac.Length == 12 ? mac : null, HostIdentity.Bare(nic.Id));
     }
 
-    /// <summary>Finds the <c>Msvm_ExternalEthernetPort</c> for a physical adapter, preferring a MAC
-    /// (<c>PermanentAddress</c>) match and falling back to the adapter's interface GUID in <c>DeviceID</c>.
-    ///
-    /// <para><b>Wi-Fi caveat (U5):</b> this queries only <c>Msvm_ExternalEthernetPort</c>. A wireless
-    /// adapter surfaces as <c>Msvm_WiFiPort</c> instead and would not be found here — binding a switch onto
-    /// Wi-Fi is out of scope for this path (and unusual for this app's docked-Ethernet use case).</para></summary>
-    private static ManagementObject? FindExternalPort(ManagementScope scope, string mac, string? desc)
+    /// <summary>Every port Hyper-V can bind an external switch to: wired and Wi-Fi.</summary>
+    private List<ManagementObject> UplinkPortCandidates(ManagementScope scope)
     {
         var candidates = Query(scope, "SELECT * FROM Msvm_ExternalEthernetPort").ToList();
+        // A host without Wi-Fi support in Hyper-V may not serve the class; wired binding must not fail for that.
+        try { candidates.AddRange(Query(scope, "SELECT * FROM Msvm_WiFiPort")); }
+        catch (Exception ex) { _logger.LogDebug(ex, "Msvm_WiFiPort query failed — searching wired ports only"); }
+        return candidates;
+    }
+
+    /// <summary>Finds the Hyper-V port for a physical adapter — a wired <c>Msvm_ExternalEthernetPort</c> or a
+    /// <c>Msvm_WiFiPort</c> — preferring a MAC (<c>PermanentAddress</c>) match and falling back to the
+    /// adapter's interface GUID in <c>DeviceID</c>. Both classes carry the same two properties, so one
+    /// matcher serves wired and Wi-Fi adapters alike.
+    ///
+    /// <para>On Wi-Fi, Hyper-V puts a single-adapter Microsoft bridge between the switch and the adapter
+    /// that rewrites each VM's hardware address to the adapter's own. Microsoft documents that bridge for
+    /// switch creation; whether re-pointing an existing switch's uplink creates it the same way has not
+    /// been measured on a host.</para></summary>
+    private ManagementObject? FindExternalPort(ManagementScope scope, string mac, string? desc)
+    {
+        var candidates = UplinkPortCandidates(scope);
         ManagementObject? byMac = null, byDesc = null;
         foreach (var p in candidates)
         {
