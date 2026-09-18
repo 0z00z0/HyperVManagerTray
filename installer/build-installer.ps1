@@ -97,7 +97,11 @@ if (Test-Path $publishedExe) {
 # -- 3. Locate Inno Setup compiler --------------------------------------------
 $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
 if (-not $iscc) {
+    # Inno Setup 7 first: the release workflow compiles with it, and a hand build should match.
     foreach ($p in @(
+        "${env:ProgramFiles}\Inno Setup 7\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+        "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe",
         "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",     # winget per-user install
         "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
         "${env:ProgramFiles}\Inno Setup 6\ISCC.exe")) {
