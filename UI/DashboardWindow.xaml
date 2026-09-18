@@ -109,6 +109,17 @@
                 </Border>
             </StackPanel>
 
+            <!-- HYPER-V SERVICES card (issue #114): one row per service, built in code-behind -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="HYPER-V SERVICES" Style="{StaticResource SectionLabelStyle}"/>
+                <Border CornerRadius="6" Padding="10,8,10,8"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1">
+                    <StackPanel x:Name="ServicePanel" Spacing="6"/>
+                </Border>
+            </StackPanel>
+
             <!-- VIRTUAL MACHINES section label + per-VM cards (built in code-behind) -->
             <StackPanel Spacing="6">
                 <TextBlock Text="VIRTUAL MACHINES" Style="{StaticResource SectionLabelStyle}"/>

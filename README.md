@@ -147,7 +147,8 @@ schtasks /Query /TN "HyperVManagerTray" /V /FO LIST
 A borderless Mica popup titled **"Hyper-V Manager"** near the tray:
 
 - **HOST NETWORK** — Adapter, IP, Gateway, DNS of the active host network, and the rule row reports the actual apply **outcome**, not just which rule matched.
-- **Per-VM cards** (one per **managed** VM) — switch name and active rule shown as a subtitle; state (Running/Off/Paused/Saved, plus live transition states such as "Restoring (10%)"); CPU / memory / VHD-size meters when running; power buttons appropriate to the state: **Start**, **Shutdown**, **Pause**, **Resume**, **Save**, **Connect**, **Start & Connect**. A power action shows its progress on the card and reports failure rather than going quiet.
+- **HYPER-V SERVICES** — the state of Hyper-V Virtual Machine Management and the Hyper-V Host Compute Service, each with a **Start** or **Stop** button. A stop is refused while a managed VM is running or paused, with an offer to save those VMs first and then stop. Stopping the Host Compute Service asks first, since it also stops WSL 2, Windows Sandbox and Docker. The service start type is never changed, so a stop lasts until the next restart.
+- **Per-VM cards** (one per **managed** VM) — switch name and active rule shown as a subtitle; state (Running/Off/Paused/Saved, plus live transition states such as "Restoring (10%)"); CPU / memory / VHD-size meters when running; power buttons appropriate to the state: **Start**, **Shutdown**, **Pause**, **Resume**, **Save**, **Connect**, **Start & Connect**. A power action shows its progress on the card and reports failure rather than going quiet. While a Hyper-V service is stopped the cards are greyed and offer only **Start**, which starts the stopped services and then the VM; with Virtual Machine Management stopped the cards show no values at all, since nothing about the VMs can be read.
 
 Metrics refresh every ~2.5 s **only while the dashboard is open**, so a closed dashboard costs no CPU.
 
@@ -322,6 +323,7 @@ window shows both lists together.
 | [Microsoft.Extensions.Logging](https://www.nuget.org/packages/Microsoft.Extensions.Logging) | 10.0.12 | Microsoft | Logging abstraction the whole app codes against; the sink behind it is NLog | MIT |
 | [NLog](https://nlog-project.org/) | 6.2.1 | Jarek Kowalski, Kim Christensen, Julian Verdurmen (NLog Project) | File sink behind the logging abstraction — writes `switcher.log` / `vm-power.log` / `ui.log` and rotates them at 2 MB (issue #55) | BSD-3-Clause² |
 | [System.Management](https://www.nuget.org/packages/System.Management) | 10.0.12 | Microsoft | WMI access (`root\virtualization\v2`) for VM status/power and switch binding — replaced the earlier PowerShell path | MIT |
+| [System.ServiceProcess.ServiceController](https://www.nuget.org/packages/System.ServiceProcess.ServiceController) | 10.0.12 | Microsoft | Reads, starts and stops the Hyper-V services through the Service Control Manager (issue #114) | MIT |
 | [TaskScheduler](https://github.com/dahall/taskscheduler) | 2.12.2 | David Hall | Typed Task Scheduler API behind `Services\StartupManager.cs` — `schtasks /Create` cannot set the battery flags that stopped the logon task starting the app on battery (issue #61) | MIT |
 
 ¹ The NuGet packages ship under the Microsoft Software License Terms; the Windows App SDK

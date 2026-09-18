@@ -23,6 +23,7 @@ public partial class App : Application
     private ConfigManager?  _config;
     private HyperVManager?  _hyperV;   // switch binding / host-vNIC repair (native WMI, issue #17)
     private VmService?      _vm;       // VM status/metrics/power/IPs via WMI
+    private HyperVServiceMonitor? _services;   // vmms / Host Compute Service state, start and stop (issue #114)
     private NetworkMonitor? _monitor;
     private MqttService?    _mqtt;     // broker session and discovery document (issue #75)
     private StartupManager  _startup = null!;
@@ -236,6 +237,12 @@ public partial class App : Application
             _hyperV  = new HyperVManager(_loggerFactory.CreateLogger<HyperVManager>());
             _vm      = new VmService(_loggerFactory.CreateLogger<VmService>(), powerLog);
             _monitor = new NetworkMonitor(_config, _hyperV, _vm, _loggerFactory.CreateLogger<NetworkMonitor>(), powerLog);
+
+            // Issue #114: vmms' state gates every VM read. Subscribed before the first poll so the
+            // first state read reaches VmService; the poll itself runs on the thread pool.
+            _services = new HyperVServiceMonitor(powerLog);
+            _services.StateChanged += OnServiceStateChanged;
+            _services.Start();
 
             InitTrayIcon();
 
@@ -648,6 +655,18 @@ public partial class App : Application
     private void OnVmStatuses(IReadOnlyList<Models.VmStatus> statuses) => PostTooltipFromCaches();
 
     /// <summary>
+    /// <see cref="HyperVServiceMonitor.StateChanged"/> (background thread). vmms leaving or reaching the
+    /// running state switches VmService's reads off or on; Unknown is a failed read, not a change, so it
+    /// leaves VmService as it was. The tooltip names any service that is down.
+    /// </summary>
+    private void OnServiceStateChanged(Models.HyperVServiceKind kind, Models.HyperVServiceState state)
+    {
+        if (kind == Models.HyperVServiceKind.VirtualMachineManagement && state != Models.HyperVServiceState.Unknown)
+            _vm?.SetServiceAvailable(state == Models.HyperVServiceState.Running);
+        PostTooltipFromCaches();
+    }
+
+    /// <summary>
     /// Shows a tray balloon for a failed VM power action, but only when the dashboard isn't visible —
     /// the dashboard already surfaces the failure on the card, so a toast would be redundant there.
     ///
@@ -828,6 +847,17 @@ public partial class App : Application
                          63 - switchSuffix.Length) + switchSuffix,
         };
 
+        // A service that is not running is named (issue #114): with vmms down the VM rows below are gone,
+        // and the tooltip should say why rather than simply fall silent.
+        if (_services is not null)
+            foreach (var kind in Models.HyperVServiceNames.All)
+            {
+                var serviceState = _services.State(kind);
+                if (serviceState is Models.HyperVServiceState.Running or Models.HyperVServiceState.Unknown) continue;
+                lines.Add(TruncateLine(
+                    $"⏸ {Models.HyperVServiceNames.ShortLabel(kind)}: {Models.HyperVServiceNames.StateText(serviceState)}", 63));
+            }
+
         int vmsWithIp = 0;
         foreach (var name in vmNames)
         {
@@ -987,7 +1017,7 @@ public partial class App : Application
         // channel the tray's network actions use (issue #45), with suppression off for the same reason:
         // it answers a button the user just clicked, and the dashboard is visible by definition when
         // they click it, so the default suppress-when-visible would swallow the report.
-        _dashboard = new DashboardWindow(_config!, _monitor!, _hyperV!, _vm!,
+        _dashboard = new DashboardWindow(_config!, _monitor!, _hyperV!, _vm!, _services!,
                                          (title, message, isError) =>
                                              ShowBalloon(title, message, isError, suppressWhenDashboardVisible: false),
                                          _menu!.ShowSettings);   // issue #79 — same singleton the tray menu opens
@@ -1030,6 +1060,7 @@ public partial class App : Application
         _trayIcon?.Dispose();
         _iconImage?.Dispose();
         _monitor?.Dispose();
+        _services?.Dispose();
         _vm?.Dispose();
         _config?.Dispose();
         _hyperV?.Dispose();

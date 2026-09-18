@@ -60,6 +60,9 @@
     <PackageReference Include="H.NotifyIcon.WinUI" />
     <PackageReference Include="System.Drawing.Common" />
     <PackageReference Include="System.Management" />
+    <!-- Reads, starts and stops the Hyper-V services through the Service Control Manager
+         (Services\HyperVServiceMonitor.cs, issue #114); WMI cannot report vmms being stopped. -->
+    <PackageReference Include="System.ServiceProcess.ServiceController" />
     <!-- Typed Task Scheduler API behind Services\StartupManager.cs. schtasks /Create cannot set
          DisallowStartIfOnBatteries/StopIfGoingOnBatteries, and their defaults are what stopped the
          logon task ever starting the app on battery (issue #61). -->

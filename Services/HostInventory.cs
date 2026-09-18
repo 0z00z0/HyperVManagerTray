@@ -87,7 +87,7 @@ public static class HostInventory
             // No EnablePrivileges: this connection only ever reads. The mutating paths ask for
             // privileges because they need them; a picker must not.
             scope = new ManagementScope(Namespace, new ConnectionOptions());
-            scope.Connect();
+            WmiLimits.ConnectBounded(scope);   // a stopped or stopping vmms must not hold the picker
         }
         catch
         {
@@ -113,7 +113,7 @@ public static class HostInventory
         {
             var names = new List<string>();
             using var s = new ManagementObjectSearcher(scope,
-                new ObjectQuery("SELECT ElementName FROM Msvm_VirtualEthernetSwitch"));
+                new ObjectQuery("SELECT ElementName FROM Msvm_VirtualEthernetSwitch"), WmiLimits.Enumeration());
             // `using` on the COLLECTION too, not just the searcher and each object: Get() defaults to
             // Rewindable=true, so the returned collection holds its own IEnumWbemClassObject clone which
             // disposing the searcher does NOT release. See the Read() remarks for why that matters here.
@@ -136,7 +136,7 @@ public static class HostInventory
         try
         {
             using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
-                "SELECT ElementName, Name FROM Msvm_ComputerSystem WHERE Caption='Virtual Machine'"));
+                "SELECT ElementName, Name FROM Msvm_ComputerSystem WHERE Caption='Virtual Machine'"), WmiLimits.Enumeration());
             using var results = s.Get();   // Rewindable collection — its own enumerator to release
             foreach (ManagementObject o in results)
                 using (o)
@@ -166,7 +166,7 @@ public static class HostInventory
         try
         {
             using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
-                "SELECT InstanceID, ElementName FROM Msvm_SyntheticEthernetPortSettingData"));
+                "SELECT InstanceID, ElementName FROM Msvm_SyntheticEthernetPortSettingData"), WmiLimits.Enumeration());
             using var results = s.Get();   // Rewindable collection — its own enumerator to release
             foreach (ManagementObject o in results)
                 using (o)

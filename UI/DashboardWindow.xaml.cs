@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Windows.Foundation;
@@ -43,6 +44,11 @@ public sealed partial class DashboardWindow : Window
     private readonly NetworkMonitor _monitor;
     private readonly HyperVManager  _hyperV;   // VM-NIC connect / switch binding (native WMI)
     private readonly VmService      _vm;       // status/metrics/power/IPs (WMI, event-driven)
+    // The two Hyper-V services' states and the start/stop flows over them (issue #114).
+    private readonly HyperVServiceMonitor _services;
+    private readonly HyperVServiceActions _serviceActions;
+    // VMs whose Start is first bringing a stopped service up; their card shows it and its button waits.
+    private readonly HashSet<string> _startingViaService = new(StringComparer.OrdinalIgnoreCase);
     // Tray balloon (title, message, isError) — owned by App, which holds the TaskbarIcon; the same
     // channel TrayMenu/NetworkActions report through (issue #37), and passed with the same
     // suppressWhenDashboardVisible:false semantics. See ConnectAsync for why suppression must be off.
@@ -112,21 +118,26 @@ public sealed partial class DashboardWindow : Window
     }
 
     public DashboardWindow(ConfigManager config, NetworkMonitor monitor, HyperVManager hyperV, VmService vm,
+                           HyperVServiceMonitor services,
                            Action<string, string, bool> notify, Action openSettings)
     {
         _config       = config;
         _monitor      = monitor;
         _hyperV       = hyperV;
         _vm           = vm;
+        _services     = services;
         _notify       = notify;
         _showSettings = openSettings;
+        _serviceActions = new HyperVServiceActions(config, vm, services, notify);
 
         InitializeComponent();
         TitleText.Text = AppInfo.Name;   // issue #42 — never the MMC snap-in's name
         ConfigureWindowChrome();
+        BuildServiceRows();
 
         _vm.StatusesChanged   += OnVmStatusesChanged;
         _vm.OperationProgress += OnVmOperationProgress;
+        _services.StateChanged += OnServiceStateChanged;
 
         Activated       += OnActivated;
         AppWindow.Closing += OnAppWindowClosing;
@@ -135,6 +146,7 @@ public sealed partial class DashboardWindow : Window
             UnsubscribeMetricsIfNeeded();
             _vm.StatusesChanged   -= OnVmStatusesChanged;
             _vm.OperationProgress -= OnVmOperationProgress;
+            _services.StateChanged -= OnServiceStateChanged;
         };
     }
 
@@ -222,7 +234,7 @@ public sealed partial class DashboardWindow : Window
         // content it is supposed to size to (issue #59). ResizeAndPlace re-reads these subtitles and
         // re-applies the tooltips, so the truncation guarantee follows the new width too.
         foreach (var card in _cards.Values)
-            card.Subtitle.Text = Subtitle(FindStatus(_latest, card.VmName));
+            card.Subtitle.Text = Subtitle(ShownStatus(_latest, card.VmName));
 
         if (AppWindow.IsVisible) ResizeAndPlace();
     }
@@ -383,6 +395,191 @@ public sealed partial class DashboardWindow : Window
             ? string.Join("  ·  ", result.DnsServers.Take(2)) : "—";
     }
 
+    // ── Hyper-V services card (issue #114) ──────────────────────────────────────
+
+    private sealed class ServiceRow
+    {
+        public required HyperVServiceKind Kind;
+        public required TextBlock         State;
+        public required Button            Action;
+    }
+
+    private readonly Dictionary<HyperVServiceKind, ServiceRow> _serviceRows = [];
+    // What a row says while this window's own start or stop is in flight, before Windows reports a
+    // transition — the stop in particular may first wait on a prompt and on saving VMs.
+    private readonly Dictionary<HyperVServiceKind, string> _serviceBusyText = [];
+
+    /// <summary>A service counts as down while stopped or moving, and vmms also when it is missing.
+    /// Unknown (not read yet) is not down, so the first second after start-up greys nothing.</summary>
+    private bool IsServiceDown(HyperVServiceKind kind) => _services.State(kind) switch
+    {
+        HyperVServiceState.Stopped or HyperVServiceState.Starting or HyperVServiceState.Stopping => true,
+        HyperVServiceState.NotInstalled => kind == HyperVServiceKind.VirtualMachineManagement,
+        _                               => false,
+    };
+
+    private bool VmmsDown       => IsServiceDown(HyperVServiceKind.VirtualMachineManagement);
+    private bool AnyServiceDown => HyperVServiceNames.All.Any(IsServiceDown);
+
+    private void BuildServiceRows()
+    {
+        foreach (var kind in HyperVServiceNames.All)
+        {
+            var grid = new Grid { ColumnSpacing = 8 };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var label = new TextBlock
+            {
+                Text              = HyperVServiceNames.ShortLabel(kind),
+                FontSize          = TitleFontSize,
+                FontWeight        = Microsoft.UI.Text.FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming      = TextTrimming.CharacterEllipsis,
+            };
+            // The short label fits the popup; the full name is what Windows' own tools show.
+            ToolTipService.SetToolTip(label,
+                $"{HyperVServiceNames.DisplayName(kind)} ({HyperVServiceNames.ServiceName(kind)})");
+
+            var state = new TextBlock
+            {
+                FontSize            = ValueFontSize,
+                VerticalAlignment   = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Right,
+            };
+            Grid.SetColumn(state, 1);
+
+            var button = new Button
+            {
+                FontSize = 11,
+                Padding  = new Thickness(CardButtonPaddingX, 3, CardButtonPaddingX, 3),
+                // Wide enough for "Start" and "Stop" alike, so the row does not shift when it flips.
+                MinWidth = 52,
+            };
+            Grid.SetColumn(button, 2);
+            button.Click += (_, _) => _ = OnServiceButtonAsync(kind);
+
+            grid.Children.Add(label);
+            grid.Children.Add(state);
+            grid.Children.Add(button);
+            ServicePanel.Children.Add(grid);
+
+            var row = new ServiceRow { Kind = kind, State = state, Action = button };
+            _serviceRows[kind] = row;
+            UpdateServiceRow(row);
+        }
+    }
+
+    private void UpdateServiceRows()
+    {
+        foreach (var row in _serviceRows.Values) UpdateServiceRow(row);
+    }
+
+    private void UpdateServiceRow(ServiceRow row)
+    {
+        var state = _services.State(row.Kind);
+        bool busy = _serviceBusyText.TryGetValue(row.Kind, out var busyText);
+
+        // Windows' own transition wins over this window's label: it is the more precise of the two.
+        row.State.Text = busy && state is not (HyperVServiceState.Starting or HyperVServiceState.Stopping)
+            ? busyText!
+            : HyperVServiceNames.StateText(state);
+        row.State.Foreground = state switch
+        {
+            HyperVServiceState.Running => busy ? AppColors.IndicatorOrangeBrush : AppColors.IndicatorGreenBrush,
+            HyperVServiceState.Stopped or HyperVServiceState.Starting or HyperVServiceState.Stopping
+                                       => AppColors.IndicatorOrangeBrush,
+            _                          => AppColors.IndicatorGreyBrush,
+        };
+
+        row.Action.Content    = state == HyperVServiceState.Running ? "Stop" : "Start";
+        row.Action.Visibility = state is HyperVServiceState.NotInstalled or HyperVServiceState.Unknown
+            ? Visibility.Collapsed : Visibility.Visible;
+        row.Action.IsEnabled  = !busy && state is HyperVServiceState.Running or HyperVServiceState.Stopped;
+        AutomationProperties.SetName(row.Action,
+            $"{row.Action.Content} {HyperVServiceNames.DisplayName(row.Kind)}");
+    }
+
+    private async Task OnServiceButtonAsync(HyperVServiceKind kind)
+    {
+        if (_serviceBusyText.ContainsKey(kind)) return;
+        var state = _services.State(kind);
+        bool stop = state == HyperVServiceState.Running;
+        if (!stop && state != HyperVServiceState.Stopped) return;   // mid-transition: the button is disabled anyway
+
+        UiActivityLog.Logger.LogInformation("Dashboard: {Command} service '{Service}'",
+            stop ? "Stop" : "Start", HyperVServiceNames.DisplayName(kind));
+        _serviceBusyText[kind] = stop ? "Stopping…" : "Starting…";
+        UpdateServiceRow(_serviceRows[kind]);
+        try
+        {
+            if (stop) await _serviceActions.StopAsync(kind, VmOpOrigin.Dashboard);
+            else      await _serviceActions.StartAsync(kind, VmOpOrigin.Dashboard);
+        }
+        catch (Exception ex)
+        {
+            // The flows report their own outcomes; this is only for a fault in the plumbing itself.
+            UiActivityLog.Logger.LogWarning(ex, "Dashboard: service {Service} action failed", kind);
+            _notify($"{AppInfo.Name} — Hyper-V services",
+                    $"{HyperVServiceNames.DisplayName(kind)}: {ex.Message}", true);
+        }
+        finally
+        {
+            _serviceBusyText.Remove(kind);
+            UpdateServiceRow(_serviceRows[kind]);
+        }
+    }
+
+    /// <summary>
+    /// <see cref="HyperVServiceMonitor.StateChanged"/> (background thread). Updates the service rows and
+    /// rebuilds the VM cards, whose greying, buttons and whether they may show any value at all follow
+    /// the services.
+    /// </summary>
+    private void OnServiceStateChanged(HyperVServiceKind kind, HyperVServiceState state)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            // A state remembered from before vmms stopped must not come back as the label afterwards.
+            if (VmmsDown) _effectiveState.Clear();
+
+            UpdateServiceRows();
+            if (BuildCards(_latest))
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (AppWindow.IsVisible) ResizeAndPlace();
+                });
+        });
+    }
+
+    /// <summary>The VM card's Start while a service is down: the services first, then the VM.</summary>
+    private async Task StartViaServicesAsync(string vmName)
+    {
+        if (!_startingViaService.Add(vmName)) return;
+        RefreshCardOverlay(vmName);
+        try
+        {
+            await _serviceActions.StartServicesThenVmAsync(vmName, VmOpOrigin.Dashboard);
+        }
+        catch (Exception ex)
+        {
+            UiActivityLog.Logger.LogWarning(ex, "Dashboard: starting the services for '{Vm}' failed", vmName);
+            _notify($"{AppInfo.Name} — {vmName}", ex.Message, true);
+        }
+        finally
+        {
+            _startingViaService.Remove(vmName);
+            RefreshCardOverlay(vmName);
+        }
+    }
+
+    private void RefreshCardOverlay(string vmName)
+    {
+        if (!_cards.TryGetValue(vmName, out var card)) return;
+        ApplyOverlay(card, ShownStatus(_latest, vmName));
+        ApplyRowTooltips(_contentWidth);
+    }
+
     // ── Per-VM cards ────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -449,7 +646,7 @@ public sealed partial class DashboardWindow : Window
             // Update just the affected card in place — no need to wait for the next status tick.
             if (_cards.TryGetValue(progress.VmName, out var card))
             {
-                ApplyOverlay(card, FindStatus(_latest, progress.VmName));
+                ApplyOverlay(card, ShownStatus(_latest, progress.VmName));
                 // The overlay rewrites the state label ("Requesting start…" is far wider than
                 // "Running"), which shrinks the VM name's slot beside it — so what the header
                 // truncates changes here too, and the tooltips must follow (issue #57).
@@ -492,10 +689,12 @@ public sealed partial class DashboardWindow : Window
     /// <summary>Categorises everything that affects a card's row/button layout. Uses the shared
     /// <see cref="VmStateUi.ClassifyShape"/> so a transitional state gets its own shape (no power
     /// buttons) and rebuilds the card when the transition lands (issue #30, finding 3).</summary>
-    private static string ShapeOf(VmStatus? s) =>
+    private string ShapeOf(VmStatus? s) =>
         VmStateUi.ClassifyShape(s?.State).ToString()
         + "|" + (FormatUptime(s).Length > 0)
-        + "|" + (s is { VhdBytes: > 0 });
+        + "|" + (s is { VhdBytes: > 0 })
+        // A service going down or coming back changes the card's buttons and greying (issue #114).
+        + "|" + VmmsDown + "|" + AnyServiceDown;
 
     /// <summary>
     /// Creates/updates the VM cards; returns true when any card's layout changed
@@ -538,7 +737,7 @@ public sealed partial class DashboardWindow : Window
             _cardOrder = vms.Select(v => v.Name).ToList();
             foreach (var vm in vms)
             {
-                var card = BuildCard(vm, FindStatus(statuses, vm.Name));
+                var card = BuildCard(vm, ShownStatus(statuses, vm.Name));
                 _cards[vm.Name] = card;
                 VmPanel.Children.Add(card.Root);
             }
@@ -549,7 +748,7 @@ public sealed partial class DashboardWindow : Window
         for (int i = 0; i < vms.Count; i++)
         {
             var vm = vms[i];
-            var s  = FindStatus(statuses, vm.Name);
+            var s  = ShownStatus(statuses, vm.Name);
             if (!_cards.TryGetValue(vm.Name, out var card) || card.Shape != ShapeOf(s))
             {
                 card = BuildCard(vm, s);          // layout shape changed → rebuild this card
@@ -568,11 +767,19 @@ public sealed partial class DashboardWindow : Window
     private static VmStatus? FindStatus(IReadOnlyList<VmStatus> statuses, string name) =>
         statuses.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>The status a card may show: none at all while vmms is down, since anything still held
+    /// was read before it stopped (issue #114).</summary>
+    private VmStatus? ShownStatus(IReadOnlyList<VmStatus> statuses, string name) =>
+        VmmsDown ? null : FindStatus(statuses, name);
+
+    /// <summary>The guest IP a card may show, under the same rule as <see cref="ShownStatus"/>.</summary>
+    private string ShownIp(string vmName) => VmmsDown ? "" : _vm.GetCachedVmIp(vmName) ?? "";
+
     private void UpdateCard(VmCard card, VmStatus? s)
     {
         ApplyOverlay(card, s);
         card.Subtitle.Text = Subtitle(s);
-        card.Ip.Text        = _vm.GetCachedVmIp(card.VmName) ?? "";
+        card.Ip.Text        = ShownIp(card.VmName);
         if (card.Uptime is not null) card.Uptime.Text = FormatUptime(s);
         if (s is null) return;
         if (card.CpuValue is not null) { card.CpuValue.Text = $"{s.Cpu}%"; SetBar(card.CpuBar, s.Cpu / 100.0); }
@@ -617,6 +824,21 @@ public sealed partial class DashboardWindow : Window
             // doesn't get a redundant tooltip.
             ToolTipService.SetToolTip(card.State, msg.Length > 30 ? msg : null);
         }
+        else if (_startingViaService.Contains(card.VmName))
+        {
+            card.State.Text       = "Starting service…";
+            card.State.Foreground = AppColors.IndicatorOrangeBrush;
+            ToolTipService.SetToolTip(card.State, null);
+        }
+        else if (VmmsDown)
+        {
+            // Nothing can be known about the VM while vmms is down; saying so beats a remembered state.
+            card.State.Text       = "Service stopped";
+            card.State.Foreground = AppColors.IndicatorGreyBrush;
+            ToolTipService.SetToolTip(card.State,
+                $"{HyperVServiceNames.DisplayName(HyperVServiceKind.VirtualMachineManagement)} is not running. "
+                + "Start starts it, then the VM.");
+        }
         else
         {
             var state = EffectiveStateName(card.VmName, s);
@@ -633,7 +855,7 @@ public sealed partial class DashboardWindow : Window
             ToolTipService.SetToolTip(card.State, null);   // clear any tooltip left by a prior overlay message
         }
 
-        SetButtonsEnabled(card, !IsOpActive(card.VmName));
+        SetButtonsEnabled(card, !IsOpActive(card.VmName) && !_startingViaService.Contains(card.VmName));
     }
 
     /// <summary>
@@ -839,7 +1061,7 @@ public sealed partial class DashboardWindow : Window
         // IP comes from VmService's cache (WMI, refreshed by the metrics loop/tooltip path) — no extra poll.
         var ipLabel = new TextBlock
         {
-            Text                = _vm.GetCachedVmIp(vm.Name) ?? "",
+            Text                = ShownIp(vm.Name),
             FontSize            = ValueFontSize,   // matches the dashboard's unified right-column value size
             Foreground          = (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"],
             HorizontalAlignment = HorizontalAlignment.Right,
@@ -870,6 +1092,12 @@ public sealed partial class DashboardWindow : Window
         // ── Power buttons ────────────────────────────────────────────────────
         var buttonsPanel = BuildButtons(vm, s);
         rows.Children.Add(buttonsPanel);
+
+        // Greyed while a service is down (issue #114). The buttons stay at full strength: Start is the
+        // one thing on the card that still works, and it brings the service up first.
+        if (AnyServiceDown)
+            foreach (var child in rows.Children)
+                if (!ReferenceEquals(child, buttonsPanel)) child.Opacity = 0.5;
 
         var root = new Border
         {
@@ -998,6 +1226,17 @@ public sealed partial class DashboardWindow : Window
                 _ = action();
             }),
         });
+
+        // A service is down (issue #114): the one offer is Start, which brings the services up and then
+        // the VM. With vmms down the VM's state is unknown, so Start is always offered; with only the
+        // Host Compute Service down the state is real, and Start is offered where a start makes sense.
+        if (AnyServiceDown)
+        {
+            var shape = VmStateUi.ClassifyShape(s?.State);
+            if (VmmsDown || shape is VmStateUi.Shape.Off or VmStateUi.Shape.Saved or VmStateUi.Shape.Paused)
+                TaskBtn("Start", () => StartViaServicesAsync(vm.Name));
+            return panel;
+        }
 
         // Buttons are driven off the shared VmStateUi verb model (cleanup 9) so the dashboard, the tray
         // VM-power menu and the state classifier can't drift: the power verbs come from AllowedVerbs,
