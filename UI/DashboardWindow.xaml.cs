@@ -118,17 +118,17 @@ public sealed partial class DashboardWindow : Window
     }
 
     public DashboardWindow(ConfigManager config, NetworkMonitor monitor, HyperVManager hyperV, VmService vm,
-                           HyperVServiceMonitor services,
+                           HyperVServiceControl services,
                            Action<string, string, bool> notify, Action openSettings)
     {
         _config       = config;
         _monitor      = monitor;
         _hyperV       = hyperV;
         _vm           = vm;
-        _services     = services;
+        _services     = services.Monitor;
         _notify       = notify;
         _showSettings = openSettings;
-        _serviceActions = new HyperVServiceActions(config, vm, services, notify);
+        _serviceActions = new HyperVServiceActions(services, notify);
 
         InitializeComponent();
         TitleText.Text = AppInfo.Name;   // issue #42 — never the MMC snap-in's name
@@ -411,12 +411,7 @@ public sealed partial class DashboardWindow : Window
 
     /// <summary>A service counts as down while stopped or moving, and vmms also when it is missing.
     /// Unknown (not read yet) is not down, so the first second after start-up greys nothing.</summary>
-    private bool IsServiceDown(HyperVServiceKind kind) => _services.State(kind) switch
-    {
-        HyperVServiceState.Stopped or HyperVServiceState.Starting or HyperVServiceState.Stopping => true,
-        HyperVServiceState.NotInstalled => kind == HyperVServiceKind.VirtualMachineManagement,
-        _                               => false,
-    };
+    private bool IsServiceDown(HyperVServiceKind kind) => HyperVServiceNames.IsDown(kind, _services.State(kind));
 
     private bool VmmsDown       => IsServiceDown(HyperVServiceKind.VirtualMachineManagement);
     private bool AnyServiceDown => HyperVServiceNames.All.Any(IsServiceDown);

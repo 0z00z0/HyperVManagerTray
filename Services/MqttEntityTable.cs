@@ -37,6 +37,24 @@ public sealed record MqttEntitySpec
 
     /// <summary>Forces one VM onto one switch.</summary>
     public required Func<string, string, CancellationToken, Task> OverrideSwitch { get; init; }
+
+    /// <summary>A Hyper-V service's last read state (issue #114).</summary>
+    public Func<HyperVServiceKind, HyperVServiceState> ServiceState { get; init; } = _ => HyperVServiceState.Unknown;
+
+    /// <summary>Starts (true) or stops (false) a service. Reached only through <see cref="MqttCommandGate.Service"/>;
+    /// a stop saves every running VM first.</summary>
+    public Func<HyperVServiceKind, bool, CancellationToken, Task> ServiceCommand { get; init; } =
+        (_, _, _) => Task.CompletedTask;
+
+    /// <summary>Whether a service a VM start needs is down. A VM verb then offers only a start, which
+    /// brings the services up first.</summary>
+    public Func<bool> AnyServiceDown { get; init; } = () => false;
+
+    /// <summary>Whether vmms is down, in which case no VM state is known.</summary>
+    public Func<bool> VmmsDown { get; init; } = () => false;
+
+    /// <summary>Starts the services, then the named VM.</summary>
+    public Func<string, CancellationToken, Task> StartViaServices { get; init; } = (_, _) => Task.CompletedTask;
 }
 
 /// <summary>
@@ -89,7 +107,14 @@ public static class MqttEntityTable
                        + "otherwise never runs.",
             DefaultOn: false,
             Info: "Each VM's CPU share, assigned memory and virtual disk size."),
+        new PublishGroup(ServicesGroup, "Hyper-V services",
+            Info: "The state of Hyper-V Virtual Machine Management and the Host Compute Service, and "
+                + "their start and stop. A stop saves every running VM first; stopping the Host Compute "
+                + "Service also stops WSL 2, Windows Sandbox and Docker."),
     ];
+
+    /// <summary>The two Hyper-V services' states and their start and stop (issue #114).</summary>
+    public const string ServicesGroup = "services";
 
     /// <summary>
     /// What an earlier implementation left retained on a broker: an entity handed over from its own
@@ -158,6 +183,8 @@ public static class MqttEntityTable
 
         var entities = new List<MqttEntity>();
         entities.AddRange(NetworkEntities(spec));
+        foreach (var kind in HyperVServiceNames.All)
+            entities.AddRange(ServiceEntities(spec, kind));
 
         var slugs = new VmSlugAllocator();
         // A hand-edited "name": null must not throw the whole table out; it slugs to the id alphabet's
@@ -297,6 +324,68 @@ public static class MqttEntityTable
         };
     }
 
+    // ── Hyper-V services (issue #114) ───────────────────────────────────────────
+
+    /// <summary>The id stem of a service's entities: the service's own Windows name, which never changes
+    /// and cannot meet the <see cref="VmIdPrefix"/> ids.</summary>
+    internal static string ServiceIdStem(HyperVServiceKind kind) => "service_" + HyperVServiceNames.ServiceName(kind);
+
+    private static IEnumerable<MqttEntity> ServiceEntities(MqttEntitySpec spec, HyperVServiceKind kind)
+    {
+        string stem  = ServiceIdStem(kind);
+        string label = HyperVServiceNames.DisplayName(kind);
+
+        yield return new MqttSensor
+        {
+            EntityId = $"{stem}_state",
+            Name     = label,
+            Group    = ServicesGroup,
+            Icon     = "mdi:cog-outline",
+            // Not read yet is no reading, not a state called "Unknown".
+            Read     = () => spec.ServiceState(kind) is var s && s != HyperVServiceState.Unknown
+                ? HyperVServiceNames.StateText(s)
+                : null,
+        };
+
+        MqttCommandVerdict Command(bool start) =>
+            MqttCommandGate.Service(spec.ServiceState(kind), start, ct => spec.ServiceCommand(kind, start, ct));
+
+        // The same shape choice as the VMs' power verbs, from the same setting.
+        if (spec.PowerButtons)
+        {
+            yield return new MqttButton
+            {
+                EntityId = $"{stem}_start",
+                Name     = $"Start {label}",
+                Group    = ServicesGroup,
+                Icon     = "mdi:play",
+                Press    = () => Command(start: true),
+            };
+            yield return new MqttButton
+            {
+                EntityId = $"{stem}_stop",
+                Name     = $"Stop {label}",
+                Group    = ServicesGroup,
+                Icon     = "mdi:stop",
+                Press    = () => Command(start: false),
+            };
+        }
+        else
+        {
+            yield return new MqttSelect
+            {
+                EntityId = $"{stem}_power",
+                Name     = $"{label} control",
+                Group    = ServicesGroup,
+                Icon     = "mdi:power-settings",
+                Options  = () => MqttCommandGate.ServiceOptions,
+                // A verb is an event, not a state; the state sensor reports where the service is.
+                Read     = () => null,
+                Apply    = option => Command(start: option == MqttCommandGate.ServiceOptions[0]),
+            };
+        }
+    }
+
     // ── Per VM ──────────────────────────────────────────────────────────────────
 
     private static IEnumerable<MqttEntity> VmEntities(MqttEntitySpec spec, string vmName, string slug)
@@ -400,9 +489,19 @@ public static class MqttEntityTable
             Group    = VmGroup,
             Icon     = "mdi:power",
             Read     = () => state.Vm(vmName)?.IsRunning,
-            Apply    = on => MqttCommandGate.Running(
-                state.Vm(vmName)?.State, on, (kind, ct) => spec.Power(vmName, kind, ct)),
+            Apply    = on => spec.AnyServiceDown()
+                ? MqttCommandGate.PowerWhileServicesDown(state.Vm(vmName)?.State, spec.VmmsDown(),
+                      on ? VmOpKind.Start : VmOpKind.Shutdown, ct => spec.StartViaServices(vmName, ct))
+                : MqttCommandGate.Running(
+                      state.Vm(vmName)?.State, on, (kind, ct) => spec.Power(vmName, kind, ct)),
         };
+
+        // Every power verb passes here: while a Hyper-V service is down, only a start that brings the
+        // services up first is offered, as on the dashboard's greyed card (issue #114).
+        MqttCommandVerdict PowerVerb(VmOpKind kind) => spec.AnyServiceDown()
+            ? MqttCommandGate.PowerWhileServicesDown(state.Vm(vmName)?.State, spec.VmmsDown(), kind,
+                  ct => spec.StartViaServices(vmName, ct))
+            : MqttCommandGate.Power(state.Vm(vmName)?.State, kind, ct => spec.Power(vmName, kind, ct));
 
         // The two power shapes, one or the other. Both reach MqttCommandGate.Power, so the state gating
         // and the refusal wording are the same whichever is published; only the controls differ.
@@ -415,8 +514,7 @@ public static class MqttEntityTable
                     Name     = $"{vmName} {PowerButtonLabel(kind)}",
                     Group    = VmGroup,
                     Icon     = PowerButtonIcon(kind),
-                    Press    = () => MqttCommandGate.Power(
-                        state.Vm(vmName)?.State, kind, ct => spec.Power(vmName, kind, ct)),
+                    Press    = () => PowerVerb(kind),
                 };
         }
         else
@@ -433,11 +531,7 @@ public static class MqttEntityTable
                 Read     = () => null,
                 // The module hands over only one of Options(), each a verb's own name, so the parse
                 // cannot miss.
-                Apply    = option =>
-                {
-                    var kind = Enum.Parse<VmOpKind>(option);
-                    return MqttCommandGate.Power(state.Vm(vmName)?.State, kind, ct => spec.Power(vmName, kind, ct));
-                },
+                Apply    = option => PowerVerb(Enum.Parse<VmOpKind>(option)),
             };
         }
 

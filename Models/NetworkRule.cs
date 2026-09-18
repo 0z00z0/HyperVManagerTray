@@ -40,4 +40,52 @@ public sealed class NetworkRule
     /// rule becomes active.  They are never auto-stopped when the rule deactivates.
     /// </summary>
     public bool AutoStart { get; set; } = false;
+
+    /// <summary>
+    /// What happens to Hyper-V Virtual Machine Management when this rule becomes active (issue #114).
+    /// Null leaves the service alone, which is what every rule written before the setting existed reads as.
+    /// </summary>
+    public RuleServiceAction? VmManagementService { get; set; }
+
+    /// <summary>What happens to the Hyper-V Host Compute Service when this rule becomes active. Null leaves it alone.</summary>
+    public RuleServiceAction? HostComputeService { get; set; }
+
+    /// <summary>
+    /// Seconds between this rule becoming active and a service stop it asks for. The stop is cancelled if
+    /// another rule becomes active first, so a brief network flap saves no VMs. Same presets as a VM's
+    /// on-bridge-lost delay.
+    /// </summary>
+    public int ServiceStopDelaySeconds { get; set; } = 30;
+
+    /// <summary>The setting for <paramref name="kind"/>; <see cref="RuleServiceAction.None"/> when unset.</summary>
+    public RuleServiceAction ServiceAction(HyperVServiceKind kind) =>
+        (kind == HyperVServiceKind.VirtualMachineManagement ? VmManagementService : HostComputeService)
+        ?? RuleServiceAction.None;
+
+    /// <summary>
+    /// The services to stop when this rule becomes active, Host Compute first: stopping vmms first would
+    /// make the VM states unreadable, and the guard then refuses the second stop.
+    ///
+    /// <para>Empty while the rule auto-starts VMs: those VMs need the services, and a stop would save the
+    /// very VMs the rule has just started.</para>
+    /// </summary>
+    public IReadOnlyList<HyperVServiceKind> ServicesToStop() =>
+        AutoStart && TargetVms.Count > 0
+            ? []
+            : [.. new[] { HyperVServiceKind.HostCompute, HyperVServiceKind.VirtualMachineManagement }
+                  .Where(k => ServiceAction(k) == RuleServiceAction.Stop)];
+
+    /// <summary>The services to start when this rule becomes active, vmms first.</summary>
+    public IReadOnlyList<HyperVServiceKind> ServicesToStart() =>
+        [.. HyperVServiceNames.All.Where(k => ServiceAction(k) == RuleServiceAction.Start)];
+}
+
+/// <summary>What a network rule does to one Hyper-V service when it becomes active (issue #114).</summary>
+public enum RuleServiceAction
+{
+    /// <summary>Left alone.</summary>
+    None,
+    Start,
+    /// <summary>Stopped after the rule's delay, with every running VM saved first.</summary>
+    Stop,
 }

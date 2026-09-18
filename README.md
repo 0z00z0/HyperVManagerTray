@@ -147,7 +147,7 @@ schtasks /Query /TN "HyperVManagerTray" /V /FO LIST
 A borderless Mica popup titled **"Hyper-V Manager"** near the tray:
 
 - **HOST NETWORK** — Adapter, IP, Gateway, DNS of the active host network, and the rule row reports the actual apply **outcome**, not just which rule matched.
-- **HYPER-V SERVICES** — the state of Hyper-V Virtual Machine Management and the Hyper-V Host Compute Service, each with a **Start** or **Stop** button. A stop is refused while a managed VM is running or paused, with an offer to save those VMs first and then stop. Stopping the Host Compute Service asks first, since it also stops WSL 2, Windows Sandbox and Docker. The service start type is never changed, so a stop lasts until the next restart.
+- **HYPER-V SERVICES** — the state of Hyper-V Virtual Machine Management and the Hyper-V Host Compute Service, each with a **Start** or **Stop** button. A stop is refused while any VM on the host is running or paused — managed or not — with an offer to save them all first and then stop. Stopping the Host Compute Service asks first, since it also stops WSL 2, Windows Sandbox and Docker. The service start type is never changed, so a stop lasts until the next restart.
 - **Per-VM cards** (one per **managed** VM) — switch name and active rule shown as a subtitle; state (Running/Off/Paused/Saved, plus live transition states such as "Restoring (10%)"); CPU / memory / VHD-size meters when running; power buttons appropriate to the state: **Start**, **Shutdown**, **Pause**, **Resume**, **Save**, **Connect**, **Start & Connect**. A power action shows its progress on the card and reports failure rather than going quiet. While a Hyper-V service is stopped the cards are greyed and offer only **Start**, which starts the stopped services and then the VM; with Virtual Machine Management stopped the cards show no values at all, since nothing about the VMs can be read.
 
 Metrics refresh every ~2.5 s **only while the dashboard is open**, so a closed dashboard costs no CPU.
@@ -179,7 +179,7 @@ Right-click the tray icon → **Settings…**. Seven sections in a sidebar; ever
 |---|---|
 | **General** | Run on startup (the elevated scheduled task); log level for all of the app's log files |
 | **Managed VMs** | The VMs this app looks after: add or remove one, the NIC name each is reconnected through, and an optional action (pause / save / shutdown, after a configurable delay) when the bridged network is lost |
-| **Network** | The rules editor — add, edit, remove and re-prioritise rules; **Add current network** captures the live adapter's MAC and subnet in one step; the fallback switch and target VMs; the transient per-VM switch override |
+| **Network** | The rules editor — add, edit, remove and re-prioritise rules; **Add current network** captures the live adapter's MAC and subnet in one step; the fallback switch and target VMs; the transient per-VM switch override. Each rule can also start or stop each Hyper-V service when it becomes active: a start runs before any VM starts, and a stop waits for the rule's delay, is dropped if the network changes first, saves every running VM on the host before stopping, and is skipped while the rule auto-starts VMs |
 | **Adapters** | Rename a physical adapter. Note this renames the adapter's **description** (what Device Manager, Hyper-V Manager and this app show) — not its Windows connection name/alias. Renaming briefly drops that adapter's connection; only real physical NICs are listed, and a rename can be reset to the factory name |
 | **Maintenance** | Open `config.json`, open any of the three log files or the logs folder, reload the config from disk (a reload that can't parse says so and changes nothing), re-check the network, repair host networking (for the "host offline but VM online" duplicate-vNIC state after a dock cycle), check for updates |
 | **About** | The same brand/about content as the About window, embedded |
@@ -228,7 +228,13 @@ Everything below is the annotated **reference** for the full format — copy fro
       },
       "virtualSwitch": "Bridged",          // Hyper-V switch to connect to
       "targetVms":     ["MyVM"],           // VMs to reconnect
-      "autoStart":     false               // start/resume targetVms when this rule activates
+      "autoStart":     false,              // start/resume targetVms when this rule activates;
+                                           // a stopped Hyper-V service is started first
+      "vmManagementService":     "Start",  // optional: "Start" | "Stop" for Hyper-V Virtual Machine
+      "hostComputeService":      "Stop",   // Management / the Host Compute Service when this rule
+                                           // activates; omitted = left alone. A stop saves every
+                                           // running VM first and is ignored while autoStart is on
+      "serviceStopDelaySeconds": 30        // wait before a stop; cancelled if the network changes
     }
   ],
   "fallback": {

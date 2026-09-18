@@ -1246,7 +1246,7 @@ internal sealed partial class SettingsWindow : Window
         var grid = new Grid { RowSpacing = 8, ColumnSpacing = 10 };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        for (int i = 0; i < 7; i++) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        for (int i = 0; i < 11; i++) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         int row = 0;
 
@@ -1361,6 +1361,57 @@ internal sealed partial class SettingsWindow : Window
         autoToggle.Toggled += (_, _) => { if (_updating) return; rule.AutoStart = autoToggle.IsOn; CommitRules(); };
         Grid.SetRow(autoToggle, row); Grid.SetColumn(autoToggle, 1);
         grid.Children.Add(autoLabel); grid.Children.Add(autoToggle);
+        row++;
+
+        // ── Hyper-V services (issue #114) ──
+        // The same shape as the VM settings above: what happens when this rule becomes active. A stop
+        // waits for the delay and is dropped if the network moves on first.
+        var vmmsCombo    = new ComboBox { MinWidth = 150 };
+        var computeCombo = new ComboBox { MinWidth = 150 };
+        var stopDelay    = new ComboBox { MinWidth = 130 };
+
+        bool AnyStop() => rule.ServiceAction(HyperVServiceKind.VirtualMachineManagement) == RuleServiceAction.Stop
+                       || rule.ServiceAction(HyperVServiceKind.HostCompute) == RuleServiceAction.Stop;
+
+        WithUpdatingSuppressed(() =>
+        {
+            PopulateLabelCombo(vmmsCombo, RuleServiceActionOptions,
+                RuleServiceActionIndex(rule.ServiceAction(HyperVServiceKind.VirtualMachineManagement)));
+            PopulateLabelCombo(computeCombo, RuleServiceActionOptions,
+                RuleServiceActionIndex(rule.ServiceAction(HyperVServiceKind.HostCompute)));
+            LoadDelayCombo(stopDelay, SettingsOptions.NormalizeDelaySeconds(rule.ServiceStopDelaySeconds));
+            stopDelay.IsEnabled = AnyStop();
+        });
+
+        void CommitServices()
+        {
+            if (_updating) return;
+            rule.VmManagementService     = ServiceActionAt(vmmsCombo.SelectedIndex);
+            rule.HostComputeService      = ServiceActionAt(computeCombo.SelectedIndex);
+            rule.ServiceStopDelaySeconds = stopDelay.SelectedItem is ComboBoxItem { Tag: int d } ? d : 30;
+            stopDelay.IsEnabled = AnyStop();
+            CommitRules();
+        }
+
+        vmmsCombo.SelectionChanged    += (_, _) => CommitServices();
+        computeCombo.SelectionChanged += (_, _) => CommitServices();
+        stopDelay.SelectionChanged    += (_, _) => CommitServices();
+
+        Field("VM management service", vmmsCombo);
+        Field("Host compute service", computeCombo);
+        Field("Service stop delay", stopDelay);
+
+        var servicesNote = new TextBlock
+        {
+            Text = "When this rule becomes active. A start runs before any VM starts. A stop saves every "
+                 + "running VM on the host first, and is skipped while Auto-start VMs is on. Stopping the "
+                 + "Host Compute Service also stops WSL 2, Windows Sandbox and Docker.",
+            FontSize     = 12,
+            Opacity      = 0.7,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        Grid.SetRow(servicesNote, row); Grid.SetColumn(servicesNote, 0); Grid.SetColumnSpan(servicesNote, 2);
+        grid.Children.Add(servicesNote);
 
         return Card(grid);
     }
@@ -1876,6 +1927,24 @@ internal sealed partial class SettingsWindow : Window
             combo.Items.Add(new ComboBoxItem { Content = label });
         combo.SelectedIndex = selectedIndex;
     }
+
+    /// <summary>The per-rule Hyper-V service picker's options (issue #114); null stores as "leave alone".</summary>
+    private static readonly IReadOnlyList<(string Label, RuleServiceAction? Value)> RuleServiceActionOptions =
+    [
+        ("Leave alone", null),
+        ("Start",       RuleServiceAction.Start),
+        ("Stop",        RuleServiceAction.Stop),
+    ];
+
+    private static int RuleServiceActionIndex(RuleServiceAction action) => action switch
+    {
+        RuleServiceAction.Start => 1,
+        RuleServiceAction.Stop  => 2,
+        _                       => 0,
+    };
+
+    private static RuleServiceAction? ServiceActionAt(int index) =>
+        index >= 0 && index < RuleServiceActionOptions.Count ? RuleServiceActionOptions[index].Value : null;
 
     private static StackPanel Section(string title)
     {

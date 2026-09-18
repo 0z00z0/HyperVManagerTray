@@ -52,6 +52,18 @@ public static class HyperVServiceNames
         _                                          => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 
+    /// <summary>
+    /// Whether a VM start must bring <paramref name="kind"/> up first: stopped or moving, and vmms also
+    /// when it is missing. Unknown (not read yet) is not down, so the first second after start-up changes
+    /// nothing.
+    /// </summary>
+    public static bool IsDown(HyperVServiceKind kind, HyperVServiceState state) => state switch
+    {
+        HyperVServiceState.Stopped or HyperVServiceState.Starting or HyperVServiceState.Stopping => true,
+        HyperVServiceState.NotInstalled => kind == HyperVServiceKind.VirtualMachineManagement,
+        _                               => false,
+    };
+
     /// <summary>The state as a word on the dashboard.</summary>
     public static string StateText(HyperVServiceState state) => state switch
     {

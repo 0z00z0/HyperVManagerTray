@@ -41,8 +41,8 @@ public class MqttPublishGroupTests : IDisposable
     // ── What the app declares ───────────────────────────────────────────────────
 
     [Fact]
-    public void TheDeclaredGroupsAreTheFourTheSettingsPanelRenders()
-        => Assert.Equal(["network", "vm", "diagnostics", "metrics"],
+    public void TheDeclaredGroupsAreTheFiveTheSettingsPanelRenders()
+        => Assert.Equal(["network", "vm", "diagnostics", "metrics", "services"],
                         MqttEntityTable.Groups.Select(g => g.Key));
 
     [Theory]
@@ -50,6 +50,7 @@ public class MqttPublishGroupTests : IDisposable
     [InlineData(MqttEntityTable.VmGroup,          true)]
     [InlineData(MqttEntityTable.DiagnosticsGroup, true)]
     [InlineData(MqttEntityTable.MetricsGroup,     false)]
+    [InlineData(MqttEntityTable.ServicesGroup,    true)]
     public void OnlyTheMetricsGroupIsDeclaredOffByDefault(string key, bool defaultOn)
         => Assert.Equal(defaultOn, MqttEntityTable.Groups.Single(g => g.Key == key).DefaultOn);
 
