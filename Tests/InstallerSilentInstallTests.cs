@@ -54,7 +54,7 @@ public class InstallerSilentInstallTests
     /// <summary>The neighbours whose guards this one now matches. Pinned together so the convention is
     /// the assertion, not one line of it.</summary>
     [Theory]
-    [InlineData("if not WizardSilent() then LaunchApp();")]
+    [InlineData("if not WizardSilent() then LaunchApp() else if StartedByTheApplication() then LaunchApp();")]
     [InlineData("if (not UninstallSilent()) and (AppIsRunning() or ScheduledTaskExists()) then")]
     public void TheOtherElevatingStepsStayGuardedToo(string guarded) =>
         Assert.Contains(guarded, Code());
@@ -66,7 +66,8 @@ public class InstallerSilentInstallTests
     /// locked-file failure or a silently stale copy). It is now a retry/cancel wait loop
     /// (<c>CloseRunningApp</c>), and the silent path is a DELIBERATE divergence from that old
     /// behaviour: a silent run can answer neither a message box nor a UAC prompt, so it aborts
-    /// Setup immediately instead of proceeding quietly.
+    /// Setup immediately instead of proceeding quietly. The app's own update is the one silent run
+    /// exempt: it inherits the app's elevation and the user who asked for it is present.
     /// </summary>
     [Fact]
     public void ASilentRunAbortsImmediatelyInsteadOfSkippingTheCheck()
@@ -74,7 +75,7 @@ public class InstallerSilentInstallTests
         var code = Code();
 
         Assert.Contains("if not ImageIsRunning(ImageName) then Exit;", code);
-        Assert.Contains("if WizardSilent() then begin Result := TerminalMessage; Exit; end;", code);
+        Assert.Contains("if WizardSilent() and not StartedByTheApplication() then begin Result := TerminalMessage; Exit; end;", code);
     }
 
     /// <summary>

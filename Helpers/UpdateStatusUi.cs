@@ -87,7 +87,30 @@ internal static class UpdateStatusUi
     public static string DownloadingMessage(string version) =>
         // "…", not "..." — the ellipsis character everywhere else in the app (issue #42).
         $"Downloading v{version}…\n\nThe download is checked against the release before it runs. "
-        + "If the check fails, nothing is run.";
+        + "If the check fails, nothing is run.\n\n"
+        + $"If it passes, the update installs by itself: {AppInfo.Name} closes, updates and starts again.";
+
+    /// <summary>
+    /// What the next start says about an update the previous version started for itself. Both
+    /// outcomes are stated: the installer ran with its own messages suppressed, so nothing else tells
+    /// the user either way. Kept within the 255 characters a tray balloon holds, because a longer
+    /// text is not shortened but dropped.
+    /// </summary>
+    public static UpdateReport UnattendedOutcomeReport(UnattendedUpdate.Outcome outcome)
+    {
+        ArgumentNullException.ThrowIfNull(outcome);
+
+        if (outcome.Verdict == UpdateVerdict.Installed)
+            return new UpdateReport($"The update is installed: {AppInfo.Name} is now v{outcome.RunningVersion}.",
+                                    IsError: false);
+
+        var reason = outcome.Refusal is { Length: > 0 } refusal ? $" {refusal}" : "";
+        var log    = $@"%AppData%\{AppInfo.Id}\{AppUpdateOptions.InstallerLogFileNameFor(outcome.RunningVersion)}";
+        return new UpdateReport(
+            $"The update to v{outcome.TargetVersion} did not complete; v{outcome.RunningVersion} is still "
+            + $"installed.{reason} Try again from Check for updates. Setup's log: {log}",
+            IsError: true);
+    }
 
     /// <summary>
     /// Why a chosen update did not install. Every arm states that nothing has been run, because that

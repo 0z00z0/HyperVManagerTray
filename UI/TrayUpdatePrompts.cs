@@ -22,10 +22,15 @@ internal sealed class TrayUpdatePrompts : IUpdatePrompts
     /// keeps two checks from running at once lives in that one instance.</summary>
     public IntPtr Owner { get; set; }
 
+    /// <summary>The version the user last agreed to install, or null. Read when the installer has
+    /// started, to record what the unattended update was for.</summary>
+    public string? AcceptedVersion { get; private set; }
+
     public InstallChoice AskToInstall(ReleaseInfo release, Version runningVersion)
     {
         ArgumentNullException.ThrowIfNull(release);
         ArgumentNullException.ThrowIfNull(runningVersion);
+        AcceptedVersion = null;
 
         // The release must carry the installer under exactly the expected name; the shared flow never
         // takes the first executable it finds. Without it the only honest offer is the releases page.
@@ -41,6 +46,7 @@ internal sealed class TrayUpdatePrompts : IUpdatePrompts
         {
             case NativeMethods.UpdateAction.Update:
                 NativeMethods.Info(UpdateStatusUi.DownloadingMessage(release.VersionText), AppInfo.Name);
+                AcceptedVersion = release.VersionText;
                 return InstallChoice.Install;
 
             case NativeMethods.UpdateAction.ShowReleases:

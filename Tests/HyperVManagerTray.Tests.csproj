@@ -115,6 +115,9 @@
          a refusal to produce a signer nothing can match — are assertable. -->
     <Compile Include="..\Helpers\ExpectedPublisher.cs"  Link="Linked\ExpectedPublisher.cs" />
     <Compile Include="..\Helpers\AppUpdateOptions.cs"   Link="Linked\AppUpdateOptions.cs" />
+    <!-- The record an unattended update leaves for the next start. File IO over a folder handed in,
+         so temp folders are all its tests need; required by the linked UpdateStatusUi.cs. -->
+    <Compile Include="..\Helpers\UnattendedUpdate.cs"   Link="Linked\UnattendedUpdate.cs" />
     <Compile Include="..\Services\FileLogger.cs"      Link="Linked\FileLogger.cs" />
     <!-- Issue #55: repairs a log file whose head a power cut turned into NUL bytes. Required by the
          linked FileLogger.cs, which salvages each path before NLog opens a handle on it. Pure file IO
