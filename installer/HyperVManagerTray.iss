@@ -57,14 +57,15 @@ WizardImageFile=wizard\wizimg-164x314.bmp,wizard\wizimg-205x392.bmp,wizard\wizim
 WizardSmallImageFile=wizard\wizsmall-55x58.bmp,wizard\wizsmall-69x73.bmp,wizard\wizsmall-83x87.bmp,wizard\wizsmall-96x102.bmp,wizard\wizsmall-110x116.bmp
 ; WizardImageStretch left at its default (yes): every variant shares Inno's exact image-area
 ; aspect (164:314 and 55:58), so stretching only ever scales uniformly to a perfect fit.
-; CloseApplications uses the Restart Manager, which CANNOT close the running app on an
-; interactive upgrade: the app is requireAdministrator (high integrity) and this installer
-; is per-user (low integrity), so it has no rights to terminate it.  PrepareToInstall (see
-; [Code], CloseRunningApp) handles that case: wait for it to exit on its own, then an
-; elevated taskkill if the user chooses Retry.  A silent run (which can answer neither a
+; The Restart Manager is not used to close the running app: the app is requireAdministrator
+; (high integrity) and this installer is per-user (low integrity), so the Restart Manager has no
+; rights to end it.  PrepareToInstall (see
+; [Code], CloseRunningApp) closes it instead: after the app's own update it first waits for the
+; app to exit by itself, then ends whatever is still running with one elevated taskkill, and
+; offers Retry/Cancel only if that did not work.  A silent run (which can answer neither a
 ; message box nor a UAC prompt) aborts Setup instead if the app is still running.  Do NOT
 ; auto-restart — the app is relaunched explicitly by LaunchApp on interactive installs only.
-CloseApplications=yes
+CloseApplications=no
 RestartApplications=no
 
 [Files]
@@ -422,23 +423,53 @@ begin
   // falsely reporting that the app "did not start" and confusing the user.
 end;
 
-// Closes a running instance of the named image before files are copied, giving an interactive
-// user a Retry/Cancel chance to exit it by hand first. Returns '' once nothing is in the way, or
-// a message for Setup to abort with (on Cancel, or immediately on a silent run).
+// True when the app started this run for its own update. It passes the switch from
+// Helpers\AppUpdateOptions.cs and exits as soon as this installer has started.
+function StartedByTheApplication(): Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATEFROMAPP|0}') = '1';
+end;
+
+// The app queues its own exit as it starts this run, so that exit may still be in flight here.
+// Waiting for it lets the app close cleanly instead of being killed. Up to ~16 s; a process still
+// present after that is stuck rather than closing, and the kill below takes over.
+procedure WaitForTheStartingAppToExit(const ImageName: string);
+var
+  I: Integer;
+begin
+  if not StartedByTheApplication() then Exit;
+  for I := 1 to 8 do
+    if not StillRunningAfterWait(ImageName) then Exit;
+end;
+
+// One elevated attempt at ending the named image. The app is requireAdministrator, so an
+// unelevated taskkill is refused. Raises a UAC prompt only when this installer is not already
+// elevated; the app's own update starts it elevated.
+procedure StopImageElevated(const ImageName: string);
+var
+  ResultCode: Integer;
+begin
+  ShellExec('runas', ExpandConstant('{cmd}'), '/C taskkill /IM "' + ImageName + '" /F',
+            '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+// Closes a running instance of the named image before files are copied. Returns '' once nothing
+// is in the way, or a message for Setup to abort with (on Cancel, or immediately on a silent run).
 //
 // Liftable: parameterised on the display name and image name rather than wired to one hardcoded
 // exe, so a second image (e.g. a legacy executable from an older release) could be closed with
 // another call — this installer only needs the one, for {#AppExe}.
 //
-// The elevated taskkill fires only when all three hold: the wait above timed out (still present
-// after ~2 s), the user chose Retry, AND a fresh check right before the kill still finds it
-// present — if the app exited between the prompt and Retry being pressed, no second UAC prompt.
+// The app is ended straight away rather than asked about: taskkill returns once termination is
+// requested and its UAC prompt can be declined, so presence is then polled, and only a process
+// that survived gets the Retry/Cancel box. A Retry re-kills only after a fresh check still finds
+// it present — if the app was exited by hand before Retry was pressed, no second UAC prompt.
 function CloseRunningApp(const DisplayName, ImageName: string): String;
 var
-  ResultCode: Integer;
   TerminalMessage: String;
 begin
   Result := '';
+  WaitForTheStartingAppToExit(ImageName);
   if not ImageIsRunning(ImageName) then Exit;
 
   TerminalMessage := DisplayName + ' is still running, so its files cannot be replaced. Exit it '
@@ -452,6 +483,7 @@ begin
     Exit;
   end;
 
+  StopImageElevated(ImageName);
   while StillRunningAfterWait(ImageName) do
   begin
     if MsgBox(DisplayName + ' is still running, so its files cannot be replaced.'
@@ -465,17 +497,15 @@ begin
 
     // Re-check immediately before elevating: Retry may have been pressed after the app was
     // already closed by hand.
-    if ImageIsRunning(ImageName) then
-      ShellExec('runas', ExpandConstant('{cmd}'), '/C taskkill /IM "' + ImageName + '" /F',
-                '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if ImageIsRunning(ImageName) then StopImageElevated(ImageName);
   end;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  // The Restart Manager (CloseApplications) can't close the running app because the app runs
-  // elevated while this installer doesn't, so this is the only place that can. See
-  // CloseRunningApp for the retry loop and the silent-run behaviour.
+  // The Restart Manager can't close the running app because the app runs elevated while this
+  // installer doesn't, so this is the only place that can. See CloseRunningApp for the wait, the
+  // kill, the retry loop and the silent-run behaviour.
   Result := CloseRunningApp('{#AppName}', '{#AppExe}');
 end;
 

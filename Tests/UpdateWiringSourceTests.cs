@@ -111,8 +111,9 @@ public class UpdateWiringSourceTests
     {
         Assert.Matches(@"new AppUpdate\(\s*\n?\s*System\.Reflection\.Assembly\.GetExecutingAssembly\(\)",
                        CodeOf("App.xaml.cs"));
-        Assert.Contains("RunningVersion    = runningVersion",
-                        CodeOf("Helpers", "AppUpdateOptions.cs"), StringComparison.Ordinal);
+        // Whitespace-tolerant: the initialiser's column alignment moves whenever a longer name joins it.
+        Assert.Matches(@"RunningVersion\s+=\s+runningVersion,",
+                       CodeOf("Helpers", "AppUpdateOptions.cs"));
     }
 
     // ── The wording stays where it can be asserted ──────────────────────────────
