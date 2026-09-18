@@ -119,6 +119,14 @@ public sealed class VmService : IDisposable
     private bool _summariesDegradedWarned;
     private bool _switchNamesEmptyWarned;
 
+    // Whether vmms is running, as HyperVServiceMonitor reads it from the SCM (issue #114). True until the
+    // first read says otherwise, so a start-up before that read behaves as it always has. While false,
+    // nothing here calls into WMI: the namespace is served by vmms, and a call into it would fail or hang.
+    private volatile bool _serviceAvailable = true;
+    // True once a read has succeeded since vmms was last seen running. Until then a VM that is running
+    // could be missing from the list, so a stop guard must not trust it.
+    private volatile bool _statesKnown;
+
     /// <summary>Raised (on a background thread) whenever VM status/metrics change. Marshal to the UI.</summary>
     public event Action<IReadOnlyList<VmStatus>>? StatusesChanged;
 
@@ -146,6 +154,99 @@ public sealed class VmService : IDisposable
     /// list ever leaves the tray, revisit this cache rather than leaving it to cost a read for nobody.</para>
     /// </summary>
     public List<DiscoveredVm>? GetCachedVmsSync() => _discovered;
+
+    /// <summary>The last VM status list, or null before the first read. Empty while vmms is not running.</summary>
+    public IReadOnlyList<VmStatus>? GetCachedStatuses() => _statuses;
+
+    /// <summary>Whether vmms is running, as last reported to <see cref="SetServiceAvailable"/>.</summary>
+    public bool ServiceAvailable => _serviceAvailable;
+
+    /// <summary>True when <see cref="GetCachedStatuses"/> comes from a successful read taken while vmms
+    /// was running — the only list a guard against stopping a running VM may rely on.</summary>
+    public bool StatesKnown => _serviceAvailable && _statesKnown;
+
+    /// <summary>When the last successful read was published (UTC). A guard that needs a read newer than
+    /// its own start compares against this.</summary>
+    public DateTime LastReadUtc { get; private set; } = DateTime.MinValue;
+
+    // ── Service availability (issue #114) ────────────────────────────────────────
+
+    /// <summary>
+    /// Told by the owner whenever vmms moves in or out of the running state. Going unavailable drops every
+    /// cached VM value and publishes an empty list, so the dashboard, the tooltip and MQTT stop showing
+    /// what was true before the stop; the watcher and reconnection attempts pause. Coming back reconnects
+    /// from scratch and reads at once. Never throws.
+    /// </summary>
+    public void SetServiceAvailable(bool available)
+    {
+        if (_serviceAvailable == available) return;
+        _serviceAvailable = available;
+
+        if (!available)
+        {
+            _statesKnown = false;
+            lock (_subLock) StopWatcher();
+            lock (_scopeLock) _scope = null;
+            // Off the caller's thread: a refresh still in flight holds _refreshLock until its reads time
+            // out, and the clear must land after it so its stale result cannot be the last one published.
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    IReadOnlyList<VmStatus> empty;
+                    lock (_refreshLock)
+                    {
+                        // Back already: a fresh read is on its way, and an empty list now would overwrite it.
+                        if (_serviceAvailable) return;
+                        ClearCaches();
+                        empty = [];
+                        StatusesChanged?.Invoke(empty);
+                    }
+                }
+                catch (Exception ex) { _logger.LogWarning(ex, "Clearing the VM caches after the service stopped failed"); }
+            });
+            return;
+        }
+
+        lock (_scopeLock) _scope = null;   // the old connection died with the service
+        lock (_subLock)
+        {
+            if (_metricsSubs > 0 || _watcherSubs > 0) EnsureWatcher();
+        }
+        TriggerRefresh();
+    }
+
+    /// <summary>Drops every value read from Hyper-V. Caller holds <see cref="_refreshLock"/>.</summary>
+    private void ClearCaches()
+    {
+        _statuses   = [];
+        _vmIps      = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        _discovered = null;
+        _memMax.Clear();
+        _vhd.Clear();
+        _switchByVm.Clear();
+        _switchCacheAt   = DateTime.MinValue;
+        _refreshFailures = 0;
+        Interlocked.Exchange(ref _recoveryAttempts, 0);
+    }
+
+    /// <summary>
+    /// Waits until a read has succeeded since vmms came back, forcing one refresh a second, for at most
+    /// <paramref name="timeout"/>. vmms reports running a moment before its WMI provider answers, so a
+    /// caller that has just started it waits here before its first VM action. Never throws.
+    /// </summary>
+    public async Task<bool> WaitForStatesAsync(TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            if (StatesKnown) return true;
+            if (DateTime.UtcNow >= deadline) return false;
+            if (_serviceAvailable) await RefreshOnceAsync().ConfigureAwait(false);
+            if (StatesKnown) return true;
+            await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+        }
+    }
 
     // ── Metrics subscription (dashboard open/close) ──────────────────────────────
 
@@ -253,7 +354,20 @@ public sealed class VmService : IDisposable
     /// connecting to a dead VM (issue #30, finding 6). Never throws; genuinely async (no blocking
     /// waits) — safe to await from the UI thread.
     /// </summary>
-    public async Task<StartReadiness> WaitUntilRunningAsync(string vmName, TimeSpan timeout)
+    public Task<StartReadiness> WaitUntilRunningAsync(string vmName, TimeSpan timeout) =>
+        WaitUntilAsync(vmName, s => s.IsRunning, VmOpKind.Start, timeout);
+
+    /// <summary>
+    /// Waits until <paramref name="vmName"/> reads Saved, its Save action fails, or
+    /// <paramref name="timeout"/> elapses — the same mechanism as <see cref="WaitUntilRunningAsync"/>, with
+    /// <see cref="StartReadiness.Running"/> meaning the target state was reached. Used by the save-first
+    /// stop of a Hyper-V service (issue #114). Never throws.
+    /// </summary>
+    public Task<StartReadiness> WaitUntilSavedAsync(string vmName, TimeSpan timeout) =>
+        WaitUntilAsync(vmName, s => s.IsSaved, VmOpKind.Save, timeout);
+
+    private async Task<StartReadiness> WaitUntilAsync(
+        string vmName, Func<VmStatus, bool> reached, VmOpKind kind, TimeSpan timeout)
     {
         SubscribeMetrics();
         try
@@ -263,12 +377,12 @@ public sealed class VmService : IDisposable
             void OnStatuses(IReadOnlyList<VmStatus> statuses)
             {
                 var s = statuses.FirstOrDefault(x => x.Name.Equals(vmName, StringComparison.OrdinalIgnoreCase));
-                if (s?.IsRunning == true) tcs.TrySetResult(StartReadiness.Running);
+                if (s is not null && reached(s)) tcs.TrySetResult(StartReadiness.Running);
             }
 
             void OnProgress(VmOperationProgress p)
             {
-                if (p.Phase == VmOpPhase.Failed && p.Kind == VmOpKind.Start &&
+                if (p.Phase == VmOpPhase.Failed && p.Kind == kind &&
                     p.VmName.Equals(vmName, StringComparison.OrdinalIgnoreCase))
                     tcs.TrySetResult(StartReadiness.Failed);
             }
@@ -313,6 +427,8 @@ public sealed class VmService : IDisposable
     /// <summary>Starts the shared state watcher if it isn't already running. Caller holds <see cref="_subLock"/>.</summary>
     private void EnsureWatcher()
     {
+        // No watcher while vmms is down; SetServiceAvailable arms one when it returns.
+        if (!_serviceAvailable) return;
         if (_watcher is null && !_watcherStarting) StartWatcher();
     }
 
@@ -376,7 +492,7 @@ public sealed class VmService : IDisposable
                 // successfully-started-but-now-unwanted one down — otherwise a connect in flight during
                 // Dispose() would leak a live watcher that nothing ever stops (finding 7b).
                 if (started is null) return;
-                if (_disposed || (_metricsSubs == 0 && _watcherSubs == 0))
+                if (_disposed || (_metricsSubs == 0 && _watcherSubs == 0) || !_serviceAvailable)
                 {
                     try { started.Stop(); started.Dispose(); } catch { }
                     return;
@@ -410,6 +526,7 @@ public sealed class VmService : IDisposable
         {
             if (_disposed || _recovering) return;
             if (_metricsSubs == 0 && _watcherSubs == 0) return;   // nobody needs it — this was an intentional stop
+            if (!_serviceAvailable) return;   // vmms is down: reconnecting cannot succeed until it returns
             _recovering = true;
         }
         attempt = Interlocked.Increment(ref _recoveryAttempts);
@@ -429,7 +546,7 @@ public sealed class VmService : IDisposable
                 lock (_subLock)
                 {
                     _recovering = false;
-                    if (_disposed || (_metricsSubs == 0 && _watcherSubs == 0)) return;
+                    if (_disposed || (_metricsSubs == 0 && _watcherSubs == 0) || !_serviceAvailable) return;
                     EnsureWatcher();                             // reconnects scope + starts a fresh watcher
                 }
                 TriggerRefresh();                                // re-prime caches/tooltip immediately
@@ -480,6 +597,8 @@ public sealed class VmService : IDisposable
     {
         lock (_refreshLock)
         {
+            // vmms is down: there is nothing to read, and SetServiceAvailable has already cleared the caches.
+            if (!_serviceAvailable) return;
             try
             {
                 EnsureScope();
@@ -516,9 +635,18 @@ public sealed class VmService : IDisposable
                     list.Add(st);
                 }
 
-                _discovered = ReadDiscovered(scope, vms);
-                _vmIps      = ReadIps(scope, vms);
+                var discovered = ReadDiscovered(scope, vms);
+                var ips        = ReadIps(scope, vms);
+
+                // vmms went down while this read ran: its result may predate the stop, so it is dropped
+                // rather than published over the empty list SetServiceAvailable is about to post.
+                if (!_serviceAvailable) return;
+
+                _discovered = discovered;
+                _vmIps      = ips;
                 _statuses   = list;
+                _statesKnown = true;
+                LastReadUtc  = DateTime.UtcNow;
 
                 _refreshFailures = 0;     // a clean read resets the failure counter (under _refreshLock)
                 Interlocked.Exchange(ref _recoveryAttempts, 0);   // …and the cross-lock backoff counter
@@ -526,6 +654,8 @@ public sealed class VmService : IDisposable
             }
             catch (Exception ex)
             {
+                // Failing because vmms has just gone down is expected, and must not arm a reconnect.
+                if (!_serviceAvailable) return;
                 _logger.LogWarning(ex, "VM WMI refresh failed");
                 // A broken scope/watcher shows up as repeated RefreshCore failures. After a few in a row,
                 // tear the scope+watcher down and re-arm with backoff (issue #30, finding 4) — otherwise
@@ -544,7 +674,8 @@ public sealed class VmService : IDisposable
     {
         var map = new Dictionary<string, VmIdentity>(StringComparer.OrdinalIgnoreCase);
         using var searcher = new ManagementObjectSearcher(scope,
-            new ObjectQuery("SELECT ElementName, EnabledState, Name FROM Msvm_ComputerSystem WHERE Caption='Virtual Machine'"));
+            new ObjectQuery("SELECT ElementName, EnabledState, Name FROM Msvm_ComputerSystem WHERE Caption='Virtual Machine'"),
+            WmiLimits.Enumeration());
         foreach (ManagementObject vm in searcher.Get())
             using (vm)
             {
@@ -586,7 +717,7 @@ public sealed class VmService : IDisposable
             // "Restoring (n%)" verb lives (StatusDescriptions was captured EMPTY during that transition,
             // so it is no longer requested).
             inParams["RequestedInformation"] = new uint[] { 1, 101, 103, 105, 108 };
-            using var outParams = mgmt.InvokeMethod("GetSummaryInformation", inParams, null);
+            using var outParams = mgmt.InvokeMethod("GetSummaryInformation", inParams, WmiLimits.Method());
 
             uint rv = Convert.ToUInt32(outParams["ReturnValue"]);
             if (rv != 0)
@@ -644,7 +775,7 @@ public sealed class VmService : IDisposable
                     // that just means "no active job" for it, so swallow and move on.
                     try
                     {
-                        using var job = new ManagementObject(scope, new ManagementPath(path), null);
+                        using var job = new ManagementObject(scope, new ManagementPath(path), WmiLimits.Get());
                         job.Get();
                         snaps.Add(ToSnapshot(job));
                     }
@@ -671,7 +802,7 @@ public sealed class VmService : IDisposable
         try
         {
             using var mem = new ManagementObjectSearcher(scope, new ObjectQuery(
-                "SELECT InstanceID, Limit, VirtualQuantity FROM Msvm_MemorySettingData"));
+                "SELECT InstanceID, Limit, VirtualQuantity FROM Msvm_MemorySettingData"), WmiLimits.Enumeration());
             foreach (ManagementObject o in mem.Get())
                 using (o)
                 {
@@ -691,7 +822,7 @@ public sealed class VmService : IDisposable
             var now = DateTime.UtcNow;
             var sums = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
             using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
-                "SELECT InstanceID, HostResource FROM Msvm_StorageAllocationSettingData"));
+                "SELECT InstanceID, HostResource FROM Msvm_StorageAllocationSettingData"), WmiLimits.Enumeration());
             foreach (ManagementObject o in s.Get())
                 using (o)
                 {
@@ -716,14 +847,14 @@ public sealed class VmService : IDisposable
             // Same __PATH pitfall as ReadSummaries above (see DEVELOPMENT_NOTES.md "Flagged
             // assumptions") — SELECT * avoids it; the path comes from ManagementObject.Path.Path.
             var switchNameByPath = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            using (var sw = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT * FROM Msvm_VirtualEthernetSwitch")))
+            using (var sw = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT * FROM Msvm_VirtualEthernetSwitch"), WmiLimits.Enumeration()))
                 foreach (ManagementObject o in sw.Get())
                     using (o) switchNameByPath[o.Path.Path] = o["ElementName"] as string ?? "";
 
             // A NIC's connection to a switch is recorded on its EthernetPortAllocationSettingData;
             // HostResource holds the path to the Msvm_VirtualEthernetSwitch it's plugged into.
             using var eps = new ManagementObjectSearcher(scope, new ObjectQuery(
-                "SELECT InstanceID, HostResource FROM Msvm_EthernetPortAllocationSettingData"));
+                "SELECT InstanceID, HostResource FROM Msvm_EthernetPortAllocationSettingData"), WmiLimits.Enumeration());
             foreach (ManagementObject o in eps.Get())
                 using (o)
                 {
@@ -755,7 +886,7 @@ public sealed class VmService : IDisposable
         try
         {
             using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
-                "SELECT InstanceID, ElementName FROM Msvm_SyntheticEthernetPortSettingData"));
+                "SELECT InstanceID, ElementName FROM Msvm_SyntheticEthernetPortSettingData"), WmiLimits.Enumeration());
             using var results = s.Get();
             foreach (ManagementObject o in results)
                 using (o)
@@ -781,7 +912,7 @@ public sealed class VmService : IDisposable
         try
         {
             using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
-                "SELECT InstanceID, IPAddresses FROM Msvm_GuestNetworkAdapterConfiguration"));
+                "SELECT InstanceID, IPAddresses FROM Msvm_GuestNetworkAdapterConfiguration"), WmiLimits.Enumeration());
             foreach (ManagementObject o in s.Get())
                 using (o)
                 {
@@ -814,6 +945,14 @@ public sealed class VmService : IDisposable
         // Begin line for EVERY power action — the vm-power.log audit trail (issue #20). Every exit
         // path below writes exactly one matching outcome line (succeeded / no-op / failed / job-tracked).
         _powerLog.LogInformation("BEGIN {Kind} '{Vm}' (origin={Origin})", kind, vmName, origin);
+        if (!_serviceAvailable)
+        {
+            // Answered at once rather than by a WMI call that would fail slowly or hang.
+            const string reason = "Hyper-V Virtual Machine Management is not running";
+            _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): {Error}", kind, vmName, origin, reason);
+            Emit(vmName, kind, VmOpPhase.Failed, null, reason);
+            return;
+        }
         try
         {
             EnsureScope();
@@ -862,7 +1001,7 @@ public sealed class VmService : IDisposable
 
             using var inParams = vm.GetMethodParameters("RequestStateChange");
             inParams["RequestedState"] = requestCode;
-            using var outParams = vm.InvokeMethod("RequestStateChange", inParams, null);
+            using var outParams = vm.InvokeMethod("RequestStateChange", inParams, WmiLimits.Method());
             uint ret = Convert.ToUInt32(outParams["ReturnValue"]);
             _powerLog.LogDebug("{Kind} '{Vm}' (origin={Origin}): RequestStateChange returned {Ret}", kind, vmName, origin, ret);
 
@@ -890,7 +1029,7 @@ public sealed class VmService : IDisposable
         // shuts down asynchronously, and the state watcher flips the card to Off).
         var guid = vm["Name"] as string ?? "";
         using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
-            $"SELECT * FROM Msvm_ShutdownComponent WHERE SystemName='{guid}'"));
+            $"SELECT * FROM Msvm_ShutdownComponent WHERE SystemName='{guid}'"), WmiLimits.Enumeration());
         ManagementObject? sc = s.Get().Cast<ManagementObject>().FirstOrDefault();
         if (sc is null)
         {
@@ -903,7 +1042,7 @@ public sealed class VmService : IDisposable
         {
             inP["Force"]  = false;
             inP["Reason"] = "Requested from Hyper-V Manager Tray";
-            using var outP = sc.InvokeMethod("InitiateShutdown", inP, null);
+            using var outP = sc.InvokeMethod("InitiateShutdown", inP, WmiLimits.Method());
             uint ret = Convert.ToUInt32(outP["ReturnValue"]);
             if (ret is 0 or 4096)
             {
@@ -969,7 +1108,7 @@ public sealed class VmService : IDisposable
 
         try
         {
-            job = new ManagementObject(scope, new ManagementPath(jobPath), null);
+            job = new ManagementObject(scope, new ManagementPath(jobPath), WmiLimits.Get());
 
             // Class-scoped job-modification watcher, filtered in the handler to THIS job by InstanceID
             // (an __InstanceModificationEvent can't bind a specific object path in its WQL, and the
@@ -1041,14 +1180,14 @@ public sealed class VmService : IDisposable
             if (_scope is { IsConnected: true }) return;
             var scope = new ManagementScope(Namespace,
                 new ConnectionOptions { EnablePrivileges = true });
-            scope.Connect();
+            WmiLimits.ConnectBounded(scope);
             _scope = scope;
         }
     }
 
     private static ManagementObject GetManagementService(ManagementScope scope)
     {
-        using var s = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT * FROM Msvm_VirtualSystemManagementService"));
+        using var s = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT * FROM Msvm_VirtualSystemManagementService"), WmiLimits.Enumeration());
         return s.Get().Cast<ManagementObject>().First();
     }
 
@@ -1056,7 +1195,7 @@ public sealed class VmService : IDisposable
     {
         var esc = name.Replace("'", "\\'");
         using var s = new ManagementObjectSearcher(scope, new ObjectQuery(
-            $"SELECT * FROM Msvm_ComputerSystem WHERE Caption='Virtual Machine' AND ElementName='{esc}'"));
+            $"SELECT * FROM Msvm_ComputerSystem WHERE Caption='Virtual Machine' AND ElementName='{esc}'"), WmiLimits.Enumeration());
         return s.Get().Cast<ManagementObject>().FirstOrDefault();
     }
 

@@ -1,6 +1,7 @@
 using System.Management;
 using System.Net.NetworkInformation;
 using Microsoft.Extensions.Logging;
+using HyperVManagerTray.Helpers;
 
 namespace HyperVManagerTray.Services;
 
@@ -509,7 +510,7 @@ public sealed class HyperVManager : IDisposable
             return false;
         try
         {
-            using var port = new ManagementObject(scope, new ManagementPath(hr[0]), null);
+            using var port = new ManagementObject(scope, new ManagementPath(hr[0]), WmiLimits.Get());
             port.Get();
             return SwitchWmiHelpers.ExternalPortMatchesAdapter(
                 port["PermanentAddress"] as string, port["ElementName"] as string, mac, desc);
@@ -537,7 +538,7 @@ public sealed class HyperVManager : IDisposable
         {
             if (_scope is { IsConnected: true }) return;
             var scope = new ManagementScope(Namespace, new ConnectionOptions { EnablePrivileges = true });
-            scope.Connect();
+            WmiLimits.ConnectBounded(scope);   // a stopped or stopping vmms must fail the pass, not hang it
             _scope = scope;
         }
     }
@@ -546,7 +547,7 @@ public sealed class HyperVManager : IDisposable
     /// caller. (Objects outlive the searcher — the same pattern <see cref="VmService"/> relies on.)</summary>
     private static IEnumerable<ManagementObject> Query(ManagementScope scope, string wql)
     {
-        using var searcher = new ManagementObjectSearcher(scope, new ObjectQuery(wql));
+        using var searcher = new ManagementObjectSearcher(scope, new ObjectQuery(wql), WmiLimits.Enumeration());
         foreach (ManagementObject o in searcher.Get())
             yield return o;
     }
@@ -623,7 +624,7 @@ public sealed class HyperVManager : IDisposable
                 if (Convert.ToInt32(rel["ValueRole"]) != 0) continue;   // 0 = Default
                 var partPath = rel["PartComponent"] as string;
                 if (string.IsNullOrEmpty(partPath)) continue;
-                return new ManagementObject(scope, new ManagementPath(partPath), null);
+                return new ManagementObject(scope, new ManagementPath(partPath), WmiLimits.Get());
             }
         }
         throw new InvalidOperationException("Default Ethernet Connection setting-data template not found");
@@ -642,7 +643,7 @@ public sealed class HyperVManager : IDisposable
         using var inp = svc.GetMethodParameters("AddResourceSettings");
         inp["AffectedConfiguration"] = vmSettings.Path.Path;   // REF parameter → object-path string (U7)
         inp["ResourceSettings"]      = new[] { settingData.GetText(TextFormat.WmiDtd20) };  // U2
-        using var outp = svc.InvokeMethod("AddResourceSettings", inp, null);
+        using var outp = svc.InvokeMethod("AddResourceSettings", inp, WmiLimits.Method());
         CheckJob(scope, outp);
     }
 
@@ -651,7 +652,7 @@ public sealed class HyperVManager : IDisposable
         using var svc = VmSystemService(scope);
         using var inp = svc.GetMethodParameters("ModifyResourceSettings");
         inp["ResourceSettings"] = new[] { settingData.GetText(TextFormat.WmiDtd20) };
-        using var outp = svc.InvokeMethod("ModifyResourceSettings", inp, null);
+        using var outp = svc.InvokeMethod("ModifyResourceSettings", inp, WmiLimits.Method());
         CheckJob(scope, outp);
     }
 
@@ -662,7 +663,7 @@ public sealed class HyperVManager : IDisposable
         using var inp = svc.GetMethodParameters("AddResourceSettings");
         inp["AffectedConfiguration"] = switchSettings.Path.Path;
         inp["ResourceSettings"]      = new[] { settingData.GetText(TextFormat.WmiDtd20) };
-        using var outp = svc.InvokeMethod("AddResourceSettings", inp, null);
+        using var outp = svc.InvokeMethod("AddResourceSettings", inp, WmiLimits.Method());
         CheckJob(scope, outp);
     }
 
@@ -671,7 +672,7 @@ public sealed class HyperVManager : IDisposable
         using var svc = SwitchService(scope);
         using var inp = svc.GetMethodParameters("ModifyResourceSettings");
         inp["ResourceSettings"] = new[] { settingData.GetText(TextFormat.WmiDtd20) };
-        using var outp = svc.InvokeMethod("ModifyResourceSettings", inp, null);
+        using var outp = svc.InvokeMethod("ModifyResourceSettings", inp, WmiLimits.Method());
         CheckJob(scope, outp);
     }
 
@@ -681,7 +682,7 @@ public sealed class HyperVManager : IDisposable
         using var inp = svc.GetMethodParameters("RemoveResourceSettings");
         // RemoveResourceSettings takes REFERENCES (object paths), not embedded instances.
         inp["ResourceSettings"] = new[] { settingData.Path.Path };
-        using var outp = svc.InvokeMethod("RemoveResourceSettings", inp, null);
+        using var outp = svc.InvokeMethod("RemoveResourceSettings", inp, WmiLimits.Method());
         CheckJob(scope, outp);
     }
 
@@ -699,7 +700,7 @@ public sealed class HyperVManager : IDisposable
     {
         if (string.IsNullOrEmpty(jobPath)) return;
         var deadline = DateTime.UtcNow + BindTimeout;
-        using var job = new ManagementObject(scope, new ManagementPath(jobPath), null);
+        using var job = new ManagementObject(scope, new ManagementPath(jobPath), WmiLimits.Get());
         while (DateTime.UtcNow < deadline)
         {
             job.Get();
