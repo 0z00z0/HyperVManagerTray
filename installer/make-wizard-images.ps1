@@ -14,21 +14,20 @@
       • the two signature bracket gradients as top/bottom accent bars (teal->blue | purple->indigo),
       • the [Ø] STUDIO mark near the top (allowed here — the wizard is a "made by ZeroZero
         Software" surface, not the app's own icon; the product icon stays AppIcon.ico),
-      • the Hyper-V Manager Tray PRODUCT glyph — the hollow VM monitor + content bars + stand +
-        green connection dot, the SAME v5 geometry the app draws for its tray/app icon
-        (Helpers\IconGenerator.cs, its 16-unit logical space scaled x16 into the 256-unit
-        sub-canvas), drawn FLAT in the app's own muted product palette (blue frame/bars/stand,
-        green dot) — the product identity, reconciled with the studio chrome around it,
+      • the Hyper-V Manager Tray PRODUCT glyph — the route fork with the physical-LAN branch lit,
+        the SAME geometry the app draws for its tray/app icon (Helpers\IconGenerator.cs, drawn here
+        by installer\RouteGlyph.ps1), FLAT in the app's own muted product blue — the product
+        identity, reconciled with the studio chrome around it,
       • the "Hyper-V Manager" product wordmark in Cascadia Mono.
 
     Small header image: clears to WHITE (not studio dark) so it blends into the light inner wizard
-    pages; the muted-blue glyph + green dot read fine on white.
+    pages; the muted-blue glyph reads fine on white.
 
     Banner layout is two stacked, non-overlapping blocks (mirrors ChargeKeeper's #60 fix):
       STUDIO block:  [Ø] mark -> "ZeroZero Software" -> "Small tools. Zero bloat." (the studio's
                      tagline sits under the studio label, NOT under the product wordmark)
       -- divider --
-      PRODUCT block: VM-monitor glyph -> "Hyper-V Manager" wordmark (no tagline).
+      PRODUCT block: route-fork glyph -> "Hyper-V Manager" wordmark (no tagline).
 
     Output: installer\wizard\wizimg-{WxH}.bmp   (large side banner, base 164x314)
             installer\wizard\wizsmall-{WxH}.bmp  (small header,      base 55x58)
@@ -44,6 +43,7 @@ param()
 
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
+. (Join-Path $PSScriptRoot "RouteGlyph.ps1")
 
 $root    = Split-Path $PSScriptRoot -Parent          # repo root
 $outDir  = Join-Path $PSScriptRoot "wizard"
@@ -62,11 +62,10 @@ $cBlue    = C 0x11 0xa9 0xd6
 $cPurple  = C 0x7b 0x8c 0xff
 $cIndigo  = C 0x3f 0x5b 0xe0
 $cAmber   = C 0xd8 0xa6 0x57
-# Product palette — HyperVManagerTray's OWN muted tray tones (see Helpers\IconGenerator.cs). The
-# banner's VM-monitor glyph is drawn flat in these, reconciling the product icon (#26) with the
+# Product palette — HyperVManagerTray's OWN muted tray blue (see Helpers\IconGenerator.cs). The
+# banner's route-fork glyph is drawn flat in it, reconciling the product icon (#26) with the
 # studio chrome (dark bg, bracket accent bars, [Ø] mark) around it. NOT the studio gradients.
-$cVmBlue  = C 0x3b 0x7e 0xc4   # muted product blue — monitor frame, bars, stand
-$cVmGreen = C 0x35 0x9e 0x6a   # muted product green — connection dot
+$cVmBlue  = C 0x3b 0x7e 0xc4   # muted product blue — the route-fork glyph
 
 # ── Brand typeface: Cascadia Mono, loaded privately from the sibling design/shared repo ──
 $fontPaths = @(
@@ -154,56 +153,19 @@ function Draw-Mark($g,[float]$ox,[float]$oy,[float]$s) {
     } finally { $slashPen.Dispose() }
 }
 
-# The HyperVManagerTray product glyph (hollow VM monitor + content bars + stand + green connection
-# dot), in a 256-unit sub-canvas. Geometry is the v5 16-unit layout from Helpers\IconGenerator.cs
-# scaled x16, so the banner glyph is exactly the shape the running app paints for its tray/app icon
-# (#26). Drawn FLAT in the app's own muted product palette (blue frame/bars/stand, green dot) — not
-# the studio gradients — so the product identity is clear against the studio chrome around it.
-# Bounding box of the drawn shapes: x 24..232, y 36.8..216 (used by Draw-VMGlyphInBox for centring).
-function Draw-VMGlyph($g,[float]$ox,[float]$oy,[float]$s) {
-    $mx = { param($v) $ox + $v*$s }
-    $my = { param($v) $oy + $v*$s }
-
-    $blue  = New-Object System.Drawing.SolidBrush($cVmBlue)
-    $green = New-Object System.Drawing.SolidBrush($cVmGreen)
-    try {
-        # ── Hollow monitor frame: outer bezel minus screen cut-out, as one Alternate-fill ring ──
-        $frame = New-Object System.Drawing.Drawing2D.GraphicsPath([System.Drawing.Drawing2D.FillMode]::Alternate)
-        try {
-            Add-RoundedRect $frame (& $mx 24.0) (& $my 36.8) (208.0*$s) (134.4*$s) (30.4*$s)   # outer bezel
-            Add-RoundedRect $frame (& $mx 48.0) (& $my 60.8) (160.0*$s) (86.4*$s)  (17.6*$s)   # screen cut-out
-            $g.FillPath($blue,$frame)
-        } finally { $frame.Dispose() }
-
-        # ── Screen content bars ──
-        $bars = New-Object System.Drawing.Drawing2D.GraphicsPath
-        try {
-            Add-RoundedRect $bars (& $mx 67.2) (& $my 83.2)  (105.6*$s) (16*$s) (8*$s)   # long bar
-            Add-RoundedRect $bars (& $mx 67.2) (& $my 112.0) (67.2*$s)  (16*$s) (8*$s)   # short bar
-            $g.FillPath($blue,$bars)
-        } finally { $bars.Dispose() }
-
-        # ── Stand: neck + foot ──
-        $stand = New-Object System.Drawing.Drawing2D.GraphicsPath
-        try {
-            Add-RoundedRect $stand (& $mx 112.0) (& $my 171.2) (32*$s)    (22.4*$s) (4.8*$s)   # neck
-            Add-RoundedRect $stand (& $mx 73.6)  (& $my 192.0) (108.8*$s) (24*$s)   (12*$s)    # foot
-            $g.FillPath($blue,$stand)
-        } finally { $stand.Dispose() }
-
-        # ── Green connection dot (lower-right of the screen) — the "networked VM" cue ──
-        $g.FillEllipse($green,(& $mx 158.4),(& $my 113.6),(41.6*$s),(41.6*$s))
-    } finally { $blue.Dispose(); $green.Dispose() }
-}
-
-# Centre the VM glyph's bounding box (256-unit coords x 24..232, y 36.8..216) inside the target
-# rectangle (bx,by,bw,bh in px), scaled to fill $fill of it.
+# The HyperVManagerTray product glyph: the route fork (a virtual machine above a network line that
+# forks to a square physical-LAN end and a round NAT end), with the physical-LAN branch lit — the same
+# form as the plated application icon. Geometry is the 16-unit layout Helpers\IconGenerator.cs paints
+# for the tray icon, drawn by installer\RouteGlyph.ps1. Drawn FLAT in the app's own muted product blue
+# — not the studio gradients — so the product identity is clear against the studio chrome around it.
+# Bounding box of the drawn shapes in design units: x 0.6..15.45, y 0.5..15.5.
 function Draw-VMGlyphInBox($g,[float]$bx,[float]$by,[float]$bw,[float]$bh,[float]$fill) {
-    $gw = 208.0; $gh = 179.2; $gx0 = 24.0; $gy0 = 36.8
+    $gw = 14.85; $gh = 15.0; $gx0 = 0.6; $gy0 = 0.5
     $s  = [Math]::Min(($bw*$fill)/$gw, ($bh*$fill)/$gh)
     $ox = $bx + ($bw - $gw*$s)/2 - $gx0*$s
     $oy = $by + ($bh - $gh*$s)/2 - $gy0*$s
-    Draw-VMGlyph $g $ox $oy $s
+    $u  = New-RouteGrid $ox $oy $s $false
+    Draw-RouteGlyph $g $u $cVmBlue 'Bridged'
 }
 
 function Fill-AccentBar($g,[float]$x,[float]$y,[float]$w,[float]$h) {
@@ -253,7 +215,7 @@ function Render-Large([int]$w,[int]$h) {
         #
         #   STUDIO block:  [Ø] mark  →  "ZeroZero Software"  →  "Small tools. Zero bloat."
         #   ── divider ──
-        #   PRODUCT block: VM-monitor glyph  →  "Hyper-V Manager" wordmark
+        #   PRODUCT block: route-fork glyph  →  "Hyper-V Manager" wordmark
 
         # [Ø] mark: 52-unit target box, centred near the top. Its visible extent (brackets/ring)
         # lands ~y38..y58 in base units, clear of the studio label below.
@@ -279,7 +241,7 @@ function Render-Large([int]$w,[int]$h) {
                 $divPen = New-Object System.Drawing.Pen($cBorder,(1*$k))
                 try { $g.DrawLine($divPen,(40*$k),(120*$k),($w-40*$k),(120*$k)) } finally { $divPen.Dispose() }
 
-                # VM-monitor product glyph: box y130..y222, fill 0.80. Drawn extent lands ~y139..y212,
+                # Route-fork product glyph: box y130..y222, fill 0.80. Drawn extent lands ~y139..y212,
                 # so it clears the divider above and the wordmark below.
                 Draw-VMGlyphInBox $g 0 (130*$k) $w (92*$k) 0.80
 
@@ -291,16 +253,16 @@ function Render-Large([int]$w,[int]$h) {
     return $bmp
 }
 
-# ── Small header image (base 55x58) — product VM glyph on WHITE ────────────────
+# ── Small header image (base 55x58) — product glyph on WHITE ───────────────────
 # The inner wizard pages are the light/modern Inno theme, so this clears to WHITE (not the studio
-# dark) to blend in rather than float as a dark box. The muted-blue glyph + green dot read fine on
-# white; filling ~82 % keeps it dense at the small header size.
+# dark) to blend in rather than float as a dark box. The muted-blue glyph reads fine on white;
+# filling ~82 % keeps it dense at the small header size.
 function Render-Small([int]$w,[int]$h) {
     $bmp = New-Object System.Drawing.Bitmap($w,$h,[System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
     $g = New-Graphics $bmp
     try {
         $g.Clear([System.Drawing.Color]::White)
-        # VM glyph centred, filling ~82 % of the header.
+        # Product glyph centred, filling ~82 % of the header.
         Draw-VMGlyphInBox $g 0 0 $w $h 0.82
     } finally { $g.Dispose() }
     return $bmp
