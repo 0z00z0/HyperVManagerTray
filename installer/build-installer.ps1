@@ -16,6 +16,9 @@
     Requires Inno Setup (ISCC). If missing, install it once:
         winget install JRSoftware.InnoSetup
 
+    Refuses to build while the working tree has uncommitted changes, other than the
+    <Version> bump this script writes to the .csproj.
+
 .EXAMPLE
     .\build-installer.ps1                  # auto-bumps patch (e.g. 2.1.2 -> 2.1.3)
     .\build-installer.ps1 -Version 2.2.0   # explicit override
@@ -33,6 +36,14 @@ $proj         = Join-Path $root "HyperVManagerTray.csproj"
 $publishDir   = Join-Path $root "publish"
 $iss          = Join-Path $installerDir "HyperVManagerTray.iss"
 $shelfDir     = Join-Path $env:USERPROFILE "Nextcloud\Projects\Installers"   # local dev shelf; see step 6
+
+. (Join-Path $installerDir "BuildChecks.ps1")
+
+# -- Refuse an uncommitted tree -----------------------------------------------
+# The publish below compiles the working tree, so an installer built before its changes are committed
+# would ship code no commit contains (issue #77). The version bump this script writes is the one
+# change allowed, so a run can follow an earlier one that failed after bumping.
+Assert-CommittedTree -Root $root -ProjectFile "HyperVManagerTray.csproj"
 
 # -- 0. Resolve / bump version ------------------------------------------------
 $projContent = Get-Content $proj -Raw
