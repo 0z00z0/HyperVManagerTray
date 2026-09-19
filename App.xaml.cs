@@ -935,7 +935,7 @@ public partial class App : Application
                 var serviceState = _services.State(kind);
                 if (serviceState is Models.HyperVServiceState.Running or Models.HyperVServiceState.Unknown) continue;
                 lines.Add(TruncateLine(
-                    $"⏸ {Models.HyperVServiceNames.ShortLabel(kind)}: {Models.HyperVServiceNames.StateText(serviceState)}", 63));
+                    $"⏸ {Models.HyperVServiceNames.DisplayName(kind)}: {Models.HyperVServiceNames.StateText(serviceState)}", 63));
             }
 
         int vmsWithIp = 0;
