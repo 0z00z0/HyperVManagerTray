@@ -6,7 +6,8 @@ namespace HyperVManagerTray.Tests;
 
 /// <summary>
 /// Guards the three <c>_evalLock.Release()</c> call sites against the disposal race that killed the
-/// process on 2026-09-04.
+/// process on 2026-09-04, and the disposal contract that closes the race: Dispose() stops new work and
+/// waits for the pass in flight before the lock goes, and nothing is published once it has begun.
 ///
 /// <para><c>Services\NetworkMonitor.cs</c> composes <c>HyperVManager</c>, <c>VmService</c> and the live
 /// <c>NetworkChange</c> events, so it is deliberately not linked into this runtime-free test assembly
@@ -107,5 +108,40 @@ public class NetworkMonitorSourceTests
         int guarded  = GuardedRelease.Matches(code).Count;
 
         Assert.Equal(releases, guarded);
+    }
+
+    /// <summary>Dispose() must stop new work, then take the lock a pass in flight holds, and dispose the
+    /// lock only once it has it. Disposing it unconditionally brings back a pass that keeps touching
+    /// Hyper-V and VM state after shutdown has returned (issue #123).</summary>
+    [Fact]
+    public void Dispose_WaitsForThePassInFlightBeforeDisposingTheLock()
+    {
+        var code = Code();
+        int start = code.IndexOf("public void Dispose()", StringComparison.Ordinal);
+        Assert.True(start >= 0, "'public void Dispose()' is gone — fix this test's anchor, don't skip it.");
+        var body = code[start..];
+
+        int flag     = body.IndexOf("_disposing = true;", StringComparison.Ordinal);
+        int wait     = body.IndexOf("_evalLock.Wait(DisposeWaitBudget)", StringComparison.Ordinal);
+        int disposal = body.IndexOf("_evalLock.Dispose();", StringComparison.Ordinal);
+
+        Assert.True(flag >= 0 && wait > flag,
+            "Dispose() must set _disposing before waiting on _evalLock, so the pass in flight stops at its next step.");
+        Assert.True(disposal > wait,
+            "Dispose() must wait on _evalLock before disposing it.");
+        Assert.Matches(@"if\s*\(\s*drained\s*\)\s*\{\s*_evalLock\.Dispose\(\);", body);
+    }
+
+    /// <summary>SwitchApplied drives the tray icon and the dashboard, both torn down at exit: it is raised
+    /// in one place only, and that place stands down once disposal has begun.</summary>
+    [Fact]
+    public void SwitchApplied_IsNeverRaisedOnceDisposalHasBegun()
+    {
+        var code = Code();
+
+        Assert.Single(Regex.Matches(code, @"SwitchApplied\?\.Invoke\("));
+        Assert.Matches(
+            @"private void Publish\(MatchResult result\)\s*\{\s*if\s*\(\s*_disposing\s*\)\s*return;\s*SwitchApplied\?\.Invoke\(",
+            code);
     }
 }

@@ -27,6 +27,12 @@ public sealed class NetworkMonitor : IDisposable
     // coalesces changes that arrive while one is running into exactly one follow-up pass.
     private readonly SemaphoreSlim _evalLock = new(1, 1);
     private volatile bool _evaluatePending;
+    // Set first thing in Dispose(). Every pass checks it between steps, so once disposal has begun a pass
+    // stops before its next read of config, Hyper-V or VM state, and publishes nothing.
+    private volatile bool _disposing;
+    // How long Dispose() waits for a pass in flight. Bounded: it runs on the UI thread at exit, a pass can
+    // sit inside a switch rebind for seconds, and a UI-bound continuation cannot progress while it waits.
+    private static readonly TimeSpan DisposeWaitBudget = TimeSpan.FromSeconds(5);
     private MatchResult? _lastApplied;
     // Tracks which physical adapter each virtual SWITCH was last successfully bound to, so we can skip
     // redundant re-binds (which cause a brief VM network drop) when nothing has changed. Keyed by switch
@@ -148,6 +154,7 @@ public sealed class NetworkMonitor : IDisposable
             do
             {
                 _evaluatePending = false;
+                ThrowIfDisposing();
 
                 // Breadcrumb BEFORE the native adapter enumeration: GetAllNetworkInterfaces /
                 // GetIPProperties run on an adapter that may be tearing down during a dock
@@ -204,7 +211,7 @@ public sealed class NetworkMonitor : IDisposable
                     };
 
                     _lastApplied = result;
-                    SwitchApplied?.Invoke(this, result);
+                    Publish(result);
                 }
                 else
                 {
@@ -213,6 +220,7 @@ public sealed class NetworkMonitor : IDisposable
             }
             while (_evaluatePending);
         }
+        catch (OperationCanceledException) when (_disposing) { }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error during network evaluation");
@@ -247,11 +255,13 @@ public sealed class NetworkMonitor : IDisposable
 
         try
         {
+            ThrowIfDisposing();
             // AdapterMatcher.Evaluate enumerates all NICs (GetAllNetworkInterfaces + GetIPProperties),
             // which can block for hundreds of ms. ForceEvaluateAsync is invoked from the tray "Re-check
             // network now" command on the UI thread, so run the enumeration on the thread pool to keep
             // the UI responsive (issue #29, finding 3). The debounce path already runs on a timer thread.
             var result = await Task.Run(() => AdapterMatcher.Evaluate(_config.Current));
+            ThrowIfDisposing();
 
             // A rebind drops the host's network, so a person asking for this pass is asked first. The
             // prediction is the apply pass's own skip-cache test; declining leaves everything as it was.
@@ -268,6 +278,10 @@ public sealed class NetworkMonitor : IDisposable
             // userInitiated: the tray's "Re-check network now" reports this result itself (including the
             // failure), so the automatic balloon must not also fire and contradict it.
             return await ApplyAsync(result, userInitiated: true);
+        }
+        catch (OperationCanceledException) when (_disposing)
+        {
+            return null;
         }
         catch (Exception ex)
         {
@@ -334,7 +348,7 @@ public sealed class NetworkMonitor : IDisposable
 
         try
         {
-            if (_lastApplied is not { } confirmed) return;
+            if (_disposing || _lastApplied is not { } confirmed) return;
 
             // Same off-thread enumeration as ForceEvaluateAsync, for the same reason: the caller is the
             // Settings UI thread and AdapterMatcher.Evaluate can block for hundreds of ms.
@@ -350,7 +364,7 @@ public sealed class NetworkMonitor : IDisposable
 
             _logger.LogDebug("Display refresh: adapter now displays as '{Adapter}'", refreshed.HostAdapterName);
             _lastApplied = refreshed;
-            SwitchApplied?.Invoke(this, refreshed);
+            Publish(refreshed);
         }
         catch (Exception ex)
         {
@@ -413,7 +427,9 @@ public sealed class NetworkMonitor : IDisposable
                     // An apply pass in flight could rebind or move the VM after this override; wait for it.
                     try { acquired = await _evalLock.WaitAsync(TimeSpan.FromSeconds(30)); }
                     catch (ObjectDisposedException) { acquired = false; }
-                    return acquired;
+                    // Held but refused once disposal has begun: nothing is bound or moved, and the
+                    // finally below still releases it for Dispose() to take.
+                    return acquired && !_disposing;
                 },
                 bind: async () =>
                 {
@@ -456,7 +472,7 @@ public sealed class NetworkMonitor : IDisposable
                 if (bound) Schedule((int)OverrideFlow.SettleAfterBind.TotalMilliseconds + 500);
 
                 _lastApplied = result;
-                SwitchApplied?.Invoke(this, result);
+                Publish(result);
             }
             return new OverrideReport(outcome, shown);
         }
@@ -534,9 +550,23 @@ public sealed class NetworkMonitor : IDisposable
                 DnsServers             = evaluated.DnsServers,
             };
             _lastApplied = refreshed;
-            SwitchApplied?.Invoke(this, refreshed);
+            Publish(refreshed);
         }
         return true;
+    }
+
+    /// <summary>The one place <see cref="SwitchApplied"/> is raised: never once disposal has begun, when
+    /// its subscribers are tearing down.</summary>
+    private void Publish(MatchResult result)
+    {
+        if (_disposing) return;
+        SwitchApplied?.Invoke(this, result);
+    }
+
+    /// <summary>Ends a pass at its next step once disposal has begun; each entry point catches this quietly.</summary>
+    private void ThrowIfDisposing()
+    {
+        if (_disposing) throw new OperationCanceledException("The network monitor is being disposed.");
     }
 
     /// <summary>The rule ID a manual override publishes under: neither a rule nor the fallback.</summary>
@@ -567,6 +597,7 @@ public sealed class NetworkMonitor : IDisposable
     {
         // Capture the previously-active rule before any state changes so autostart and
         // bridge-transition detection both see a consistent before/after snapshot.
+        ThrowIfDisposing();
         var previousRule = _lastApplied?.RuleId;
 
         // The rule that has just become active, if any: its service and autostart settings act once, on
@@ -596,6 +627,7 @@ public sealed class NetworkMonitor : IDisposable
         // this session already CONFIRMED this switch on this adapter — both are legitimately NotNeeded.
         var bindStep = NetworkStatusUi.BindStep.NotNeeded;
 
+        ThrowIfDisposing();
         var target = new SwitchRef(result.SwitchId, result.SwitchName);
         if (result.IsFallback)
         {
@@ -639,6 +671,7 @@ public sealed class NetworkMonitor : IDisposable
         var failedVms = new List<string>();
         foreach (var targetVm in result.TargetVms)
         {
+            ThrowIfDisposing();
             // Same shared lookup as ManualOverrideAsync (VmConfigUi.FindManagedVm), by VM ID.
             var vm = VmConfigUi.FindManagedVm(_config.Current.VirtualMachines, targetVm.Id);
             if (vm is null)
@@ -663,6 +696,9 @@ public sealed class NetworkMonitor : IDisposable
         // Stamp the outcome onto the result BEFORE it is published/remembered — from here on this is
         // what the icon, tooltip and dashboard render.
         result = result with { ApplyStatus = status, FailedVms = failedVms, UserInitiated = userInitiated };
+
+        // Autostart, service stops and bridge-lost actions all schedule work that outlives this pass.
+        ThrowIfDisposing();
 
         // Per-network autostart: when this rule has just become active and opts in, start (or
         // resume) its target VMs.  Never auto-stop on leaving — by design.
@@ -694,7 +730,7 @@ public sealed class NetworkMonitor : IDisposable
         HandleBridgeTransition(previousRule, result);
 
         _lastApplied = result;
-        SwitchApplied?.Invoke(this, result);
+        Publish(result);
         return result;
     }
 
@@ -710,6 +746,7 @@ public sealed class NetworkMonitor : IDisposable
         bool startedVmms = false;
         foreach (var kind in rule.ServicesToStart())
         {
+            ThrowIfDisposing();
             if (_services.Monitor.State(kind) == HyperVServiceState.Running) continue;
 
             var name = HyperVServiceNames.DisplayName(kind);
@@ -722,6 +759,7 @@ public sealed class NetworkMonitor : IDisposable
                 startedVmms = true;
         }
 
+        ThrowIfDisposing();
         if (startedVmms && !await _vm.WaitForStatesAsync(ServiceStatesTimeout))
             _logger.LogWarning("Rule '{Rule}': vmms is running, but the VMs could not be read yet", rule.Name);
     }
@@ -911,15 +949,37 @@ public sealed class NetworkMonitor : IDisposable
 
     public void Dispose()
     {
+        // First, so a pass in flight stops at its next step and publishes nothing from here on.
+        _disposing = true;
+
         NetworkChange.NetworkAddressChanged -= OnNetworkChanged;
         NetworkChange.NetworkAvailabilityChanged -= OnNetworkChanged;
-        // Now unsubscribable, because the handler is a method rather than the closure it used to be:
-        // a disposed monitor no longer keeps itself alive through ConfigManager's event, nor arms a
-        // disposed timer when a config write lands during shutdown.
+        // Unsubscribing keeps a disposed monitor from staying alive through ConfigManager's event, and from
+        // arming a disposed timer when a config write lands during shutdown.
         _config.ConfigReloaded -= OnConfigReloaded;
         _debounceTimer.Dispose();
+
+        // Take the lock the pass in flight holds, so it has finished or stopped before anything it uses goes.
+        bool drained;
+        try { drained = _evalLock.Wait(DisposeWaitBudget); }
+        catch (ObjectDisposedException) { return; }   // already disposed
+
+        // After the wait: a pass that got past its last check before the flag was set may still have
+        // scheduled a delayed action.
         CancelDisconnectActions();
         CancelServiceStops();
-        _evalLock.Dispose();
+
+        if (drained)
+        {
+            // Held, never released: no pass can take it again, and none is left to release it.
+            _evalLock.Dispose();
+        }
+        else
+        {
+            // The pass is abandoned rather than awaited further. Its lock is left undisposed so its own
+            // release stays valid; the flag above stops it at its next step.
+            _logger.LogWarning("Network evaluation still running after {Seconds} s at shutdown — abandoning it",
+                DisposeWaitBudget.TotalSeconds);
+        }
     }
 }

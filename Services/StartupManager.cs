@@ -1,11 +1,13 @@
 using HyperVManagerTray.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
-using Microsoft.Win32.TaskScheduler;
+using ZeroZero.Primitives;
 
-// Microsoft.Win32.TaskScheduler.Task would otherwise be ambiguous against System.Threading.Tasks.Task
-// (ImplicitUsings).
-using ScheduledTask = Microsoft.Win32.TaskScheduler.Task;
+// Aliased rather than imported: ZeroZero.Startup has its own StartupTaskState, which would be ambiguous
+// against the toggle's decision helper in HyperVManagerTray.Helpers.
+using StartupTask              = ZeroZero.Startup.StartupTask;
+using StartupTaskOptions       = ZeroZero.Startup.StartupTaskOptions;
+using StartupTaskRepairOutcome = ZeroZero.Startup.StartupTaskRepairOutcome;
 
 namespace HyperVManagerTray.Services;
 
@@ -19,13 +21,17 @@ namespace HyperVManagerTray.Services;
 /// prompt.  Any obsolete Run-key value from older versions is removed whenever the setting is
 /// toggled.
 ///
-/// <para>The task is registered through the Task Scheduler API rather than <c>schtasks /Create</c>,
-/// which has no switch for the battery settings that decide whether the task ever starts — see
-/// <see cref="StartupTaskDefinition"/> (issue #61).</para>
+/// <para>The task itself — its definition, registration and repair — is ZeroZero.Startup's
+/// <see cref="StartupTask"/>. The definition clears the scheduler defaults meant for a maintenance job:
+/// the battery restrictions (issue #61), the three-day execution limit, hard termination, idle-only
+/// running and below-normal priority, with new instances ignored.</para>
 /// </summary>
 internal sealed class StartupManager
 {
-    private const string TaskName       = StartupTaskDefinition.TaskName;
+    /// <summary>Also hard-coded as <c>TaskName</c> in installer\HyperVManagerTray.iss, so the
+    /// installer option and the in-app toggle control the same task.</summary>
+    internal const string TaskName = "HyperVManagerTray";
+
     private const string LegacyRunKey   = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
     private const string LegacyRunValue = "HyperVManagerTray";
 
@@ -33,17 +39,27 @@ internal sealed class StartupManager
 
     public StartupManager(ILogger<StartupManager> logger) => _logger = logger;
 
+    private static string Description =>
+        $"Starts {AppInfo.Name} at logon, elevated, with power-safe settings.";
+
+    /// <summary>The task by name. <paramref name="exePath"/> is what it starts; null means the running
+    /// executable.</summary>
+    private StartupTask Open(string? exePath = null) => new(new StartupTaskOptions
+    {
+        TaskName       = TaskName,
+        Description    = Description,
+        ExecutablePath = exePath,
+        Log            = new StartupLogSink(_logger),
+    });
+
     /// <summary>True only if the auto-start scheduled task exists AND is enabled (issue #71) — a
     /// task disabled through Task Scheduler's own UI or by policy reads as Off, not On. Never
     /// throws — the toggle reads it.</summary>
     public bool IsEnabled => StartupTaskState.IsEnabled(() =>
     {
-        using var ts = new TaskService();
-        using ScheduledTask? task = ts.GetTask(StartupTaskDefinition.TaskPath);
-        // Task.Enabled, not Definition.Settings.Enabled: the same flag off the registered task
-        // itself, one COM call instead of a full definition fetch, and Task.Dispose releases it —
-        // Definition is a separate disposable the task's own Dispose does not cascade to.
-        return task?.Enabled;
+        using var task = Open();
+        // The task's own enabled flag, not its existence: a disabled task still exists.
+        return task.IsEnabled;
     });
 
     /// <summary>Creates the logon task pointing at <paramref name="exePath"/>. Throws on failure.</summary>
@@ -51,17 +67,8 @@ internal sealed class StartupManager
     {
         _logger.LogInformation("Enabling startup task '{TaskName}' for '{ExePath}'...", TaskName, exePath);
 
-        TaskIdentity user = TaskIdentity.Current()
-            ?? throw new InvalidOperationException("Cannot determine the current user for the startup task.");
-
-        using var ts = new TaskService();
-        using TaskDefinition td = StartupTaskDefinition.BuildLogonTask(ts, exePath, user);
-        ts.RootFolder.RegisterTaskDefinition(
-            TaskName, td,
-            TaskCreation.CreateOrUpdate,   // overwrite a stale definition from an older build
-            userId:    null,
-            password:  null,
-            logonType: TaskLogonType.InteractiveToken);
+        using (var task = Open(exePath))
+            task.Register();   // replaces a stale definition from an older build
 
         _logger.LogInformation("Startup task '{TaskName}' enabled successfully.", TaskName);
         RemoveLegacyRunKey();
@@ -72,75 +79,68 @@ internal sealed class StartupManager
     {
         _logger.LogInformation("Disabling startup task '{TaskName}'...", TaskName);
 
-        using var ts = new TaskService();
-        ts.RootFolder.DeleteTask(TaskName, exceptionOnNotExists: false);
+        using (var task = Open())
+            task.Delete();
 
         _logger.LogInformation("Startup task '{TaskName}' disabled successfully.", TaskName);
         RemoveLegacyRunKey();
     }
 
     /// <summary>
-    /// Repairs a logon task registered by an older build, whose inherited scheduler defaults stop it
-    /// starting the app on battery (issue #61). Best-effort and idempotent: it never creates a task,
-    /// never throws, and only rewrites one that is actually blocked.
+    /// Brings a logon task registered by an older build, or by the installer, up to the current
+    /// definition — its settings, and the executable it starts when that is an older install path.
+    /// Best-effort: it never creates a task, keeps the enabled flag as the user left it, and never
+    /// throws. No demand start follows the rewrite, so the running app is never started a second time.
     /// </summary>
-    public void TryRepairPowerSettings()
+    public void TryRepair()
     {
-        Exception? error   = null;
-        var        outcome = Repair(ex => error = ex);
-
-        switch (outcome)
+        // A rewrite points the task at the running executable, so only an installed copy may make one:
+        // a build started from its output folder would otherwise take over the logon task.
+        if (!IsInstalledCopy(Environment.ProcessPath))
         {
-            case StartupTaskRepairOutcome.Repaired:
-                _logger.LogInformation(
-                    "Startup task '{TaskName}' repaired: battery restrictions cleared, so it now starts "
-                    + "the app when the machine boots on battery.", TaskName);
-                break;
-            case StartupTaskRepairOutcome.AlreadyPowerSafe:
-                _logger.LogDebug("Startup task '{TaskName}' is already power-safe.", TaskName);
-                break;
-            case StartupTaskRepairOutcome.NotRegistered:
-                _logger.LogDebug("No startup task '{TaskName}' — nothing to repair.", TaskName);
-                break;
-            case StartupTaskRepairOutcome.Failed:
-                _logger.LogWarning(error,
-                    "Could not repair startup task '{TaskName}' — auto-start may stay blocked on battery.",
-                    TaskName);
-                break;
+            _logger.LogDebug("Not running from an installed copy — startup task '{TaskName}' left as it is.", TaskName);
+            return;
+        }
+
+        try
+        {
+            using var task = Open();
+            var result = task.Repair();
+
+            switch (result.Outcome)
+            {
+                case StartupTaskRepairOutcome.Repaired:
+                    _logger.LogInformation("Startup task '{TaskName}' repaired: it {Deviations}.",
+                        TaskName, string.Join("; ", result.Deviations));
+                    break;
+                case StartupTaskRepairOutcome.AlreadyCorrect:
+                    _logger.LogDebug("Startup task '{TaskName}' is already as it should be.", TaskName);
+                    break;
+                case StartupTaskRepairOutcome.NotRegistered:
+                    _logger.LogDebug("No startup task '{TaskName}' — nothing to repair.", TaskName);
+                    break;
+                default:
+                    _logger.LogWarning(result.Error,
+                        "Could not repair startup task '{TaskName}' ({Outcome}) — the app may not start at logon.",
+                        TaskName, result.Outcome);
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            // Connecting to the scheduler happens before the repair's own guard.
+            _logger.LogWarning(ex, "Could not repair startup task '{TaskName}' — the app may not start at logon.", TaskName);
         }
     }
 
-    /// <summary>Wires the scheduler reads/writes into <see cref="StartupTaskRepair.Run"/>, which owns
-    /// the decision and swallows whatever these throw.</summary>
-    private static StartupTaskRepairOutcome Repair(Action<Exception> onError)
+    /// <summary>The installer leaves its uninstaller beside the executable; a build output folder has
+    /// none.</summary>
+    private static bool IsInstalledCopy(string? exePath)
     {
-        TaskService?   ts   = null;
-        ScheduledTask? task = null;
-        try
-        {
-            return StartupTaskRepair.Run(
-                readFlags: () =>
-                {
-                    ts   = new TaskService();
-                    task = ts.GetTask(StartupTaskDefinition.TaskPath);
-                    return task is null
-                        ? null
-                        : StartupTaskDefinition.ReadPowerFlags(task.Definition.Settings);
-                },
-                repair: () =>
-                {
-                    // In place — RegisterChanges keeps the existing trigger, action and principal,
-                    // so a task pointing at another install path is fixed, not hijacked.
-                    StartupTaskDefinition.ApplyPowerSafe(task!.Definition.Settings);
-                    task.RegisterChanges();
-                },
-                onError: onError);
-        }
-        finally
-        {
-            task?.Dispose();
-            ts?.Dispose();
-        }
+        var dir = Path.GetDirectoryName(exePath);
+        return !string.IsNullOrEmpty(dir)
+            && Directory.Exists(dir)
+            && Directory.EnumerateFiles(dir, "unins*.exe").Any();
     }
 
     /// <summary>Removes the obsolete HKCU\Run value written by older versions, if present.</summary>
@@ -148,5 +148,14 @@ internal sealed class StartupManager
     {
         using var key = Registry.CurrentUser.OpenSubKey(LegacyRunKey, writable: true);
         key?.DeleteValue(LegacyRunValue, throwOnMissingValue: false);
+    }
+
+    /// <summary>The component's log sink over this manager's logger, so its lines land in the same log.</summary>
+    private sealed class StartupLogSink(ILogger logger) : ILogSink
+    {
+        public void Info(string message) => logger.LogInformation("{Message}", message);
+
+        public void Error(string source, Exception? ex) =>
+            logger.LogWarning(ex, "Startup task failure in {Source}", source);
     }
 }

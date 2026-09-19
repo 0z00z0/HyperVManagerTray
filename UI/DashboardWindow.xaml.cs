@@ -1344,11 +1344,36 @@ public sealed partial class DashboardWindow : Window
         // flat 2.5s guess with an actual readiness wait (event-driven off VmService.StatusesChanged —
         // see its doc comment). On timeout it proceeds anyway rather than hanging the button — vmconnect
         // itself tolerates attaching to a VM that's still finishing boot.
-        _vm.BeginPowerAction(vm.Ref, VmOpKind.Start, VmOpOrigin.Dashboard);
-        var readiness = await _vm.WaitUntilRunningAsync(vm.Id, StartAndConnectTimeout);
+        // Keeps Hyper-V's reason for a failed start, so giving up can say why. Subscribed before the
+        // start is requested, so a failure that arrives at once is not missed.
+        string? failure = null;
+        void OnProgress(VmOperationProgress p)
+        {
+            if (p.Phase == VmOpPhase.Failed && p.Kind == VmOpKind.Start && HostIdentity.Same(p.VmId, vm.Id))
+                failure = p.Message;
+        }
+
+        VmService.StartReadiness readiness;
+        _vm.OperationProgress += OnProgress;
+        try
+        {
+            _vm.BeginPowerAction(vm.Ref, VmOpKind.Start, VmOpOrigin.Dashboard);
+            readiness = await _vm.WaitUntilRunningAsync(vm.Id, StartAndConnectTimeout);
+        }
+        finally
+        {
+            _vm.OperationProgress -= OnProgress;
+        }
+
         // Don't launch vmconnect onto a VM that failed to start (issue #30, finding 6); a plain timeout
         // still connects, since vmconnect tolerates attaching to a VM that's still finishing boot.
-        if (readiness == VmService.StartReadiness.Failed) return;
+        if (readiness == VmService.StartReadiness.Failed)
+        {
+            // The command reports its own outcome, and the visible dashboard must not suppress it (#69).
+            UiActivityLog.Logger.LogWarning("Start & Connect: '{Vm}' did not start, so its console was not opened", vm.Name);
+            _notify($"{AppInfo.Name} — {vm.Name}", VmPowerUi.StartAndConnectAbandonedMessage(vm.Name, failure), true);
+            return;
+        }
         await ConnectAsync(vm);
     }
 

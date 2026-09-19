@@ -179,11 +179,11 @@ public partial class App : Application
             CrashDumps.TryRegisterLocalDumps(Path.Combine(logDir, "dumps"));
 
             _startup       = new StartupManager(_loggerFactory.CreateLogger<StartupManager>());
-            // Self-heal for issue #61: a logon task registered by an older build carries Task
-            // Scheduler's battery defaults and never starts the app when the machine boots on
-            // battery. Off the startup path — connecting to the scheduler costs tens of ms, and
-            // nothing here waits on the result.
-            _ = Task.Run(_startup.TryRepairPowerSettings);
+            // Self-heal: a logon task registered by an older build or the installer carries Task
+            // Scheduler's defaults — battery restrictions (issue #61), a three-day execution limit —
+            // or an older install path. Off the startup path — connecting to the scheduler costs tens
+            // of ms, and nothing here waits on the result.
+            _ = Task.Run(_startup.TryRepair);
             // The running build is stated rather than left to the update component, which would
             // otherwise read the entry assembly — this app today, but whatever host is running the
             // code tomorrow. The comparison is this app's own decision.
@@ -742,8 +742,10 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Shows a tray balloon for a failed VM power action, but only when the dashboard isn't visible —
-    /// the dashboard already surfaces the failure on the card, so a toast would be redundant there.
+    /// Shows a tray balloon for a failed VM power action. A failed start names the VM and Hyper-V's
+    /// reason and is shown even while the dashboard is open (issue #69) — see
+    /// <see cref="VmPowerUi.SuppressWhenDashboardVisible"/>; any other failed action is left to the
+    /// dashboard card while the dashboard is visible.
     ///
     /// <para>This originally existed for the tray VM-Power submenu, whose failures were invisible (issue
     /// #30, finding 2). That menu is gone (issue #34), but this balloon is now MORE load-bearing, not
@@ -757,10 +759,12 @@ public partial class App : Application
     private void OnVmOperationFailed(Models.VmOperationProgress p)
     {
         if (p.Phase != Models.VmOpPhase.Failed) return;
-        ShowBalloon($"{AppInfo.Name} — {p.VmName}",
-                    string.IsNullOrWhiteSpace(p.Message) ? "Power action failed." : p.Message!,
+        var message = p.Kind == Models.VmOpKind.Start
+            ? VmPowerUi.StartFailedMessage(p.VmName, p.Message)
+            : string.IsNullOrWhiteSpace(p.Message) ? "Power action failed." : p.Message!;
+        ShowBalloon($"{AppInfo.Name} — {p.VmName}", message,
                     isError: true,
-                    suppressWhenDashboardVisible: true);
+                    suppressWhenDashboardVisible: VmPowerUi.SuppressWhenDashboardVisible(p.Kind));
     }
 
     // Decides whether a failed apply is announced, and remembers what actually WAS announced so a

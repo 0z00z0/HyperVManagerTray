@@ -48,6 +48,9 @@
          the failure is reported before vmconnect steals focus — is testable at all. Side effects are
          delegates, so this links with no WinUI and no live host; it depends only on NetworkStatusUi. -->
     <Compile Include="..\Helpers\VmConnectFlow.cs"    Link="Linked\VmConnectFlow.cs" />
+    <!-- Issue #69: what a failed VM start says and whether a visible dashboard holds it back. Pure text
+         over the linked VmOperation.cs. -->
+    <Compile Include="..\Helpers\VmPowerUi.cs"        Link="Linked\VmPowerUi.cs" />
     <!-- The manual override's order of work: a VM never moves onto a switch that could not be bound.
          Side effects are delegates, so it links with no WMI and no live host. -->
     <Compile Include="..\Helpers\OverrideFlow.cs"     Link="Linked\OverrideFlow.cs" />
@@ -131,16 +134,10 @@
          linked FileLogger.cs, which salvages each path before NLog opens a handle on it. Pure file IO
          over a path handed in — temp files are all its tests need. -->
     <Compile Include="..\Services\LogFileSalvage.cs"  Link="Linked\LogFileSalvage.cs" />
-    <!-- Issue #61: what the logon task must look like, and the self-heal decision for one already
-         registered with Task Scheduler's battery defaults. BuildLogonTask only builds an in-memory
-         definition and StartupTaskRepair takes its scheduler calls as delegates, so neither can
-         touch a real task; Services\StartupManager.cs — the one file that registers and deletes —
-         is deliberately NOT linked. -->
-    <Compile Include="..\Helpers\StartupTaskDefinition.cs" Link="Linked\StartupTaskDefinition.cs" />
-    <Compile Include="..\Helpers\StartupTaskRepair.cs"     Link="Linked\StartupTaskRepair.cs" />
     <!-- Issue #71: decides whether the logon toggle reads On from an enabled flag handed in as a
-         delegate, the same seam StartupTaskRepair uses — "task absent", "task disabled" and "task
-         enabled" are all testable with no live scheduled task. -->
+         delegate — "task absent", "task disabled" and "task enabled" are all testable with no live
+         scheduled task. Services\StartupManager.cs, which registers and deletes the real task through
+         ZeroZero.Startup, is deliberately NOT linked. -->
     <Compile Include="..\Helpers\StartupTaskState.cs"      Link="Linked\StartupTaskState.cs" />
     <!-- The About credits list, so AboutCreditsTests can assert against the REAL
          AppAbout.CreateInfo() rather than a copy of it parsed out of the source. Pure data — its
@@ -224,8 +221,6 @@
     <!-- Required by the linked FileLogger.cs, whose sink is now NLog (issue #55). -->
     <PackageReference Include="NLog" />
     <PackageReference Include="System.Drawing.Common" />
-    <!-- Required by the linked StartupTaskDefinition.cs (issue #61). -->
-    <PackageReference Include="TaskScheduler" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
