@@ -1459,8 +1459,8 @@ internal sealed partial class SettingsWindow : Window
         computeCombo.SelectionChanged += (_, _) => CommitServices();
         stopDelay.SelectionChanged    += (_, _) => CommitServices();
 
-        Field("VM management service", vmmsCombo);
-        Field("Host compute service", computeCombo);
+        Field($"{HyperVServiceNames.DisplayName(HyperVServiceKind.VirtualMachineManagement)} service", vmmsCombo);
+        Field($"{HyperVServiceNames.DisplayName(HyperVServiceKind.HostCompute)} service", computeCombo);
         Field("Service stop delay", stopDelay);
 
         var servicesNote = new TextBlock

@@ -36,19 +36,24 @@ public static class HyperVServiceNames
         _                                          => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 
-    /// <summary>The name Windows displays, used in prompts, balloons and the log.</summary>
-    public static string DisplayName(HyperVServiceKind kind) => kind switch
+    /// <summary>The name Windows itself gives the service (its "Display name" in services.msc). Kept only
+    /// for where the technical name must stay findable — currently the dashboard row's tooltip, next to
+    /// <see cref="ServiceName"/>. Everywhere a person reads about the service, <see cref="DisplayName"/> is
+    /// what is shown instead.</summary>
+    public static string WindowsServiceName(HyperVServiceKind kind) => kind switch
     {
         HyperVServiceKind.VirtualMachineManagement => "Hyper-V Virtual Machine Management",
         HyperVServiceKind.HostCompute              => "Hyper-V Host Compute Service",
         _                                          => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 
-    /// <summary>The short row label on the dashboard, where the full display name does not fit.</summary>
-    public static string ShortLabel(HyperVServiceKind kind) => kind switch
+    /// <summary>The label used wherever a person reads about the service: the dashboard row, the stop
+    /// confirmation, the tray tooltip, the MQTT entity name and the rule editor. Named for what the service
+    /// is used for rather than for its Windows service name (<see cref="WindowsServiceName"/>).</summary>
+    public static string DisplayName(HyperVServiceKind kind) => kind switch
     {
         HyperVServiceKind.VirtualMachineManagement => "VM management",
-        HyperVServiceKind.HostCompute              => "Host compute",
+        HyperVServiceKind.HostCompute              => "WSL, Docker and Sandbox",
         _                                          => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 

@@ -427,15 +427,15 @@ public sealed partial class DashboardWindow : Window
 
             var label = new TextBlock
             {
-                Text              = HyperVServiceNames.ShortLabel(kind),
+                Text              = HyperVServiceNames.DisplayName(kind),
                 FontSize          = TitleFontSize,
                 FontWeight        = Microsoft.UI.Text.FontWeights.SemiBold,
                 VerticalAlignment = VerticalAlignment.Center,
                 TextTrimming      = TextTrimming.CharacterEllipsis,
             };
-            // The short label fits the popup; the full name is what Windows' own tools show.
+            // The row shows what the service is used for; the tooltip gives the name Windows' own tools show.
             ToolTipService.SetToolTip(label,
-                $"{HyperVServiceNames.DisplayName(kind)} ({HyperVServiceNames.ServiceName(kind)})");
+                $"{HyperVServiceNames.WindowsServiceName(kind)} ({HyperVServiceNames.ServiceName(kind)})");
 
             var state = new TextBlock
             {
