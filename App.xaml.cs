@@ -742,8 +742,10 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Shows a tray balloon for a failed VM power action, but only when the dashboard isn't visible —
-    /// the dashboard already surfaces the failure on the card, so a toast would be redundant there.
+    /// Shows a tray balloon for a failed VM power action. A failed start names the VM and Hyper-V's
+    /// reason and is shown even while the dashboard is open (issue #69) — see
+    /// <see cref="VmPowerUi.SuppressWhenDashboardVisible"/>; any other failed action is left to the
+    /// dashboard card while the dashboard is visible.
     ///
     /// <para>This originally existed for the tray VM-Power submenu, whose failures were invisible (issue
     /// #30, finding 2). That menu is gone (issue #34), but this balloon is now MORE load-bearing, not
@@ -757,10 +759,12 @@ public partial class App : Application
     private void OnVmOperationFailed(Models.VmOperationProgress p)
     {
         if (p.Phase != Models.VmOpPhase.Failed) return;
-        ShowBalloon($"{AppInfo.Name} — {p.VmName}",
-                    string.IsNullOrWhiteSpace(p.Message) ? "Power action failed." : p.Message!,
+        var message = p.Kind == Models.VmOpKind.Start
+            ? VmPowerUi.StartFailedMessage(p.VmName, p.Message)
+            : string.IsNullOrWhiteSpace(p.Message) ? "Power action failed." : p.Message!;
+        ShowBalloon($"{AppInfo.Name} — {p.VmName}", message,
                     isError: true,
-                    suppressWhenDashboardVisible: true);
+                    suppressWhenDashboardVisible: VmPowerUi.SuppressWhenDashboardVisible(p.Kind));
     }
 
     // Decides whether a failed apply is announced, and remembers what actually WAS announced so a

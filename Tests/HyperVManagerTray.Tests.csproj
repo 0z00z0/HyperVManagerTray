@@ -48,6 +48,9 @@
          the failure is reported before vmconnect steals focus — is testable at all. Side effects are
          delegates, so this links with no WinUI and no live host; it depends only on NetworkStatusUi. -->
     <Compile Include="..\Helpers\VmConnectFlow.cs"    Link="Linked\VmConnectFlow.cs" />
+    <!-- Issue #69: what a failed VM start says and whether a visible dashboard holds it back. Pure text
+         over the linked VmOperation.cs. -->
+    <Compile Include="..\Helpers\VmPowerUi.cs"        Link="Linked\VmPowerUi.cs" />
     <!-- The manual override's order of work: a VM never moves onto a switch that could not be bound.
          Side effects are delegates, so it links with no WMI and no live host. -->
     <Compile Include="..\Helpers\OverrideFlow.cs"     Link="Linked\OverrideFlow.cs" />
