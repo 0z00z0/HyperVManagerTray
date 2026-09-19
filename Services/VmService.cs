@@ -107,6 +107,8 @@ public sealed class VmService : IDisposable
     private readonly Dictionary<string, long> _memMax = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (long Bytes, DateTime At)> _vhd = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (string Id, string Name)> _switchByVm = new(StringComparer.OrdinalIgnoreCase);
+    // External switches whose bound adapter is absent or has no link, by switch ID. Read with the switch map.
+    private HashSet<string> _uplinkDownSwitches = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _switchCacheAt = DateTime.MinValue;
     // Set by the state watcher (VM start/stop) and by InvalidateSwitchCache (app rebind) so the next
     // RefreshCore re-reads the VM→switch map instead of waiting on SwitchFallbackInterval. Volatile:
@@ -224,6 +226,7 @@ public sealed class VmService : IDisposable
         _memMax.Clear();
         _vhd.Clear();
         _switchByVm.Clear();
+        _uplinkDownSwitches = new(StringComparer.OrdinalIgnoreCase);
         _switchCacheAt   = DateTime.MinValue;
         _refreshFailures = 0;
         Interlocked.Exchange(ref _recoveryAttempts, 0);
@@ -618,6 +621,7 @@ public sealed class VmService : IDisposable
                 {
                     _switchCacheDirty = false;
                     foreach (var (id, sw) in ReadSwitches(scope, vms)) _switchByVm[id] = sw;
+                    _uplinkDownSwitches = ReadUplinkDownSwitches(scope);
                     _switchCacheAt = DateTime.UtcNow;
                 }
 
@@ -631,6 +635,7 @@ public sealed class VmService : IDisposable
                         row.Name, row.EnabledState, m.Cpu, m.MemMb, m.UptimeMs, memMax, sw.Name ?? "", m.JobStatus);
                     st.Id       = id;
                     st.SwitchId = sw.Id ?? "";
+                    st.SwitchUplinkDown = st.SwitchId.Length > 0 && _uplinkDownSwitches.Contains(st.SwitchId);
                     if (_vhd.TryGetValue(id, out var v)) st.VhdBytes = v.Bytes;
                     list.Add(st);
                 }
@@ -875,6 +880,89 @@ public sealed class VmService : IDisposable
         }
         catch (Exception ex) { _logger.LogWarning(ex, "Switch-name read failed"); }
         return result;
+    }
+
+    /// <summary>
+    /// External switches whose uplink carries nothing: the wired or Wi-Fi port the switch is bound to can no
+    /// longer be read (its adapter was unplugged), or no physical adapter with that port's hardware address
+    /// reports a connected medium. Internal and private switches never appear. When the adapter list cannot
+    /// be read at all, nothing is marked: an unknown uplink is not reported as a missing one.
+    /// </summary>
+    private HashSet<string> ReadUplinkDownSwitches(ManagementScope scope)
+    {
+        var down = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            if (ReadConnectedPhysicalMacs() is not { } connected) return down;
+
+            // Same switch → port → allocation traversal HyperVManager binds through.
+            using var searcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT * FROM Msvm_VirtualEthernetSwitch"), WmiLimits.Enumeration());
+            foreach (ManagementObject sw in searcher.Get())
+                using (sw)
+                {
+                    if (ExternalPortPath(sw) is not { } portPath) continue;
+                    string mac = "";
+                    try
+                    {
+                        using var port = new ManagementObject(scope, new ManagementPath(portPath), WmiLimits.Get());
+                        port.Get();
+                        mac = AdapterMatcher.NormalizeMac(port["PermanentAddress"] as string ?? "");
+                    }
+                    catch { /* the bound adapter is gone — its port no longer exists */ }
+
+                    if (mac.Length == 0 || !connected.Contains(mac))
+                        down.Add(HostIdentity.Bare(sw["Name"] as string));
+                }
+        }
+        catch (Exception ex) { _logger.LogWarning(ex, "Switch uplink read failed"); down.Clear(); }
+        return down;
+    }
+
+    /// <summary>The <c>HostResource</c> path of a switch's external (wired or Wi-Fi) port allocation, or null
+    /// for a switch without one.</summary>
+    private static string? ExternalPortPath(ManagementObject sw)
+    {
+        foreach (ManagementObject port in sw.GetRelated("Msvm_EthernetSwitchPort", "Msvm_SystemDevice", null, null, null, null, false, null))
+            using (port)
+                foreach (ManagementObject epasd in port.GetRelated("Msvm_EthernetPortAllocationSettingData", "Msvm_ElementSettingData", null, null, null, null, false, null))
+                    using (epasd)
+                    {
+                        if (epasd["HostResource"] is not string[] hr || hr.Length == 0 || string.IsNullOrEmpty(hr[0])) continue;
+                        if (SwitchWmiHelpers.IsExternalPortClass(new ManagementPath(hr[0]).ClassName)) return hr[0];
+                    }
+        return null;
+    }
+
+    /// <summary>
+    /// Normalised hardware addresses of the physical adapters that report a connected medium, from
+    /// <c>MSFT_NetAdapter</c>, which lists an adapter bound to a virtual switch as well. Null when the list
+    /// cannot be read.
+    /// </summary>
+    private HashSet<string>? ReadConnectedPhysicalMacs()
+    {
+        const uint MediaConnected = 1;
+        try
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var netScope = new ManagementScope(@"root\StandardCimv2");
+            WmiLimits.ConnectBounded(netScope);
+            using var searcher = new ManagementObjectSearcher(netScope,
+                new ObjectQuery("SELECT PermanentAddress, MediaConnectState, Virtual FROM MSFT_NetAdapter"), WmiLimits.Enumeration());
+            foreach (ManagementObject a in searcher.Get())
+                using (a)
+                {
+                    if (a["Virtual"] is true) continue;
+                    if (a["MediaConnectState"] is not uint state || state != MediaConnected) continue;
+                    var mac = AdapterMatcher.NormalizeMac(a["PermanentAddress"] as string ?? "");
+                    if (mac.Length == 12) result.Add(mac);
+                }
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Adapter link read failed — switch uplinks left unmarked");
+            return null;
+        }
     }
 
     private List<DiscoveredVm> ReadDiscovered(ManagementScope scope, IReadOnlyDictionary<string, VmRow> vms)

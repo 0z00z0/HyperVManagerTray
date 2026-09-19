@@ -88,7 +88,7 @@ public class NetworkMonitorSourceTests
     [Fact]
     public void RefreshDisplayAsync_ReleaseToleratesADisposedSemaphore()
     {
-        var body = Body("public async Task RefreshDisplayAsync", "public enum OverrideOutcome");
+        var body = Body("public async Task RefreshDisplayAsync", "public sealed record OverrideReport");
 
         Assert.True(AnyRelease.IsMatch(body), "RefreshDisplayAsync no longer releases _evalLock — fix this test's anchor.");
         Assert.True(GuardedRelease.IsMatch(body),

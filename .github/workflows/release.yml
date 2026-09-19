@@ -78,22 +78,24 @@ jobs:
         with:
           dotnet-version: '10.x'
 
-      # ── 5. Install Inno Setup 6 ───────────────────────────────────────────────
+      # ── 5. Install Inno Setup 7 ───────────────────────────────────────────────
       # Pinned to an exact version, at least as new as the Inno Setup used for
       # local builds, so a release build never lags a hand build (issue #91).
       # Installed from the publisher directly: Chocolatey's innosetup package
-      # lags the official release and cannot reach this version.
-      - name: Install Inno Setup 6
+      # lags the official release and cannot reach this version. From 7.0 the
+      # publisher ships separate x64 and x86 installers; the x64 one installs
+      # to Program Files\Inno Setup 7.
+      - name: Install Inno Setup 7
         shell: pwsh
         run: |
-          $innoVersion = '6.7.3'
+          $innoVersion = '7.1.0'
           $tag = "is-$($innoVersion -replace '\.', '_')"
-          $url = "https://github.com/jrsoftware/issrc/releases/download/$tag/innosetup-$innoVersion.exe"
+          $url = "https://github.com/jrsoftware/issrc/releases/download/$tag/innosetup-$innoVersion-x64.exe"
           $exe = Join-Path $env:RUNNER_TEMP 'innosetup-setup.exe'
           Invoke-WebRequest -Uri $url -OutFile $exe
-          $proc = Start-Process -FilePath $exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-' -Wait -PassThru
+          $proc = Start-Process -FilePath $exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/ALLUSERS' -Wait -PassThru
           if ($proc.ExitCode -ne 0) { throw "Inno Setup install failed ($($proc.ExitCode))." }
-          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { throw "ISCC.exe not found after install." }
+          if (-not (Test-Path "$env:ProgramFiles\Inno Setup 7\ISCC.exe")) { throw "ISCC.exe not found after install." }
 
       # ── 6. Build installer (publish + ISCC) ──────────────────────────────────
       # build-installer.ps1 runs dotnet publish internally and compiles the .iss.
@@ -135,7 +137,7 @@ jobs:
           Invoke-Sign 'publish\HyperVManagerTray.exe'
 
           # 2) Recompile the installer (now bundling the signed exe), then sign it.
-          $iscc = (Get-ChildItem 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' -ErrorAction SilentlyContinue).FullName
+          $iscc = (Get-ChildItem "$env:ProgramFiles\Inno Setup 7\ISCC.exe" -ErrorAction SilentlyContinue).FullName
           if (-not $iscc) { throw 'ISCC.exe not found.' }
           & $iscc "/DAppVersion=${{ steps.version.outputs.version }}" "/DPublishDir=$(Resolve-Path publish)" installer\HyperVManagerTray.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)." }

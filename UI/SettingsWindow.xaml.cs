@@ -1089,16 +1089,33 @@ internal sealed partial class SettingsWindow : Window
         var addBtn = new Button { Content = "Add rule" };
         addBtn.Click += (_, _) => AddRule();
         var addCurrentBtn = new Button { Content = "Add current network" };
+        // The outcome of "Add current network", refusals included, stays here beside the button. It is
+        // held across the rebuild that follows the press, and shown by that rebuild only.
+        var addCurrentResult = new TextBlock
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            TextWrapping      = TextWrapping.Wrap,
+            MaxWidth          = 420,
+        };
+        if (_addCurrentReport is { } shown)
+        {
+            addCurrentResult.Text = shown.Message;
+            if (shown.IsError) addCurrentResult.Foreground = AppColors.IndicatorRedBrush;
+            _addCurrentReport = null;
+        }
         addCurrentBtn.Click += (_, _) => _ = AddCurrentNetworkAsync();
 
         async Task AddCurrentNetworkAsync()
         {
             try
             {
-                await _network.AddCurrentAsBridgedAsync();
+                addCurrentBtn.IsEnabled = false;
+                addCurrentResult.Text   = "";
+                var report = await _network.AddCurrentAsBridgedAsync();
                 if (_closed) return;
-                // The rule was written straight to config (not through _workingRules), so the editor above is
-                // now a rule short. Re-render from config rather than leaving it stale.
+                // A written rule went straight to config (not through _workingRules), so the editor above
+                // is a rule short; the rebuild re-renders from config and shows the outcome.
+                _addCurrentReport = report;
                 RefreshValuesFromConfig();
             }
             catch (Exception ex)
@@ -1106,9 +1123,14 @@ internal sealed partial class SettingsWindow : Window
                 AppInfo.AppendCrashLogLine("SettingsWindow", $"AddCurrentNetwork: {ex}");
                 if (!_closed) NativeMethods.Warn($"Could not add the current network:\n\n{ex.Message}", AppInfo.Name);
             }
+            finally
+            {
+                if (!_closed) addCurrentBtn.IsEnabled = true;
+            }
         }
         addButtons.Children.Add(addBtn);
         addButtons.Children.Add(addCurrentBtn);
+        addButtons.Children.Add(addCurrentResult);
         panel.Children.Add(addButtons);
 
         // Fallback (editable) — the switch + target VMs used when no rule matches.
@@ -1212,8 +1234,9 @@ internal sealed partial class SettingsWindow : Window
             "Override VM switch",
             vms.Count == 0
                 ? "No VMs are managed yet — add one under Managed VMs first."
-                : "Force a managed VM onto a specific virtual switch now. This is temporary: the next "
-                  + "network change re-evaluates the rules and reverts it.",
+                : "Force a managed VM onto a specific virtual switch now. A bridged switch is first connected "
+                  + "to the adapter in use, Wi-Fi or wired, after a question, since the network drops for a few "
+                  + "seconds. This is temporary: the next network change re-evaluates the rules and reverts it.",
             controls);
     }
 
@@ -1758,6 +1781,9 @@ internal sealed partial class SettingsWindow : Window
     // successful reload rebuilds the whole Maintenance section and would otherwise discard it (issue #39).
     // Null = nothing to show (never reloaded, or the last reload failed and said so in a dialog instead).
     private string? _reloadResultMessage;
+
+    // The last "Add current network" outcome, shown beside its button by the rebuild that follows it.
+    private NetworkStatusUi.AddRuleReport? _addCurrentReport;
 
     private UIElement BuildMaintenanceSection()
     {

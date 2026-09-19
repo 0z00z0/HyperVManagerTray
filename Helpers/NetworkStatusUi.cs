@@ -559,15 +559,101 @@ public static class NetworkStatusUi
         "No virtual switch to bridge on was found besides the fallback's. Create one in Hyper-V Manager, "
         + "or add the rule by hand and pick its virtual switch.";
 
+    /// <summary>The rule was written. Names what it matches and the switch it bridges on.</summary>
+    public static string AddRuleAddedMessage(string ruleName, string network, string switchName) =>
+        $"Rule \"{ruleName}\" added for {network} on virtual switch '{switchName}'.";
+
+    /// <summary>The person cancelled the name prompt or the confirmation.</summary>
+    public static string AddRuleCancelledMessage() =>
+        "Cancelled — no rule was added.";
+
+    /// <summary>Every outcome of "Add current network". Each one is shown beside the button and logged, so
+    /// pressing the button never looks like nothing happened.</summary>
+    public enum AddRuleOutcome { Added, NoAdapter, Duplicate, NoSwitch, Cancelled, SaveFailed, Failed }
+
+    /// <summary>An outcome with the text shown beside the button.</summary>
+    public readonly record struct AddRuleReport(AddRuleOutcome Outcome, string Message, bool IsError);
+
     /// <summary>
-    /// The Wi-Fi rejection (issue #29, finding 5). Shortened from its modal wording for the balloon —
-    /// which truncates — but the two facts that make it actionable both survive: bridging cannot target
-    /// a wireless adapter at all, and NOTHING was saved. A rejection that lost the second half would read
-    /// as a rule the user still has.
+    /// The text for an outcome. <paramref name="detail"/> is the rule name for Added and Duplicate, the error
+    /// for SaveFailed and Failed; <paramref name="network"/> and <paramref name="switchName"/> serve Added.
+    /// Total over the enum: a new outcome without text is a test failure, not a silent button.
     /// </summary>
-    public static string AddRuleWirelessMessage(string adapterDescription) =>
-        $"\"{adapterDescription}\" is a Wi-Fi adapter. A Hyper-V virtual switch can only bridge onto a wired " +
-        "(Ethernet) adapter, such as a USB-Ethernet dock — so no rule was added.";
+    public static AddRuleReport AddRuleReportFor(AddRuleOutcome outcome, string detail = "", string network = "", string switchName = "") =>
+        outcome switch
+        {
+            AddRuleOutcome.Added      => new(outcome, AddRuleAddedMessage(detail, network, switchName), false),
+            AddRuleOutcome.NoAdapter  => new(outcome, AddRuleNoAdapterMessage(), true),
+            AddRuleOutcome.Duplicate  => new(outcome, AddRuleDuplicateMessage(detail), false),
+            AddRuleOutcome.NoSwitch   => new(outcome, AddRuleNoSwitchMessage(), true),
+            AddRuleOutcome.Cancelled  => new(outcome, AddRuleCancelledMessage(), false),
+            AddRuleOutcome.SaveFailed => new(outcome, AddRuleSaveFailedMessage(detail), true),
+            _                         => new(outcome, AddRuleUnexpectedErrorMessage(detail), true),
+        };
+
+    /// <summary>
+    /// Whether "Add current network" must stop before asking anything: no connected adapter, or a rule
+    /// already has this adapter's hardware address. Wi-Fi and wired adapters are treated alike. Null means
+    /// go on; <c>DuplicateOf</c> names the existing rule.
+    /// </summary>
+    public static (AddRuleOutcome? Refusal, string DuplicateOf) AddRuleRefusal(
+        CurrentNetworkInfo? info, IEnumerable<Models.NetworkRule> rules)
+    {
+        if (info is null) return (AddRuleOutcome.NoAdapter, "");
+        var mac = AdapterMatcher.NormalizeMac(info.Mac);
+        var duplicate = rules.FirstOrDefault(r =>
+            r.Conditions?.AdapterMac is { } m && AdapterMatcher.NormalizeMac(m) == mac);
+        return duplicate is null ? (null, "") : (AddRuleOutcome.Duplicate, duplicate.Name);
+    }
+
+    // ── Questions before the host's network drops ───────────────────────────────
+
+    /// <summary>Asked before an override binds a bridged switch to the current adapter.</summary>
+    public static string OverrideDropQuestion(string vmName, string switchName, string adapter) =>
+        $"Move {vmName} to virtual switch '{switchName}'?\n\n" +
+        $"This connects '{switchName}' to {adapter}, the adapter this computer is connected through now. " +
+        "The computer's network drops for a few seconds while that happens.";
+
+    /// <summary>Asked before a re-check binds a switch to an adapter it is not confirmed on.</summary>
+    public static string ReCheckDropQuestion(MatchResult result) =>
+        $"Rule \"{result.RuleName}\" connects virtual switch '{ShownSwitch(result)}' to {result.HostAdapterName}.\n\n" +
+        "The computer's network drops for a few seconds while that happens. Re-check now?";
+
+    /// <summary>Asked before "Repair host networking" touches the host's adapters on the bridged switches.</summary>
+    public static string RepairDropQuestion() =>
+        "Repairing host networking changes the computer's own network adapters on the bridged virtual " +
+        "switches. The network can drop for a few seconds. Repair now?";
+
+    /// <summary>Added to the "Add current network" confirmation: the new rule takes effect at once.</summary>
+    public const string AddRuleDropNote =
+        "The rule takes effect at once: the virtual switch is connected to this adapter, and the computer's " +
+        "network drops for a few seconds while that happens.";
+
+    // ── The override's other outcomes ───────────────────────────────────────────
+
+    /// <summary>The override bound a bridged switch and moved the VM onto it.</summary>
+    public static string OverrideBridgedMessage(string vmName, string switchName, string adapter) =>
+        $"Override applied: {vmName} → {switchName}, connected through {adapter}.\n\n" +
+        "This is temporary — the next network change re-evaluates the rules and reverts it.";
+
+    /// <summary>The switch could not be bound, so the VM was not moved.</summary>
+    public static string OverrideBindFailedMessage(string vmName, string switchName, string adapter) =>
+        $"Could not connect virtual switch '{switchName}' to {adapter} — see switcher.log. " +
+        $"{vmName} stays where it was.";
+
+    /// <summary>A bridged switch needs a connected adapter and there is none.</summary>
+    public static string OverrideNoAdapterMessage(string vmName, string switchName) =>
+        $"No connected network adapter was found to connect virtual switch '{switchName}' to. " +
+        $"{vmName} stays where it was.";
+
+    /// <summary>The switch was bound but the VM could not be moved onto it.</summary>
+    public static string OverrideMoveFailedAfterBindMessage(string vmName, string switchName, string adapter) =>
+        $"Virtual switch '{switchName}' is now connected through {adapter}, but {vmName} could not be moved " +
+        "onto it — see switcher.log.";
+
+    /// <summary>A network pass held the lock for too long; nothing was done.</summary>
+    public static string OverrideBusyMessage(string vmName) =>
+        $"Another network change is still in progress. {vmName} stays where it was — try again in a moment.";
 
     /// <summary>This adapter's MAC already has a rule. Points at the rule, which is on screen in the
     /// editor this command lives beside.</summary>

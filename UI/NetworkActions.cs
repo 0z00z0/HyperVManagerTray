@@ -13,7 +13,7 @@ namespace HyperVManagerTray.UI;
 /// stay in the tray as quick commands AND appear in Settings (which must be the complete superset),
 /// while Repair and Add-current-network move to Settings only. Every one of them therefore has either
 /// two call sites or a new one — and each carries hard-won behaviour that must not be re-derived at the
-/// new site: the Wi-Fi rejection and MAC de-duplication in the add-rule flow, the "we genuinely don't
+/// new site: the MAC de-duplication in the add-rule flow, the "we genuinely don't
 /// know" arm of the re-check, the never-silently-no-op override. Lifting the bodies here verbatim moves
 /// them without rewriting them.</para>
 ///
@@ -27,6 +27,16 @@ namespace HyperVManagerTray.UI;
 /// parentless Win32 <c>MessageBoxW</c>, so both channels always worked from both surfaces, and the split
 /// was never anything but an accident of the move. Read that file before adding a fifth command.</para>
 ///
+/// <para><b>Add current network reports beside its button.</b> It is pressed inside Settings, so its
+/// outcome — refusals included — is returned to the window and shown next to the button rather than in a
+/// balloon that is gone in seconds; every outcome is also written to ui.log. The re-check it runs after
+/// writing a rule still reports through the balloon.</para>
+///
+/// <para><b>Asking before the network drops.</b> Binding a bridged switch moves the host's own connection
+/// and drops it for a few seconds, so each command a person starts asks first when it will bind: the
+/// override onto a bridged switch, a re-check that would rebind, Repair, and the add-rule confirmation.
+/// Rules acting on their own do not ask.</para>
+///
 /// <para><b>UI thread.</b> Every method is called from a menu command or a button click and awaits back
 /// onto the UI thread (it shows dialogs and prompts). The genuinely blocking parts — NIC enumeration,
 /// the config write — are explicitly offloaded, as they were before.</para>
@@ -38,8 +48,8 @@ internal sealed class NetworkActions
     private readonly HyperVManager  _hyperV;
     // Tray balloon (title, message, isError) — owned by App, which holds the TaskbarIcon. Lets the
     // manual network actions answer with the same non-blocking channel a failed apply uses (issue #37)
-    // rather than a modal dialog. This is the ONLY way any of the four commands below reports an
-    // outcome (issue #51) — see docs/DISPLAY-VOCABULARY.md.
+    // rather than a modal dialog. Re-check, Override and Repair report only this way (issue #51) — see
+    // docs/DISPLAY-VOCABULARY.md; Add current network returns its outcome to Settings instead.
     private readonly Action<string, string, bool> _notify;
 
     private const string AppName = AppInfo.Name;
@@ -62,11 +72,21 @@ internal sealed class NetworkActions
     /// recommendation 5). This command previously fired <c>ForceEvaluateAsync</c> and returned, giving
     /// the user no way to tell whether it had run, matched, or failed.
     /// </summary>
-    public async Task ReCheckNetworkAsync()
+    /// <param name="askBeforeRebind">False when the caller already asked about the network drop, or is a
+    /// remote command with nobody at the desktop to answer.</param>
+    public async Task ReCheckNetworkAsync(bool askBeforeRebind = true)
     {
         try
         {
-            var result = await _monitor.ForceEvaluateAsync();
+            bool declined = false;
+            var result = await _monitor.ForceEvaluateAsync(askBeforeRebind
+                ? r => !(declined = !NativeMethods.Confirm(NetworkStatusUi.ReCheckDropQuestion(r), "Re-check network"))
+                : null);
+            if (declined)
+            {
+                UiActivityLog.Logger.LogInformation("Re-check network: declined before the rebind — nothing changed");
+                return;
+            }
             if (result is null)
             {
                 // Busy/disposed/threw — we genuinely don't know the outcome, so say that rather than
@@ -106,17 +126,34 @@ internal sealed class NetworkActions
             // UserInitiated so the automatic balloon stands down. It has to be this path — only here is
             // the NotConfigured outcome visible (no apply pass ever runs for it), and only here is it
             // known that the user asked for an override rather than a rule having fired.
-            var outcome = await _monitor.ManualOverrideAsync(vm.Id, sw);
-            var (message, isError) = outcome switch
+            // Binding a bridged switch drops the host's network, so the person is asked first.
+            var report = await _monitor.ManualOverrideAsync(vm.Id, sw, adapter =>
+                NativeMethods.Confirm(NetworkStatusUi.OverrideDropQuestion(vmName, switchName, adapter), "Override VM switch"));
+            var adapterShown = report.AdapterShown;
+            var (message, isError) = report.Outcome switch
             {
-                NetworkMonitor.OverrideOutcome.Applied =>
+                OverrideFlow.Outcome.Applied when adapterShown.Length > 0 =>
+                    (NetworkStatusUi.OverrideBridgedMessage(vmName, switchName, adapterShown), false),
+                OverrideFlow.Outcome.Applied =>
                     (NetworkStatusUi.OverrideAppliedMessage(vmName, switchName), false),
-                NetworkMonitor.OverrideOutcome.NotConfigured =>
+                OverrideFlow.Outcome.NotConfigured =>
                     (NetworkStatusUi.OverrideNotConfiguredMessage(vmName), true),
+                OverrideFlow.Outcome.Declined =>
+                    ((string?)null, false),
+                OverrideFlow.Outcome.NoAdapter =>
+                    (NetworkStatusUi.OverrideNoAdapterMessage(vmName, switchName), true),
+                OverrideFlow.Outcome.Busy =>
+                    (NetworkStatusUi.OverrideBusyMessage(vmName), true),
+                OverrideFlow.Outcome.BindFailed =>
+                    (NetworkStatusUi.OverrideBindFailedMessage(vmName, switchName, adapterShown), true),
+                OverrideFlow.Outcome.MoveFailed when adapterShown.Length > 0 =>
+                    (NetworkStatusUi.OverrideMoveFailedAfterBindMessage(vmName, switchName, adapterShown), true),
                 _ =>
                     (NetworkStatusUi.OverrideFailedMessage(vmName, switchName), true),
             };
-            _notify($"{AppName} — {vmName}", message, isError);
+            UiActivityLog.Logger.LogInformation("Override {Vm} → {Switch}: {Outcome}", vmName, switchName, report.Outcome);
+            // Declining is the person's own answer; nothing happened, so nothing is reported.
+            if (message is not null) _notify($"{AppName} — {vmName}", message, isError);
         }
         catch (Exception ex)
         {
@@ -135,7 +172,8 @@ internal sealed class NetworkActions
     /// (<c>App.HealSwitchOrphansOnStartupAsync</c>), so a mid-session dock cycle now needs Settings
     /// opened — which works fine while host networking is down, since all of this UI is local.</para>
     /// </summary>
-    public async Task RepairHostNetworkingAsync()
+    /// <param name="askFirst">False for a remote command: nobody is at the desktop to answer.</param>
+    public async Task RepairHostNetworkingAsync(bool askFirst = true)
     {
         try
         {
@@ -144,6 +182,12 @@ internal sealed class NetworkActions
             if (switches.Count == 0)
             {
                 _notify(NetworkTitle, NetworkStatusUi.RepairNoSwitchesMessage(), false);
+                return;
+            }
+
+            if (askFirst && !NativeMethods.Confirm(NetworkStatusUi.RepairDropQuestion(), "Repair host networking"))
+            {
+                UiActivityLog.Logger.LogInformation("Repair host networking: declined — nothing changed");
                 return;
             }
 
@@ -192,7 +236,7 @@ internal sealed class NetworkActions
     /// assumed.
     ///
     /// <para>Lives in Settings → Network as of issue #34. The live-capture argument that originally put
-    /// it in the tray was about CAPABILITY (auto-detected MAC/CIDR, Wi-Fi rejection, de-duplication), not
+    /// it in the tray was about CAPABILITY (auto-detected MAC/CIDR, de-duplication), not
     /// about the tray as a location: the same code runs identically from Settings, and adding a rule is a
     /// configuration act performed a handful of times, not a quick command. It also sits where it is now
     /// most useful — beside "Add rule", which was until now the strictly worse path (a blank rule with a
@@ -204,51 +248,35 @@ internal sealed class NetworkActions
     /// pending bridge-lost timers with it. It is not a theoretical risk here:
     /// <see cref="TextPromptWindow.ShowAsync"/> constructs a Window and does native monitor placement in
     /// its constructor, which is precisely the failure class <c>SafeInit</c> exists to contain.</para>
-    public async Task AddCurrentAsBridgedAsync()
+    /// <returns>The outcome, which Settings shows beside the button. Every path returns one and logs it,
+    /// so pressing the button never looks like nothing happened.</returns>
+    public async Task<NetworkStatusUi.AddRuleReport> AddCurrentAsBridgedAsync()
     {
+        NetworkStatusUi.AddRuleReport report;
         try
         {
-            await AddCurrentAsBridgedCoreAsync();
+            report = await AddCurrentAsBridgedCoreAsync();
         }
         catch (Exception ex)
         {
             UiActivityLog.Logger.LogWarning(ex, "Add current network failed");
-            _notify(NetworkTitle, NetworkStatusUi.AddRuleUnexpectedErrorMessage(ex.Message), true);
+            report = NetworkStatusUi.AddRuleReportFor(NetworkStatusUi.AddRuleOutcome.Failed, ex.Message);
         }
+        UiActivityLog.Logger.LogInformation("Add current network: {Outcome} — {Message}", report.Outcome, report.Message);
+        return report;
     }
 
-    private async Task AddCurrentAsBridgedCoreAsync()
+    private async Task<NetworkStatusUi.AddRuleReport> AddCurrentAsBridgedCoreAsync()
     {
         // GetCurrentNetworkInfo enumerates all NICs (GetAllNetworkInterfaces + GetIPProperties) and can
         // block for hundreds of ms; this runs from a UI command, so offload it to the thread pool to keep
         // the UI responsive (issue #29, finding 3).
         var info = await Task.Run(AdapterMatcher.GetCurrentNetworkInfo);
-        if (info is null)
-        {
-            _notify(NetworkTitle, NetworkStatusUi.AddRuleNoAdapterMessage(), true);
-            return;
-        }
 
-        // A Wi-Fi adapter surfaces as Msvm_WiFiPort, which the switch-binding path never targets, so a
-        // rule bound to it could never take effect (issue #29, finding 5). Reject it up front with an
-        // explanation rather than silently saving a rule that will never bridge.
-        if (info.IsWireless)
-        {
-            _notify(NetworkTitle, NetworkStatusUi.AddRuleWirelessMessage(info.AdapterDescription), true);
-            return;
-        }
-
-        var normNew   = AdapterMatcher.NormalizeMac(info.Mac);
-        var duplicate = _config.Current.Rules.FirstOrDefault(r =>
-            r.Conditions.AdapterMac is not null &&
-            AdapterMatcher.NormalizeMac(r.Conditions.AdapterMac) == normNew);
-        if (duplicate is not null)
-        {
-            // Now that this flow lives in the rules editor, the existing rule is right there to edit —
-            // so point at it rather than at config.json (which is no longer the only way to change it).
-            _notify(NetworkTitle, NetworkStatusUi.AddRuleDuplicateMessage(duplicate.Name), false);
-            return;
-        }
+        // Wi-Fi and wired alike: the bind reaches Hyper-V's Wi-Fi ports as well as its wired ones.
+        var (refusal, duplicateOf) = NetworkStatusUi.AddRuleRefusal(info, _config.Current.Rules);
+        if (refusal is { } stop) return NetworkStatusUi.AddRuleReportFor(stop, duplicateOf);
+        var current = info!;
 
         // The switch to bridge on: one a rule already uses, else one on the host, never the fallback's.
         // Chosen by ID; a switch called something with "bridge" in it is only preferred, and the choice is
@@ -265,25 +293,21 @@ internal sealed class NetworkActions
             .OrderBy(s => s.Name.Contains("bridge", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
             .FirstOrDefault();
         if (bridgedSwitch is null)
-        {
-            _notify(NetworkTitle, NetworkStatusUi.AddRuleNoSwitchMessage(), true);
-            return;
-        }
+            return NetworkStatusUi.AddRuleReportFor(NetworkStatusUi.AddRuleOutcome.NoSwitch);
 
         // Ask for a memorable name ("Home", "Office", "Coffee shop …") instead of silently using
         // the raw adapter description (e.g. "Intel(R) Wi-Fi 6 AX201 160MHz") as the rule name —
         // that says nothing about WHERE the network is. Pre-filled with the adapter description as
         // a convenient starting point; Cancel here aborts the whole "add rule" flow.
-        var defaultName = info.AdapterDescription.Length > 40 ? info.AdapterDescription[..40].TrimEnd() : info.AdapterDescription;
+        var defaultName = current.AdapterDescription.Length > 40 ? current.AdapterDescription[..40].TrimEnd() : current.AdapterDescription;
         var name = await TextPromptWindow.ShowAsync(
             "Add current network",
-            $"Name this network (adapter description: {info.AdapterDescription}):",
+            $"Name this network (adapter description: {current.AdapterDescription}):",
             defaultName);
-        if (name is null) return;
+        if (name is null) return NetworkStatusUi.AddRuleReportFor(NetworkStatusUi.AddRuleOutcome.Cancelled);
 
-        // The one modal left in this class, and it stays (issue #51): this ASKS — the user's answer
-        // decides whether a rule is written at all — and blocking is the point of asking. Only REPORTS
-        // moved to the balloon. See docs/DISPLAY-VOCABULARY.md.
+        // This ASKS — the answer decides whether a rule is written at all, and whether the host's network
+        // drops when it takes effect — and blocking is the point of asking. See docs/DISPLAY-VOCABULARY.md.
         //
         // The rule summary names each field with the pinned vocabulary (issue #42): the value beside
         // "Adapter" is the adapter's DESCRIPTION, not its Windows name/alias — the very distinction
@@ -291,19 +315,20 @@ internal sealed class NetworkActions
         if (!NativeMethods.Confirm(
                 $"Add the following rule?\n\n" +
                 $"  Name                :  {name}\n" +
-                $"  Adapter description :  {info.AdapterDescription}\n" +
-                $"  MAC                 :  {info.Mac}\n" +
-                $"  Network             :  {info.IpCidr}\n" +
-                $"  Virtual switch      :  {bridgedSwitch.Shown}",
+                $"  Adapter description :  {current.AdapterDescription}\n" +
+                $"  MAC                 :  {current.Mac}\n" +
+                $"  Network             :  {current.IpCidr}\n" +
+                $"  Virtual switch      :  {bridgedSwitch.Shown}\n\n" +
+                NetworkStatusUi.AddRuleDropNote,
                 "Add current network"))
-            return;
+            return NetworkStatusUi.AddRuleReportFor(NetworkStatusUi.AddRuleOutcome.Cancelled);
 
         var rule = new NetworkRule
         {
             Name          = name,
             Priority      = _config.Current.Rules.Count > 0 ? _config.Current.Rules.Max(r => r.Priority) + 10 : 10,
             Id            = ConfigIdentityMigration.NewRuleId(),
-            Conditions    = new RuleConditions { AdapterMac = info.Mac, IpCidr = info.IpCidr },
+            Conditions    = new RuleConditions { AdapterMac = current.Mac, IpCidr = current.IpCidr },
             SwitchId      = bridgedSwitch.Id,
             SwitchName    = bridgedSwitch.Name,
             TargetVmIds   = [.. _config.Current.Fallback.TargetVmIds],
@@ -315,12 +340,12 @@ internal sealed class NetworkActions
         }
         catch (Exception ex)
         {
-            _notify(NetworkTitle, NetworkStatusUi.AddRuleSaveFailedMessage(ex.Message), true);
-            return;
+            return NetworkStatusUi.AddRuleReportFor(NetworkStatusUi.AddRuleOutcome.SaveFailed, ex.Message);
         }
 
         // Apply the new rule AND report whether it actually took effect — a rule that saves fine but
-        // fails to bind would otherwise look like a success (issue #37).
-        await ReCheckNetworkAsync();
+        // fails to bind would otherwise look like a success (issue #37). The drop was asked about above.
+        await ReCheckNetworkAsync(askBeforeRebind: false);
+        return NetworkStatusUi.AddRuleReportFor(NetworkStatusUi.AddRuleOutcome.Added, name, current.IpCidr, bridgedSwitch.Shown);
     }
 }

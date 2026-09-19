@@ -48,6 +48,19 @@ the tray and another from Settings, which is precisely the second vocabulary #37
 5. **One action, one report.** A command that ends by delegating to another command lets *that* one
    speak — `AddCurrentAsBridgedAsync` finishes with `ReCheckNetworkAsync()` and adds no balloon of its
    own. See `FailureAnnouncer`'s rule 1 for the same principle on the automatic path.
+6. **A command started by hand that drops the host's network asks first.** Binding a bridged switch
+   moves the host's own connection and cuts it for a few seconds, so the override onto a bridged switch,
+   a re-check that would rebind, Repair and "Add current network" each put a `NativeMethods.Confirm`
+   question before the drop. Rules acting on their own, and remote (MQTT) commands with nobody at the
+   desktop, do not ask; they act and report afterwards.
+
+## Outcome beside the button: "Add current network"
+
+"Add current network" is pressed inside Settings and changes what Settings shows, so whether a rule was
+written — refusals included — appears as a line of text next to its button, red for a failure, and is
+written to ui.log. A balloon is gone in seconds, and a refusal that went unseen made the button look as
+though it did nothing. The re-check that follows a written rule still reports through the balloon, as
+corollary 5 says; the line beside the button answers only whether the rule exists.
 
 ## The one exception, and why it is bounded
 

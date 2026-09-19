@@ -234,7 +234,7 @@ public sealed partial class DashboardWindow : Window
         // content it is supposed to size to (issue #59). ResizeAndPlace re-reads these subtitles and
         // re-applies the tooltips, so the truncation guarantee follows the new width too.
         foreach (var card in _cards.Values)
-            card.Subtitle.Text = Subtitle(ShownStatus(_latest, card.VmId));
+            ApplySubtitle(card.Subtitle, card.VmId, ShownStatus(_latest, card.VmId));
 
         if (AppWindow.IsVisible) ResizeAndPlace();
     }
@@ -769,14 +769,17 @@ public sealed partial class DashboardWindow : Window
     private VmStatus? ShownStatus(IReadOnlyList<VmStatus> statuses, string vmId) =>
         VmmsDown ? null : FindStatus(statuses, vmId);
 
-    /// <summary>The guest IP a card may show, under the same rule as <see cref="ShownStatus"/>.</summary>
-    private string ShownIp(string vmId) => VmmsDown ? "" : _vm.GetCachedVmIp(vmId) ?? "";
+    /// <summary>The guest IP a card may show, under the same rule as <see cref="ShownStatus"/>. Also hidden
+    /// while the VM's switch has no live connection: any address Hyper-V still reports then belongs to a
+    /// network the VM has left.</summary>
+    private string ShownIp(string vmId, VmStatus? s) =>
+        VmmsDown || s?.SwitchUplinkDown == true ? "" : _vm.GetCachedVmIp(vmId) ?? "";
 
     private void UpdateCard(VmCard card, VmStatus? s)
     {
         ApplyOverlay(card, s);
-        card.Subtitle.Text = Subtitle(s);
-        card.Ip.Text        = ShownIp(card.VmId);
+        ApplySubtitle(card.Subtitle, card.VmId, s);
+        card.Ip.Text        = ShownIp(card.VmId, s);
         if (card.Uptime is not null) card.Uptime.Text = FormatUptime(s);
         if (s is null) return;
         if (card.CpuValue is not null) { card.CpuValue.Text = $"{s.Cpu}%"; SetBar(card.CpuBar, s.Cpu / 100.0); }
@@ -951,11 +954,27 @@ public sealed partial class DashboardWindow : Window
     /// candidate — see <see cref="DashboardSizing.CardChromeWidth"/>'s siblings in the XAML — but its
     /// ~17 DIP beyond "Gateway" is the gutter BETWEEN a label and its value, not between the mode and
     /// the rule name, and it is a legible gutter rather than waste.)</para>
+    ///
+    /// <para>The rule name appears only on a VM that rule applies to: a manual override names one VM,
+    /// and the others are not on it. A switch whose connection to the outside is gone says so.</para>
     /// </summary>
-    private string Subtitle(VmStatus? s)
+    private string Subtitle(string vmId, VmStatus? s)
     {
         var switchText = !string.IsNullOrWhiteSpace(s?.Switch) ? s!.Switch : "—";
-        return $"{switchText} · {_monitor.LastApplied?.RuleName ?? "—"}";
+        if (s?.SwitchUplinkDown == true) switchText += " — no network";
+        var applied = _monitor.LastApplied;
+        return applied is not null && applied.TargetVms.Any(v => HostIdentity.Same(v.Id, vmId))
+            ? $"{switchText} · {applied.RuleName}"
+            : switchText;
+    }
+
+    /// <summary>Sets a card's sub-row text, red while its switch has no live connection.</summary>
+    private void ApplySubtitle(TextBlock subtitle, string vmId, VmStatus? s)
+    {
+        subtitle.Text = Subtitle(vmId, s);
+        subtitle.Foreground = s?.SwitchUplinkDown == true
+            ? AppColors.IndicatorRedBrush
+            : (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"];
     }
 
     /// <summary>
@@ -1048,9 +1067,9 @@ public sealed partial class DashboardWindow : Window
 
         var subtitle = new TextBlock
         {
-            Text              = Subtitle(s),
+            Text              = Subtitle(vm.Id, s),
             FontSize          = SubtitleFontSize,
-            Foreground        = tertiary,
+            Foreground        = s?.SwitchUplinkDown == true ? AppColors.IndicatorRedBrush : tertiary,
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming      = TextTrimming.CharacterEllipsis,   // see `title` above (issue #57)
         };
@@ -1059,7 +1078,7 @@ public sealed partial class DashboardWindow : Window
         // IP comes from VmService's cache (WMI, refreshed by the metrics loop/tooltip path) — no extra poll.
         var ipLabel = new TextBlock
         {
-            Text                = ShownIp(vm.Id),
+            Text                = ShownIp(vm.Id, s),
             FontSize            = ValueFontSize,   // matches the dashboard's unified right-column value size
             Foreground          = (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"],
             HorizontalAlignment = HorizontalAlignment.Right,

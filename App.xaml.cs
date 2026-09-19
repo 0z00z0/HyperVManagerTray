@@ -1049,7 +1049,8 @@ public partial class App : Application
     /// <para>The two host-network commands run the same <see cref="NetworkActions"/> bodies the tray and
     /// Settings use, so a remote button gets the hard-won behaviour rather than a re-derived copy. Their
     /// outcome reports go to mqtt.log rather than to a tray balloon: the desktop has nobody waiting on
-    /// the answer.</para>
+    /// the answer. For the same reason they ask nothing before the host's network drops: a question on
+    /// an unattended desktop would hold the command until someone happened by.</para>
     /// </summary>
     private void StartMqtt(ILogger mqttLog)
     {
@@ -1058,8 +1059,8 @@ public partial class App : Application
                                                      "{Title}: {Message}", title, message));
 
         _mqtt = new MqttService(_config!, _monitor!, _vm!, _hyperV!, _serviceControl!, mqttLog, AppInfo.Version,
-                                _ => actions.ReCheckNetworkAsync(),
-                                _ => actions.RepairHostNetworkingAsync(),
+                                _ => actions.ReCheckNetworkAsync(askBeforeRebind: false),
+                                _ => actions.RepairHostNetworkingAsync(askFirst: false),
                                 AppInfo.DataDir);
         _mqtt.Start();
     }

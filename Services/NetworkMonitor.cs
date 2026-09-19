@@ -33,10 +33,9 @@ public sealed class NetworkMonitor : IDisposable
     // ID (issue #29, finding 2): a single scalar wrongly suppressed binding a 2nd bridged switch that
     // happened to sit on the same NIC as the first. An entry exists only after a Bound/AlreadyBound
     // outcome — a failed bind is never recorded, so the next network change retries it (finding 1).
-    // ConcurrentDictionary because ManualOverrideAsync clears it WITHOUT _evalLock (it bypasses the
-    // evaluate path) while ApplyAsync mutates it under _evalLock — a plain Dictionary would corrupt under
-    // that concurrent structural mutation (host-networking safety: a torn skip-cache could wrongly SKIP a
-    // required rebind). Every access here is a single atomic operation, so no compound lock is needed.
+    // Every writer holds _evalLock (apply passes and the manual override alike); ConcurrentDictionary
+    // stays so that a reader added outside the lock can never see a torn skip-cache, which could wrongly
+    // SKIP a required rebind.
     private readonly ConcurrentDictionary<string, string> _lastBoundAdapterBySwitch = new(StringComparer.OrdinalIgnoreCase);
 
     // Per-VM cancellation tokens for the bridge-lost delay timers, keyed by VM ID.
@@ -105,6 +104,9 @@ public sealed class NetworkMonitor : IDisposable
             return;
         }
 
+        // Changed rules are a new instruction: a manual override in force gives way to them.
+        if (_hold is not null) _endHoldRequested = true;
+
         // 250 ms, not 0 — a deliberate choice, not the inherited immediacy (issue #49). The rules editor
         // commits each control edit separately, so one logical edit ("retarget this rule") arrives as a
         // burst of writes; at 0 each one started its own pass. This coalesces the burst into one. It is a
@@ -156,6 +158,9 @@ public sealed class NetworkMonitor : IDisposable
                 var result = AdapterMatcher.Evaluate(_config.Current);
                 _logger.LogInformation("Evaluated: rule='{Rule}' ({RuleId}) switch='{Switch}' ({SwitchId})",
                     result.RuleName, result.RuleId, result.SwitchName, result.SwitchId);
+
+                // A manual override stands until the network really changes; its own bind is not a change.
+                if (HoldAbsorbs(result)) continue;
 
                 // Skip the apply pass only when the last pass CONFIRMED this exact outcome — same rule,
                 // switch, host adapter and target VMs, and it actually succeeded. See
@@ -233,7 +238,7 @@ public sealed class NetworkMonitor : IDisposable
     /// "nothing to report": the tray reports it as a failure to re-check rather than staying silent,
     /// which is what "Re-check network now" did for every one of these cases before issue #37.</para>
     /// </summary>
-    public async Task<MatchResult?> ForceEvaluateAsync()
+    public async Task<MatchResult?> ForceEvaluateAsync(Func<MatchResult, bool>? confirmRebind = null)
     {
         bool acquired;
         try { acquired = await _evalLock.WaitAsync(TimeSpan.FromSeconds(5)); }
@@ -247,6 +252,19 @@ public sealed class NetworkMonitor : IDisposable
             // network now" command on the UI thread, so run the enumeration on the thread pool to keep
             // the UI responsive (issue #29, finding 3). The debounce path already runs on a timer thread.
             var result = await Task.Run(() => AdapterMatcher.Evaluate(_config.Current));
+
+            // A rebind drops the host's network, so a person asking for this pass is asked first. The
+            // prediction is the apply pass's own skip-cache test; declining leaves everything as it was.
+            if (confirmRebind is not null && WouldRebind(result) && !confirmRebind(result))
+            {
+                _logger.LogInformation("Re-check declined before rebinding '{Switch}'", result.SwitchName);
+                return result with { ApplyStatus = NetworkStatusUi.SwitchApplyStatus.NotEvaluated, UserInitiated = true };
+            }
+
+            // Asking for the rules to be applied ends any manual override.
+            if (_hold is not null) _logger.LogInformation("Override ends: re-check asked for the rules");
+            _hold = null;
+
             // userInitiated: the tray's "Re-check network now" reports this result itself (including the
             // failure), so the automatic balloon must not also fire and contradict it.
             return await ApplyAsync(result, userInitiated: true);
@@ -261,7 +279,16 @@ public sealed class NetworkMonitor : IDisposable
             // Same disposal race as OnDebounceElapsed — see the note there.
             try { _evalLock.Release(); }
             catch (ObjectDisposedException) { }
+            RunDeferredPass();
         }
+    }
+
+    /// <summary>A change that arrived while a command held the lock only flagged itself; run it now.</summary>
+    private void RunDeferredPass()
+    {
+        if (!_evaluatePending) return;
+        try { Schedule(1500); }
+        catch (ObjectDisposedException) { }
     }
 
     /// <summary>
@@ -340,31 +367,24 @@ public sealed class NetworkMonitor : IDisposable
         }
     }
 
-    /// <summary>Outcome of <see cref="ManualOverrideAsync"/> (issue #37) — the override previously
-    /// returned void and gave the user no confirmation, and silently did nothing at all when the VM was
-    /// not in config.</summary>
-    public enum OverrideOutcome
-    {
-        /// <summary>The VM's NIC is now on the requested switch. Transient: the next network change
-        /// re-evaluates the rules and reverts it.</summary>
-        Applied,
-        /// <summary>The reconnect failed — nothing changed.</summary>
-        Failed,
-        /// <summary>The VM isn't in config.json, so its NIC name is unknown and no override is possible.
-        /// Nothing was attempted.</summary>
-        NotConfigured,
-    }
+    /// <summary>What <see cref="ManualOverrideAsync"/> did, and the adapter a bridged switch was bound
+    /// to (its display name, empty when no bind was involved).</summary>
+    public sealed record OverrideReport(OverrideFlow.Outcome Outcome, string AdapterShown);
 
     /// <summary>
-    /// Forces a specific VM onto a specific switch, ignoring rules (used by the tray override menu), and
-    /// reports what happened so the caller can confirm it to the user (issue #37).
+    /// Forces a specific VM onto a specific switch, ignoring rules, and reports what happened so the caller
+    /// can confirm it (issue #37).
     ///
-    /// <para><b>This override is transient</b> — it deliberately bypasses the rule engine and does not
-    /// change config, so the next <c>NetworkChange</c> re-evaluation puts the VM back on whatever the
-    /// rules say. That lifespan was previously documented nowhere in the UI; the caller is expected to
-    /// state it (see <see cref="NetworkStatusUi.OverrideAppliedMessage"/>).</para>
+    /// <para><b>Bridged switch:</b> when a rule names the switch, it is first bound to the adapter the
+    /// computer is connected through now — wired or Wi-Fi, by interface identifier — and the VM moves only
+    /// after that bind succeeded. The binding is recorded like a rule's, so the next rule that wants the
+    /// same adapter does not rebind. <paramref name="confirmDrop"/> is asked, with the adapter's display
+    /// name, before the bind drops the host's network; null (a remote command) asks nothing.</para>
+    ///
+    /// <para><b>Transient:</b> config is not changed. The override holds until the network really
+    /// changes — see <see cref="OverrideFlow.DecideHold"/> — and then the rules decide again.</para>
     /// </summary>
-    public async Task<OverrideOutcome> ManualOverrideAsync(string vmId, SwitchRef sw)
+    public async Task<OverrideReport> ManualOverrideAsync(string vmId, SwitchRef sw, Func<string, bool>? confirmDrop = null)
     {
         _logger.LogInformation("Manual override: {Vm} → {Switch} ({SwitchId})", vmId, sw.Shown, sw.Id);
         // One shared lookup by VM ID — see VmConfigUi.FindManagedVm.
@@ -373,33 +393,164 @@ public sealed class NetworkMonitor : IDisposable
             _logger.LogWarning("Manual override: VM '{Vm}' not found in config — nothing done", vmId);
             // Nothing was attempted, so nothing is published: _lastApplied still describes the state the
             // app last confirmed, and claiming "Manual (…)" here would invent a state that never existed.
-            return OverrideOutcome.NotConfigured;
+            return new OverrideReport(OverrideFlow.Outcome.NotConfigured, "");
         }
 
-        bool ok = await _hyperV.ApplySwitchAsync(vm.Ref, vm.NicId, sw);
+        bool needsBind = _config.Current.Rules.Any(r => !string.IsNullOrWhiteSpace(r.SwitchId) && HostIdentity.Same(r.SwitchId, sw.Id));
+        var  current   = needsBind ? await Task.Run(AdapterMatcher.GetCurrentNetworkInfo) : null;
+        var  adapterId = current?.InterfaceId;
+        var  shown     = current?.AdapterDescription ?? "";
+        bool acquired  = false;
+        bool bound     = false;
 
-        // Manual override bypasses the binding logic; force a re-bind next time a rule fires.
-        _lastBoundAdapterBySwitch.Clear();
-
-        // Publish the attempt WITH its real outcome. A failed override still updates the surfaces —
-        // reporting "we tried to move this VM here and could not" is truthful and actionable, whereas
-        // the pre-#37 behaviour published the override as an accomplished fact either way.
-        var result = new MatchResult(ManualRuleId, $"Manual ({sw.Shown})", sw.Id, sw.Name, [vm.Ref])
+        try
         {
-            ApplyStatus = ok ? NetworkStatusUi.SwitchApplyStatus.Applied
-                             : NetworkStatusUi.SwitchApplyStatus.VmConnectFailed,
-            FailedVms   = ok ? [] : new[] { vm.Ref.Shown },
-            // The override menu command reports this outcome itself (and can distinguish "not a managed
-            // VM", which this path can't), so the automatic balloon stands down — one action, one report.
-            UserInitiated = true,
-        };
-        _lastApplied = result;
-        SwitchApplied?.Invoke(this, result);
-        return ok ? OverrideOutcome.Applied : OverrideOutcome.Failed;
+            var outcome = await OverrideFlow.RunAsync(
+                needsBind, adapterId,
+                confirmDrop: () => confirmDrop?.Invoke(shown) ?? true,
+                acquire: async () =>
+                {
+                    // An apply pass in flight could rebind or move the VM after this override; wait for it.
+                    try { acquired = await _evalLock.WaitAsync(TimeSpan.FromSeconds(30)); }
+                    catch (ObjectDisposedException) { acquired = false; }
+                    return acquired;
+                },
+                bind: async () =>
+                {
+                    var o = await _hyperV.UpdateSwitchBindingAsync(sw, adapterId!);
+                    if (o == SwitchBindOutcome.Failed) _lastBoundAdapterBySwitch.TryRemove(sw.Id, out _);
+                    else { _lastBoundAdapterBySwitch[sw.Id] = adapterId!; bound = true; }
+                    return o;
+                },
+                move: () => _hyperV.ApplySwitchAsync(vm.Ref, vm.NicId, sw));
+
+            _logger.LogInformation("Manual override {Outcome}: {Vm} → {Switch} (adapter '{Adapter}' {AdapterId})",
+                outcome, vm.Ref.Shown, sw.Shown, shown, adapterId ?? "none");
+
+            if (outcome is OverrideFlow.Outcome.Applied or OverrideFlow.Outcome.MoveFailed)
+            {
+                bool ok = outcome == OverrideFlow.Outcome.Applied;
+                // The host section keeps showing the real connection rather than dashes.
+                var host = await Task.Run(() => AdapterMatcher.Evaluate(_config.Current));
+                var result = new MatchResult(ManualRuleId, $"Manual ({sw.Shown})", sw.Id, sw.Name, [vm.Ref])
+                {
+                    HostAdapterName        = host.HostAdapterName,
+                    HostAdapterInterfaceId = host.HostAdapterInterfaceId,
+                    HostAdapterAlias       = host.HostAdapterAlias,
+                    HostIp                 = host.HostIp,
+                    Gateway                = host.Gateway,
+                    DnsServers             = host.DnsServers,
+                    ApplyStatus = ok ? NetworkStatusUi.SwitchApplyStatus.Applied
+                                     : NetworkStatusUi.SwitchApplyStatus.VmConnectFailed,
+                    FailedVms   = ok ? [] : new[] { vm.Ref.Shown },
+                    // The command reports this outcome itself, so the automatic balloon stands down.
+                    UserInitiated = true,
+                };
+
+                // Only a completed override holds; after its own bind it waits out the connection's return.
+                _endHoldRequested = false;
+                _hold = ok
+                    ? new OverrideHoldState(bound ? DateTime.UtcNow + OverrideFlow.SettleAfterBind : DateTime.MinValue,
+                                            bound ? null : OverrideFlow.Fingerprint(host))
+                    : null;
+                if (bound) Schedule((int)OverrideFlow.SettleAfterBind.TotalMilliseconds + 500);
+
+                _lastApplied = result;
+                SwitchApplied?.Invoke(this, result);
+            }
+            return new OverrideReport(outcome, shown);
+        }
+        finally
+        {
+            // Same disposal race as OnDebounceElapsed — see the note there.
+            if (acquired)
+            {
+                try { _evalLock.Release(); }
+                catch (ObjectDisposedException) { }
+                RunDeferredPass();
+            }
+        }
+    }
+
+    /// <summary>An override that holds against the rules: until when it ignores changes, and the network
+    /// it belongs to once captured.</summary>
+    private sealed class OverrideHoldState(DateTime settleUntilUtc, string? fingerprint)
+    {
+        public DateTime SettleUntilUtc { get; } = settleUntilUtc;
+        public string?  Fingerprint    { get; set; } = fingerprint;
+    }
+
+    private volatile OverrideHoldState? _hold;
+    // Set by a network-affecting settings change: the next pass lets the rules decide.
+    private volatile bool _endHoldRequested;
+
+    /// <summary>
+    /// True when an override hold absorbs this evaluation. Publishes the override again with the host's
+    /// current connection, so the dashboard follows the connection through the bind.
+    /// </summary>
+    private bool HoldAbsorbs(MatchResult evaluated)
+    {
+        if (_hold is not { } hold) return false;
+        if (_endHoldRequested)
+        {
+            _logger.LogInformation("Override ends: a settings change asks the rules to decide");
+            _hold = null;
+            _endHoldRequested = false;
+            return false;
+        }
+
+        var now     = DateTime.UtcNow;
+        var print   = OverrideFlow.Fingerprint(evaluated);
+        var verdict = OverrideFlow.DecideHold(now, hold.SettleUntilUtc, hold.Fingerprint, print);
+        switch (verdict)
+        {
+            case OverrideFlow.HoldVerdict.Ends:
+                _logger.LogInformation("Override ends: the network changed ({Before} → {After})", hold.Fingerprint, print);
+                _hold = null;
+                return false;
+            case OverrideFlow.HoldVerdict.Settling:
+                // Look again once the connection has settled, whether or not another change arrives.
+                Schedule((int)Math.Max(500, (hold.SettleUntilUtc - now).TotalMilliseconds + 500));
+                _logger.LogDebug("Override holds while its bind settles");
+                break;
+            case OverrideFlow.HoldVerdict.Capture:
+                hold.Fingerprint = print;
+                _logger.LogInformation("Override holds on this network ({Network})", print);
+                break;
+            default:
+                _logger.LogDebug("Override holds: same network");
+                break;
+        }
+
+        if (_lastApplied is { } manual)
+        {
+            var refreshed = manual with
+            {
+                HostAdapterName        = evaluated.HostAdapterName,
+                HostAdapterInterfaceId = evaluated.HostAdapterInterfaceId,
+                HostAdapterAlias       = evaluated.HostAdapterAlias,
+                HostIp                 = evaluated.HostIp,
+                Gateway                = evaluated.Gateway,
+                DnsServers             = evaluated.DnsServers,
+            };
+            _lastApplied = refreshed;
+            SwitchApplied?.Invoke(this, refreshed);
+        }
+        return true;
     }
 
     /// <summary>The rule ID a manual override publishes under: neither a rule nor the fallback.</summary>
     private const string ManualRuleId = "manual";
+
+    /// <summary>True when applying <paramref name="result"/> would bind its switch to an adapter this
+    /// session has not confirmed it on — the same test <see cref="ApplyAsync"/> uses to skip a bind.</summary>
+    private bool WouldRebind(MatchResult result)
+    {
+        if (result.IsFallback || string.IsNullOrWhiteSpace(result.SwitchId)
+            || string.IsNullOrWhiteSpace(result.HostAdapterInterfaceId)) return false;
+        _lastBoundAdapterBySwitch.TryGetValue(result.SwitchId, out var lastAdapter);
+        return !HostIdentity.Same(result.HostAdapterInterfaceId, lastAdapter);
+    }
 
     /// <summary>
     /// Applies <paramref name="result"/> (bind the switch, reconnect the target VMs) and returns the
