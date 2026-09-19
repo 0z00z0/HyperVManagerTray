@@ -13,7 +13,10 @@
     Output: HyperVManagerTray-Setup-{version}.exe (per-user, no admin to install;
     the app elevates itself at runtime).
 
-    Requires Inno Setup (ISCC). If missing, install it once:
+    Requires Inno Setup 7 or later (ISCC), the version the release workflow uses; an
+    Inno Setup 7 installation is preferred over any compiler on the command path, and
+    the script stops, naming the version found, when only an older one exists.
+    If missing, install it once:
         winget install JRSoftware.InnoSetup
 
     Refuses to build while the working tree has uncommitted changes, other than the
@@ -44,6 +47,13 @@ $shelfDir     = Join-Path $env:USERPROFILE "Nextcloud\Projects\Installers"   # l
 # would ship code no commit contains (issue #77). The version bump this script writes is the one
 # change allowed, so a run can follow an earlier one that failed after bumping.
 Assert-CommittedTree -Root $root -ProjectFile "HyperVManagerTray.csproj"
+
+# -- Locate Inno Setup 7 or later ----------------------------------------------
+# Before the publish, so a missing or outdated compiler costs seconds rather than a full publish. The
+# release workflow compiles with a pinned 7.x, and a hand build must match it.
+$inno = Find-InnoSetupCompiler -RequiredMajor 7
+$iscc = $inno.Path
+Write-Host "==> Inno Setup $($inno.Version): $iscc" -ForegroundColor Cyan
 
 # -- 0. Resolve / bump version ------------------------------------------------
 $projContent = Get-Content $proj -Raw
@@ -105,23 +115,7 @@ if (Test-Path $publishedExe) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "scripts\sign.ps1") -Path $publishedExe
 }
 
-# -- 3. Locate Inno Setup compiler --------------------------------------------
-$iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
-if (-not $iscc) {
-    # Inno Setup 7 first: the release workflow compiles with it, and a hand build should match.
-    foreach ($p in @(
-        "${env:ProgramFiles}\Inno Setup 7\ISCC.exe",
-        "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
-        "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe",
-        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",     # winget per-user install
-        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-        "${env:ProgramFiles}\Inno Setup 6\ISCC.exe")) {
-        if (Test-Path $p) { $iscc = $p; break }
-    }
-}
-if (-not $iscc) {
-    throw "Inno Setup (ISCC.exe) not found. Install it once with:  winget install JRSoftware.InnoSetup"
-}
+# -- 3. Inno Setup compiler: located and version-checked at the top ------------
 
 # -- 4. Compile the installer -------------------------------------------------
 # Remove any previous installers from Output/ so only the current build ships.

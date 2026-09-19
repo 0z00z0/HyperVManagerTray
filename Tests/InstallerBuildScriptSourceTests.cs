@@ -47,4 +47,19 @@ public class InstallerBuildScriptSourceTests
         Assert.True(refuse < bump, "The uncommitted-tree refusal must come before the version bump.");
         Assert.True(refuse < publish, "The uncommitted-tree refusal must come before dotnet publish.");
     }
+
+    /// <summary>The release workflow compiles with a pinned Inno Setup 7. Taking the first compiler on
+    /// the command path let a hand build use 6.x without saying so; the compiler must come from the
+    /// version-checked lookup, and before the publish.</summary>
+    [Fact]
+    public void TheCompilerIsVersionCheckedForInnoSetup7()
+    {
+        var code = Script();
+
+        int find    = IndexOf(code, "Find-InnoSetupCompiler -RequiredMajor 7");
+        int publish = IndexOf(code, "dotnet publish");
+
+        Assert.True(find < publish, "The Inno Setup lookup must come before dotnet publish.");
+        Assert.DoesNotContain("Get-Command iscc.exe", code, StringComparison.OrdinalIgnoreCase);
+    }
 }

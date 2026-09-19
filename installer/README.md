@@ -7,7 +7,7 @@ LenovoTray app uses.
 
 ```powershell
 # one-time prerequisites (on a fresh dev machine):
-winget install JRSoftware.InnoSetup   # Inno Setup compiler
+winget install JRSoftware.InnoSetup   # Inno Setup 7 or later; the script refuses 6.x
 .\sign.ps1 -Setup                     # create + trust the self-signed code-signing cert
 
 .\build-installer.ps1 -Version 2.0.1

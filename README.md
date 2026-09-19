@@ -85,7 +85,7 @@ It installs to `%LocalAppData%\Programs\HyperVManagerTray`. `config.json` lives 
 A **per-user Inno Setup installer** builds from `installer\`:
 
 ```powershell
-# one-time, if Inno Setup is missing:
+# one-time, if Inno Setup 7 or later is missing (the script refuses an older one):
 winget install JRSoftware.InnoSetup
 
 .\installer\build-installer.ps1   # auto-bumps the patch version
