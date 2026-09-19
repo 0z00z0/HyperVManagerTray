@@ -342,7 +342,7 @@ window shows both lists together.
 | [NLog](https://nlog-project.org/) | 6.2.1 | Jarek Kowalski, Kim Christensen, Julian Verdurmen (NLog Project) | File sink behind the logging abstraction — writes `switcher.log` / `vm-power.log` / `ui.log` and rotates them at 2 MB (issue #55) | BSD-3-Clause² |
 | [System.Management](https://www.nuget.org/packages/System.Management) | 10.0.12 | Microsoft | WMI access (`root\virtualization\v2`) for VM status/power and switch binding — replaced the earlier PowerShell path | MIT |
 | [System.ServiceProcess.ServiceController](https://www.nuget.org/packages/System.ServiceProcess.ServiceController) | 10.0.12 | Microsoft | Reads, starts and stops the Hyper-V services through the Service Control Manager (issue #114) | MIT |
-| [TaskScheduler](https://github.com/dahall/taskscheduler) | 2.12.2 | David Hall | Typed Task Scheduler API behind `Services\StartupManager.cs` — `schtasks /Create` cannot set the battery flags that stopped the logon task starting the app on battery (issue #61) | MIT |
+| [TaskScheduler](https://github.com/dahall/taskscheduler) | 2.12.2 | David Hall | Typed Task Scheduler API under `ZeroZero.Startup`, which registers and repairs the logon task — `schtasks /Create` cannot set the power settings that decide whether the task starts the app | MIT |
 
 ¹ The NuGet packages ship under the Microsoft Software License Terms; the Windows App SDK
 *source* is MIT on [GitHub](https://github.com/microsoft/WindowsAppSDK).
@@ -368,7 +368,7 @@ additionally uses, at **test time only** (nothing ships in the app):
 
 ## Shared components
 
-Four components come from [0z0-shared](https://github.com/0z00z0/0z0-shared), the shared components
+Five components come from [0z0-shared](https://github.com/0z00z0/0z0-shared), the shared components
 library used across ZeroZero Software apps, taken as packages from the studio's GitHub Packages feed:
 
 | Package | Version | What it provides |
@@ -376,6 +376,7 @@ library used across ZeroZero Software apps, taken as packages from the studio's 
 | [ZeroZero.Brand.WinUI](https://github.com/0z00z0/0z0-shared) | 0.9.2 | The **About** window (`BrandAboutWindow`), the studio mark, the typeface and the palette |
 | [ZeroZero.Mqtt.WinUI](https://github.com/0z00z0/0z0-shared) | 0.7.3 | The MQTT module — broker connection, Home Assistant discovery and the settings panel. Delivers `ZeroZero.Config`, `ZeroZero.Mqtt` and `ZeroZero.Mqtt.Discovery` with it |
 | [ZeroZero.Lifecycle](https://github.com/0z00z0/0z0-shared) | 0.7.1 | The single-instance lock and its four outcomes, and the relaunch after a clean exit nobody asked for, limited to three in ten minutes. Wired up in `Helpers/AppLifecycle.cs` |
+| [ZeroZero.Startup](https://github.com/0z00z0/0z0-shared) | 0.8.0 | The logon task behind `Services/StartupManager.cs` — its power-safe elevated definition with no execution time limit, registration, the enabled read, deletion, and the repair at start of a task an older build or the installer registered, including one that points at an old install path |
 | [ZeroZero.Update.Win32](https://github.com/0z00z0/0z0-shared) | 0.8.0 | The self-update flow behind `Services/AppUpdate.cs` — the release check, and the download verified against its published SHA-256 and against the publisher certificate before it is allowed to run. Delivers `ZeroZero.Update` with it |
 
 The versions live in [`Directory.Packages.props`](Directory.Packages.props); the project files carry

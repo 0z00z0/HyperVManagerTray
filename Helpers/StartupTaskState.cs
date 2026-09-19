@@ -5,8 +5,7 @@ namespace HyperVManagerTray.Helpers;
 /// disabled through Task Scheduler's own UI or by policy still satisfies "the task exists", so
 /// existence alone would read On for a task the scheduler will never fire (issue #71).
 ///
-/// <para>The read arrives as a delegate, exactly as <see cref="StartupTaskRepair.Run"/> takes its
-/// scheduler calls, so the three-valued state — absent, present-but-disabled, present-and-enabled —
+/// <para>The read arrives as a delegate, so the three-valued state — absent, present-but-disabled, present-and-enabled —
 /// is testable with no live scheduled task.</para>
 /// </summary>
 internal static class StartupTaskState

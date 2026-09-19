@@ -179,11 +179,11 @@ public partial class App : Application
             CrashDumps.TryRegisterLocalDumps(Path.Combine(logDir, "dumps"));
 
             _startup       = new StartupManager(_loggerFactory.CreateLogger<StartupManager>());
-            // Self-heal for issue #61: a logon task registered by an older build carries Task
-            // Scheduler's battery defaults and never starts the app when the machine boots on
-            // battery. Off the startup path — connecting to the scheduler costs tens of ms, and
-            // nothing here waits on the result.
-            _ = Task.Run(_startup.TryRepairPowerSettings);
+            // Self-heal: a logon task registered by an older build or the installer carries Task
+            // Scheduler's defaults — battery restrictions (issue #61), a three-day execution limit —
+            // or an older install path. Off the startup path — connecting to the scheduler costs tens
+            // of ms, and nothing here waits on the result.
+            _ = Task.Run(_startup.TryRepair);
             // The running build is stated rather than left to the update component, which would
             // otherwise read the entry assembly — this app today, but whatever host is running the
             // code tomorrow. The comparison is this app's own decision.
