@@ -107,8 +107,13 @@ public sealed class VmService : IDisposable
     private readonly Dictionary<string, long> _memMax = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (long Bytes, DateTime At)> _vhd = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (string Id, string Name)> _switchByVm = new(StringComparer.OrdinalIgnoreCase);
-    // External switches whose bound adapter is absent or has no link, by switch ID. Read with the switch map.
-    private HashSet<string> _uplinkDownSwitches = new(StringComparer.OrdinalIgnoreCase);
+    // Every switch on the host and what its way out is doing, by switch ID. Read with the switch map.
+    // A verdict per switch rather than a set of the broken ones: the set could not say "the host could
+    // not be read", so a failed adapter query reached the tray icon spelled exactly like health.
+    // Replaced wholesale under _refreshLock and never mutated after publication, so a reader on another
+    // thread sees one consistent map; volatile makes that publication visible to it.
+    private volatile IReadOnlyDictionary<string, SwitchUplinkState> _switchUplink =
+        new Dictionary<string, SwitchUplinkState>(StringComparer.OrdinalIgnoreCase);
     private DateTime _switchCacheAt = DateTime.MinValue;
     // Set by the state watcher (VM start/stop) and by InvalidateSwitchCache (app rebind) so the next
     // RefreshCore re-reads the VM→switch map instead of waiting on SwitchFallbackInterval. Volatile:
@@ -226,7 +231,10 @@ public sealed class VmService : IDisposable
         _memMax.Clear();
         _vhd.Clear();
         _switchByVm.Clear();
-        _uplinkDownSwitches = new(StringComparer.OrdinalIgnoreCase);
+        // Back to an empty map, which answers Unknown for every switch: with vmms down nothing about
+        // any uplink has been established, and keeping the last verdicts would assert a host nobody
+        // can currently read.
+        _switchUplink = new Dictionary<string, SwitchUplinkState>(StringComparer.OrdinalIgnoreCase);
         _switchCacheAt   = DateTime.MinValue;
         _refreshFailures = 0;
         Interlocked.Exchange(ref _recoveryAttempts, 0);
@@ -621,7 +629,7 @@ public sealed class VmService : IDisposable
                 {
                     _switchCacheDirty = false;
                     foreach (var (id, sw) in ReadSwitches(scope, vms)) _switchByVm[id] = sw;
-                    _uplinkDownSwitches = ReadUplinkDownSwitches(scope);
+                    _switchUplink = ReadSwitchUplinks(scope);
                     _switchCacheAt = DateTime.UtcNow;
                 }
 
@@ -635,7 +643,7 @@ public sealed class VmService : IDisposable
                         row.Name, row.EnabledState, m.Cpu, m.MemMb, m.UptimeMs, memMax, sw.Name ?? "", m.JobStatus);
                     st.Id       = id;
                     st.SwitchId = sw.Id ?? "";
-                    st.SwitchUplinkDown = st.SwitchId.Length > 0 && _uplinkDownSwitches.Contains(st.SwitchId);
+                    st.SwitchUplinkDown = SwitchUplinkRules.HasNoConnectionOut(UplinkOf(st.SwitchId));
                     if (_vhd.TryGetValue(id, out var v)) st.VhdBytes = v.Bytes;
                     list.Add(st);
                 }
@@ -883,39 +891,69 @@ public sealed class VmService : IDisposable
     }
 
     /// <summary>
-    /// External switches whose uplink carries nothing: the wired or Wi-Fi port the switch is bound to can no
-    /// longer be read (its adapter was unplugged), or no physical adapter with that port's hardware address
-    /// reports a connected medium. Internal and private switches never appear. When the adapter list cannot
-    /// be read at all, nothing is marked: an unknown uplink is not reported as a missing one.
+    /// What every switch on the host has for a way out, by switch ID — see <see cref="SwitchUplinkState"/>
+    /// for what each verdict means and <see cref="SwitchUplinkRules.For"/> for the decision itself, which
+    /// is pure and tested separately from this traversal.
+    ///
+    /// <para>An external switch is judged by its uplink port's hardware address: the wired or Wi-Fi port
+    /// the switch is bound to may no longer resolve at all (its adapter was unplugged), or no physical
+    /// adapter carrying that address may report a connected medium. When the adapter list cannot be read,
+    /// or this traversal throws part-way, the result is empty and every switch answers
+    /// <see cref="SwitchUplinkState.Unknown"/> — an uplink nobody could look at is never reported as a
+    /// missing one.</para>
     /// </summary>
-    private HashSet<string> ReadUplinkDownSwitches(ManagementScope scope)
+    private IReadOnlyDictionary<string, SwitchUplinkState> ReadSwitchUplinks(ManagementScope scope)
     {
-        var down = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var verdicts = new Dictionary<string, SwitchUplinkState>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            if (ReadConnectedPhysicalMacs() is not { } connected) return down;
+            var connected = ReadConnectedPhysicalMacs();
+            if (connected is null) return verdicts;
 
             // Same switch → port → allocation traversal HyperVManager binds through.
             using var searcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT * FROM Msvm_VirtualEthernetSwitch"), WmiLimits.Enumeration());
             foreach (ManagementObject sw in searcher.Get())
                 using (sw)
                 {
-                    if (ExternalPortPath(sw) is not { } portPath) continue;
+                    var  portPath       = ExternalPortPath(sw);
+                    bool hasExternalPort = portPath is not null;
                     string mac = "";
-                    try
+                    if (portPath is not null)
                     {
-                        using var port = new ManagementObject(scope, new ManagementPath(portPath), WmiLimits.Get());
-                        port.Get();
-                        mac = AdapterMatcher.NormalizeMac(port["PermanentAddress"] as string ?? "");
+                        try
+                        {
+                            using var port = new ManagementObject(scope, new ManagementPath(portPath), WmiLimits.Get());
+                            port.Get();
+                            mac = AdapterMatcher.NormalizeMac(port["PermanentAddress"] as string ?? "");
+                        }
+                        catch { /* the bound adapter is gone — its port no longer exists */ }
                     }
-                    catch { /* the bound adapter is gone — its port no longer exists */ }
 
-                    if (mac.Length == 0 || !connected.Contains(mac))
-                        down.Add(HostIdentity.Bare(sw["Name"] as string));
+                    verdicts[HostIdentity.Bare(sw["Name"] as string)] =
+                        SwitchUplinkRules.For(hasExternalPort, mac, connected);
                 }
         }
-        catch (Exception ex) { _logger.LogWarning(ex, "Switch uplink read failed"); down.Clear(); }
-        return down;
+        catch (Exception ex)
+        {
+            // Half a traversal is not a verdict: a switch judged before the throw would be asserted as
+            // fact while the rest of the host went unlooked-at. Say nothing about any of them.
+            _logger.LogWarning(ex, "Switch uplink read failed");
+            verdicts.Clear();
+        }
+        return verdicts;
+    }
+
+    /// <summary>
+    /// What the switch with <paramref name="switchId"/> has for a way out, as of the last switch-map read.
+    /// <see cref="SwitchUplinkState.Unknown"/> for a switch that was not in it — including every switch
+    /// before the first read and while vmms is down.
+    /// </summary>
+    public SwitchUplinkState UplinkOf(string? switchId)
+    {
+        if (string.IsNullOrWhiteSpace(switchId)) return SwitchUplinkState.Unknown;
+        return _switchUplink.TryGetValue(HostIdentity.Bare(switchId), out var state)
+            ? state
+            : SwitchUplinkState.Unknown;
     }
 
     /// <summary>The <c>HostResource</c> path of a switch's external (wired or Wi-Fi) port allocation, or null

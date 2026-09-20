@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 using System.Drawing.Imaging;
 using HyperVManagerTray.Helpers;
 using Xunit;
@@ -23,6 +23,7 @@ public class IconGeneratorTests : IDisposable
     [InlineData(TrayIconState.Bridged,  "icon-bridged-v6.ico")]
     [InlineData(TrayIconState.Fallback, "icon-fallback-v6.ico")]
     [InlineData(TrayIconState.Failed,   "icon-failed-v6.ico")]     // issue #37
+    [InlineData(TrayIconState.BridgeNoUplink, "icon-bridge-no-uplink-v6.ico")]
     public void GenerateAndSave_CreatesExpectedFile(TrayIconState state, string expectedFileName)
     {
         var path = IconGenerator.GenerateAndSave(_dir, state);
@@ -53,6 +54,7 @@ public class IconGeneratorTests : IDisposable
     [InlineData(TrayIconState.Bridged)]
     [InlineData(TrayIconState.Fallback)]
     [InlineData(TrayIconState.Failed)]
+    [InlineData(TrayIconState.BridgeNoUplink)]
     public void GenerateAndSave_CalledTwice_ReturnsSamePathAndDoesNotRewrite(TrayIconState state)
     {
         var first    = IconGenerator.GenerateAndSave(_dir, state);
@@ -86,6 +88,7 @@ public class IconGeneratorTests : IDisposable
     [InlineData(TrayIconState.Bridged)]
     [InlineData(TrayIconState.Fallback)]
     [InlineData(TrayIconState.Failed)]
+    [InlineData(TrayIconState.BridgeNoUplink)]
     public void RenderIcon_HasTransparentBackground(TrayIconState state)
     {
         using var bmp = IconGenerator.RenderIcon(32, state);
@@ -101,6 +104,7 @@ public class IconGeneratorTests : IDisposable
     [InlineData(TrayIconState.Bridged)]
     [InlineData(TrayIconState.Fallback)]
     [InlineData(TrayIconState.Failed)]
+    [InlineData(TrayIconState.BridgeNoUplink)]
     public void RenderIcon_DrawsOpaqueGlyph(TrayIconState state)
     {
         using var bmp = IconGenerator.RenderIcon(32, state);
@@ -121,9 +125,17 @@ public class IconGeneratorTests : IDisposable
         var bridged  = DominantGlyphColor(TrayIconState.Bridged);
         var fallback = DominantGlyphColor(TrayIconState.Fallback);
         var failed   = DominantGlyphColor(TrayIconState.Failed);
+        var noUplink = DominantGlyphColor(TrayIconState.BridgeNoUplink);
 
         Assert.True(bridged.G  > bridged.R  && bridged.G  > bridged.B,  $"Bridged should be green-dominant, was {bridged}");
         Assert.True(fallback.B > fallback.R && fallback.B > fallback.G, $"Fallback should be blue-dominant, was {fallback}");
+        // Amber: warm like Failed, but with far more green in it. Both clauses matter — the first keeps
+        // it off the cool "working" side of the palette, the second keeps a degraded bridge from reading
+        // at a glance as the red that means something failed and needs looking at now.
+        Assert.True(noUplink.R > noUplink.B && noUplink.G > noUplink.B,
+                    $"A bridge with no uplink should be amber, was {noUplink}");
+        Assert.True(noUplink.G > failed.G,
+                    $"Amber should be clearly warmer-yellow than red ({noUplink} vs {failed})");
         Assert.True(failed.R   > failed.G   && failed.R   > failed.B,   $"Failed should be red-dominant, was {failed}");
     }
 
@@ -149,8 +161,12 @@ public class IconGeneratorTests : IDisposable
     // "network degraded", so the app announced a fault at every logon. #58 deleted the state and maps
     // the startup window to grey Unknown instead — the icon makes no claim about the network either way,
     // and the "starting up" distinction now lives on the tooltip (NetworkStatusUiTests covers that).
-    // There is intentionally no amber-colour test here anymore; the enumerating tests above
-    // (EveryState_ProducesADifferentFile, EveryStateHasItsOwnColour) cover the four states that remain.
+    //
+    // Amber exists again, and this is not that decision coming back. #58's objection was that the colour
+    // announced a degraded network during a window in which nothing was wrong; it now marks a bridge
+    // whose uplink is confirmed down, which is a degraded network and nothing else. The test above pins
+    // the hue, and the enumerating tests (EveryState_ProducesADifferentFile, EveryStateHasItsOwnColour)
+    // keep every state on its own file and its own colour.
 
     // Averages every fully-opaque glyph pixel to get the icon's dominant colour.
     private static Color DominantGlyphColor(TrayIconState state)

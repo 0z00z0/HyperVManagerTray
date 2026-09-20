@@ -377,23 +377,41 @@ public sealed partial class DashboardWindow : Window
     /// </summary>
     private void ApplyHostStatus(MatchResult result)
     {
-        RuleText.Text = NetworkStatusUi.RuleRowText(result.RuleName, result.ApplyStatus);
+        var uplink = HostUplink(result);
+        _hostUplinkShown = uplink;
+        RuleText.Text = NetworkStatusUi.RuleRowText(result.RuleName, result.ApplyStatus, uplink);
 
         // Red on failure; on recovery CLEAR the local value rather than re-assigning a captured brush,
         // so the row falls back to RowValueStyle's {ThemeResource TextFillColorPrimaryBrush} and keeps
         // tracking light/dark. Assigning a captured brush would pin a hard local value and freeze this
         // one row's colour across a theme switch.
-        if (NetworkStatusUi.IsFailure(result.ApplyStatus))
+        if (NetworkStatusUi.ShowsAsProblem(result.ApplyStatus, uplink))
             RuleText.Foreground = AppColors.IndicatorRedBrush;
         else
             RuleText.ClearValue(TextBlock.ForegroundProperty);
 
-        AdapterText.Text = result.HostAdapterName;
+        AdapterText.Text = NetworkStatusUi.HostAdapterRowText(result.HostAdapterName);
         IpText.Text      = result.HostIp;
         GatewayText.Text = result.Gateway;
         DnsText.Text     = result.DnsServers.Count > 0
             ? string.Join("  ·  ", result.DnsServers.Take(2)) : "—";
     }
+
+    /// <summary>
+    /// What the published result's switch has for a way out — <see cref="SwitchUplinkState.NotExternal"/>
+    /// for the fallback's NAT switch, which has no uplink to miss and must never be reported as missing
+    /// one. Asked per read rather than cached, because it moves when a dock is unplugged and not when the
+    /// rules re-evaluate.
+    /// </summary>
+    private SwitchUplinkState HostUplink(MatchResult result) =>
+        HostIdentity.Same(result.SwitchId, _config.Current.Fallback.SwitchId)
+            ? SwitchUplinkState.NotExternal
+            : _vm.UplinkOf(result.SwitchId);
+
+    // What the host card was last rendered with, so the 2.5 s metrics tick only rewrites those five rows
+    // when the verdict actually moved. Without it every tick would re-assign the text and ask WinUI for a
+    // layout pass on a card whose content is identical.
+    private SwitchUplinkState? _hostUplinkShown;
 
     // ── Hyper-V services card (issue #114) ──────────────────────────────────────
 
@@ -587,6 +605,13 @@ public sealed partial class DashboardWindow : Window
         DispatcherQueue.TryEnqueue(() =>
         {
             _latest = statuses;
+
+            // The host card is otherwise only filled on SwitchApplied, which does not fire when a dock is
+            // unplugged from under a switch the rules already agreed on — the uplink verdict arrives with
+            // THIS read, so the card has to be offered it here or it keeps reporting a bridge that is gone.
+            if (_monitor.LastApplied is { } applied && HostUplink(applied) != _hostUplinkShown)
+                ApplyHostStatus(applied);
+
             bool layoutChanged = BuildCards(statuses);
 
             // Re-measure when a card's layout changed (rows appeared/disappeared) — or, since issue
@@ -961,7 +986,8 @@ public sealed partial class DashboardWindow : Window
     private string Subtitle(string vmId, VmStatus? s)
     {
         var switchText = !string.IsNullOrWhiteSpace(s?.Switch) ? s!.Switch : "—";
-        if (s?.SwitchUplinkDown == true) switchText += " — no network";
+        // The same words the host card and the tray tooltip use — one phrase, held in NetworkStatusUi.
+        if (s?.SwitchUplinkDown == true) switchText += NetworkStatusUi.NoConnectionOutSuffix;
         var applied = _monitor.LastApplied;
         return applied is not null && applied.TargetVms.Any(v => HostIdentity.Same(v.Id, vmId))
             ? $"{switchText} · {applied.RuleName}"

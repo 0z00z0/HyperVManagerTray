@@ -38,6 +38,11 @@
          SwitchBindOutcome enum below — deliberately NOT on HyperVManager.cs, which is the live-host
          WMI mutator and must never be linked into the test assembly. -->
     <Compile Include="..\Helpers\NetworkStatusUi.cs"  Link="Linked\NetworkStatusUi.cs" />
+    <!-- The verdict on whether a virtual switch has a way out to the rest of the network. Pure, and
+         separated from the WMI traversal in VmService.cs that feeds it, because the states it tells
+         apart are otherwise only reachable by unplugging a dock from a running host. Every surface that
+         says a VM has no network renders this and nothing else. -->
+    <Compile Include="..\Helpers\SwitchUplink.cs"     Link="Linked\SwitchUplink.cs" />
     <!-- The announce/suppress decision behind the failed-apply balloon, lifted out of App.xaml.cs so
          its two rules are testable without a WinUI host: a user command owns its own report (no double
          toast), and only a balloon actually SHOWN may be latched as announced. State, but no IO and no

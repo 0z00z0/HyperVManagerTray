@@ -158,13 +158,71 @@ public static class NetworkStatusUi
         status is SwitchApplyStatus.BindFailed or SwitchApplyStatus.VmConnectFailed;
 
     /// <summary>
+    /// The one phrase for "this switch has no way out to the rest of the network", used by the VM card's
+    /// sub-row, the dashboard's host card and the tray tooltip alike.
+    ///
+    /// <para>Held here, once, because <c>docs/DISPLAY-VOCABULARY.md</c> corollary 4 is exactly about this
+    /// case: the same fact told by three surfaces drifts into three wordings the moment each composes its
+    /// own. It says "connection out" rather than "network", because the cards next to it are already full
+    /// of the word network — the host's network, the network rule, the virtual switch's network — and the
+    /// thing that is missing is specifically the way OUT of the switch.</para>
+    /// </summary>
+    public const string NoConnectionOut = "no connection out";
+
+    /// <summary>The same phrase as a suffix on a value that precedes it (a switch name, a rule name).</summary>
+    public const string NoConnectionOutSuffix = " — " + NoConnectionOut;
+
+    /// <summary>
+    /// True when a surface should render this state as a problem — a failed apply, OR an apply that
+    /// landed on a switch with no way out.
+    ///
+    /// <para><b>Why not just <see cref="IsFailure"/>.</b> A bridge with no uplink classifies as
+    /// <see cref="SwitchApplyStatus.Applied"/> and is right to: the bind worked and the VM's adapter is
+    /// on the switch the rules asked for, so nothing the apply pass did failed. What is wrong is the
+    /// host, not the pass. The two must stay separate — <see cref="IsFailure"/> gates the apply-failure
+    /// balloon and the retry reasoning, and widening it would make a missing dock look like a failed WMI
+    /// write — but every surface that colours or marks a problem needs to treat them alike, because to
+    /// the person looking at it the VM has no network either way.</para>
+    /// </summary>
+    public static bool ShowsAsProblem(SwitchApplyStatus status, SwitchUplinkState uplink) =>
+        IsFailure(status) || SwitchUplinkRules.HasNoConnectionOut(uplink);
+
+    /// <summary>
+    /// True when the tray icon and the host card should say that the VMs are on a bridge with nothing
+    /// behind it: the apply is confirmed, the switch is not the fallback's, and the switch's uplink has
+    /// been ESTABLISHED to be down.
+    ///
+    /// <para>Every clause is load-bearing. A non-<see cref="SwitchApplyStatus.Applied"/> status has its
+    /// own, louder report and must not be overwritten by this one. The fallback switch is NAT and has no
+    /// uplink to miss, so asking about one would mark a healthy NAT host broken. And
+    /// <see cref="SwitchUplinkState.Unknown"/> must never reach here — see
+    /// <see cref="SwitchUplinkRules.HasNoConnectionOut"/>.</para>
+    /// </summary>
+    public static bool BridgeHasNoUplink(SwitchApplyStatus status, bool bridgedTarget, SwitchUplinkState uplink) =>
+        status == SwitchApplyStatus.Applied && bridgedTarget && SwitchUplinkRules.HasNoConnectionOut(uplink);
+
+    /// <summary>
     /// The tray icon colour for an apply status. <paramref name="bridgedTarget"/> is the INTENT (the
     /// rules picked a non-fallback switch) and is consulted ONLY once the apply is confirmed
     /// <see cref="SwitchApplyStatus.Applied"/> — that is the whole point of issue #37. A failure
     /// renders red and an unestablished state renders grey, never the optimistic target colour.
     /// </summary>
-    public static TrayIconState IconFor(SwitchApplyStatus status, bool bridgedTarget) => status switch
+    /// <param name="uplink">What the switch's own way out is doing. Defaults to
+    /// <see cref="SwitchUplinkState.Unknown"/> — "nothing established about the uplink" — which renders
+    /// exactly as this method did before the uplink existed. That default is safe, and is the only safe
+    /// one: it cannot invent a fault, and the alternatives would either claim a working uplink or brand
+    /// every unread host broken.</param>
+    public static TrayIconState IconFor(SwitchApplyStatus status, bool bridgedTarget,
+                                        SwitchUplinkState uplink = SwitchUplinkState.Unknown) => status switch
     {
+        // Confirmed on the bridge, and the bridge confirmed to have nothing behind it. Amber, and this
+        // is the state amber was always for: issue #58 removed an amber that fired at every logon when
+        // nothing was wrong, because on a taskbar amber reads as "the network is degraded". Here the
+        // network IS degraded — the VM's adapter is on a switch whose uplink carries nothing — so the
+        // colour finally says what a person already reads it as. It is not green, because traffic cannot
+        // leave; it is not red, because nothing failed and nothing needs retrying; it is not grey,
+        // because the app looked and knows.
+        _ when BridgeHasNoUplink(status, bridgedTarget, uplink) => TrayIconState.BridgeNoUplink,
         SwitchApplyStatus.Applied         => bridgedTarget ? TrayIconState.Bridged : TrayIconState.Fallback,
         SwitchApplyStatus.BindFailed      => TrayIconState.Failed,
         SwitchApplyStatus.VmConnectFailed => TrayIconState.Failed,
@@ -212,8 +270,13 @@ public static class NetworkStatusUi
     /// apply didn't land (e.g. "Office LAN — bind failed"), mirroring how the VM cards overlay
     /// "Failed: …". <see cref="IsFailure"/> decides whether the row is also coloured red.
     /// </summary>
-    public static string RuleRowText(string ruleName, SwitchApplyStatus status) => status switch
+    public static string RuleRowText(string ruleName, SwitchApplyStatus status,
+                                     SwitchUplinkState uplink = SwitchUplinkState.Unknown) => status switch
     {
+        // An apply that landed on a switch with no way out is not a plain success, and the row is the
+        // only place on this card where the outcome is already in words.
+        SwitchApplyStatus.Applied when SwitchUplinkRules.HasNoConnectionOut(uplink)
+                                          => $"{ruleName}{NoConnectionOutSuffix}",
         SwitchApplyStatus.Applied         => ruleName,
         SwitchApplyStatus.BindFailed      => $"{ruleName} — bind failed",
         SwitchApplyStatus.VmConnectFailed => $"{ruleName} — VM connect failed",
@@ -221,12 +284,45 @@ public static class NetworkStatusUi
     };
 
     /// <summary>
+    /// The dashboard HOST NETWORK card's "Adapter" row.
+    ///
+    /// <para>Exists because the card's four lower rows are filled straight from the evaluation, and when
+    /// no adapter is up at all the evaluation has nothing to put in them — so all four kept the "—"
+    /// placeholder and the card reported the host's connection as four blanks. A dash is the right
+    /// rendering for an address that does not exist, but on the adapter row it left the reason unsaid;
+    /// this says it. The address, gateway and DNS rows keep their dashes deliberately: with no adapter
+    /// there are no such values, and inventing a sentence for each would say the same thing four
+    /// times.</para>
+    /// </summary>
+    public static string HostAdapterRowText(string? adapterName) =>
+        string.IsNullOrWhiteSpace(adapterName) || adapterName.Trim() == "—"
+            ? "No adapter connected"
+            : adapterName;
+
+    /// <summary>
+    /// The balloon for a VM sitting on a bridged switch whose uplink carries nothing — the state that
+    /// was silent on every surface before this, because the apply itself succeeded.
+    ///
+    /// <para>Names the switch and says what the person will otherwise find out from inside the guest
+    /// ("Media disconnected"), then the one thing that fixes it. It does NOT offer to move the VM: the
+    /// rules already move it to the fallback when a rule stops matching, and a switch the person
+    /// deliberately parked a VM on is not something a notification should undo.</para>
+    /// </summary>
+    public static string UplinkLostMessage(string switchName) =>
+        $"Virtual switch '{switchName}' has no connection out — the adapter it is connected through is " +
+        "not plugged in. VMs on it report no network inside the guest until it is back.";
+
+    /// <summary>
     /// The short status suffix for the tray tooltip's switch row (e.g. "Bridged — bind failed"), so a
     /// hover reports the outcome rather than the intent. Empty for a confirmed apply — the switch name
     /// alone already says it. The caller keeps the Win32 tooltip length clamp.
     /// </summary>
-    public static string TooltipSwitchSuffix(SwitchApplyStatus status) => status switch
+    public static string TooltipSwitchSuffix(SwitchApplyStatus status,
+                                             SwitchUplinkState uplink = SwitchUplinkState.Unknown) => status switch
     {
+        // The switch name alone no longer says it: the bind landed, and the switch still has nowhere to
+        // send the traffic. Same words as the VM card and the host card.
+        SwitchApplyStatus.Applied when SwitchUplinkRules.HasNoConnectionOut(uplink) => NoConnectionOutSuffix,
         SwitchApplyStatus.Applied         => "",
         SwitchApplyStatus.BindFailed      => " — bind failed",
         SwitchApplyStatus.VmConnectFailed => " — VM connect failed",
