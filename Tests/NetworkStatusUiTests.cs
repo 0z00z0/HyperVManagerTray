@@ -98,6 +98,8 @@ public class NetworkStatusUiTests
     [InlineData(TrayIconState.Bridged,  true)]
     [InlineData(TrayIconState.Fallback, true)]
     [InlineData(TrayIconState.Failed,   true)]   // a CONFIRMED failure is established knowledge
+    // A bridge confirmed to have no uplink is established too: the app looked at the host and knows.
+    [InlineData(TrayIconState.BridgeNoUplink, true)]
     public void IsEstablished_IdentifiesStatesTheAppHasActuallyConfirmed(TrayIconState state, bool expected) =>
         Assert.Equal(expected, IsEstablished(state));
 

@@ -33,6 +33,11 @@ public enum TrayIconState
     Bridged,  // green — CONFIRMED: VM on physical LAN
     Fallback, // blue  — CONFIRMED: VM on Default Switch / NAT
     Failed,   // red   — the switch bind or a VM-NIC reconnect FAILED (issue #37)
+    // amber — CONFIRMED on the bridge, and the bridge CONFIRMED to have no uplink. Appended rather than
+    // slotted beside Bridged so no existing value moves. Amber returns here after #58 removed it from
+    // startup, and for the opposite reason: there it announced a degraded network while nothing was
+    // wrong, and here the network really is degraded, which is what a person reads amber as.
+    BridgeNoUplink,
 }
 
 /// <summary>
@@ -43,7 +48,8 @@ public enum TrayIconState
 /// square end lit = bridged to the physical LAN, blue with the round end lit = NAT/fallback, red with a
 /// cross in place of the fork = the apply failed.  The transparent background lets the same icon read
 /// on both light and dark taskbars.  Colours are intentionally medium-luminance, not vivid, so the
-/// glyph's edges stay crisp against either backdrop.
+/// glyph's edges stay crisp against either backdrop.  Amber with the square end lit but left open =
+/// on the bridge, and the bridge has no uplink.
 ///
 /// One colour per state is a rule, not a coincidence: colour is the channel that reads at a glance, and
 /// two states sharing one would be told apart only by a few pixels at 16 px
@@ -65,6 +71,7 @@ internal static class IconGenerator
     private const string BridgedFile  = "icon-bridged-v6.ico";
     private const string FallbackFile = "icon-fallback-v6.ico";
     private const string FailedFile   = "icon-failed-v6.ico";   // issue #37
+    private const string NoUplinkFile = "icon-bridge-no-uplink-v6.ico";
 
     // Frame sizes baked into each .ico.  64/48 are picked by Windows on 4K (200 %+ DPI)
     // without upscaling; 32/24/20/16 cover 100–150 % tray DPI.
@@ -79,6 +86,9 @@ internal static class IconGenerator
     // stay crisp on a white taskbar, but unmistakably a different hue from the green/blue "confirmed"
     // colours AND from the grey "don't know yet".
     private static readonly Color GlyphFailed   = Color.FromArgb(255, 0xC4, 0x45, 0x3B);
+    // Muted amber: red-dominant like Failed but with far more green, so the two are told apart by hue
+    // and not only by the glyph. Same medium luminance as its siblings for the same reason.
+    private static readonly Color GlyphNoUplink = Color.FromArgb(255, 0xC9, 0x8A, 0x22);
 
     /// <summary>
     /// Returns the path to the .ico for the given state, generating it on first call.
@@ -87,10 +97,11 @@ internal static class IconGenerator
     {
         var file = state switch
         {
-            TrayIconState.Bridged  => BridgedFile,
-            TrayIconState.Fallback => FallbackFile,
-            TrayIconState.Failed   => FailedFile,
-            _                      => UnknownFile,
+            TrayIconState.Bridged        => BridgedFile,
+            TrayIconState.Fallback       => FallbackFile,
+            TrayIconState.Failed         => FailedFile,
+            TrayIconState.BridgeNoUplink => NoUplinkFile,
+            _                            => UnknownFile,
         };
         var icoPath = Path.Combine(outputDirectory, file);
         if (!File.Exists(icoPath))
@@ -100,10 +111,11 @@ internal static class IconGenerator
 
     private static Color ColorFor(TrayIconState state) => state switch
     {
-        TrayIconState.Bridged  => GlyphBridged,
-        TrayIconState.Fallback => GlyphFallback,
-        TrayIconState.Failed   => GlyphFailed,
-        _                      => GlyphUnknown,
+        TrayIconState.Bridged        => GlyphBridged,
+        TrayIconState.Fallback       => GlyphFallback,
+        TrayIconState.Failed         => GlyphFailed,
+        TrayIconState.BridgeNoUplink => GlyphNoUplink,
+        _                            => GlyphUnknown,
     };
 
     // ── Rendering ───────────────────────────────────────────────────────────────
@@ -184,7 +196,12 @@ internal static class IconGenerator
         // ── Stem down to the fork ──
         g.FillRectangle(solid, Edges(u.P(7.1f), u.P(6.9f), u.P(8.9f), u.P(9.6f)));
 
-        bool lan = state == TrayIconState.Bridged;
+        // The LAN branch is LIT for both bridged states — the VM really is routed that way — but only a
+        // working bridge fills the square end. No uplink leaves the end an open ring at full strength:
+        // the route reaches the LAN and stops there, which is the fact, carried by shape as well as by
+        // colour exactly as the other states are.
+        bool lan      = state is TrayIconState.Bridged or TrayIconState.BridgeNoUplink;
+        bool lanSolid = state == TrayIconState.Bridged;
         bool nat = state == TrayIconState.Fallback;
         float forkX = u.P(8f), forkY = u.P(9.2f), endY = u.P(12.4f);
 
@@ -196,7 +213,7 @@ internal static class IconGenerator
         using (var end = new GraphicsPath(FillMode.Alternate))
         {
             AddRoundedRect(end, square, 0.8f * u.Scale);
-            if (!lan)
+            if (!lanSolid)
             {
                 var ring = u.W(1.3f);
                 var inner = RectangleF.Inflate(square, -ring, -ring);

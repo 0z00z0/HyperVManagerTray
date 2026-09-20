@@ -610,34 +610,7 @@ public partial class App : Application
         {
             try
             {
-                // The rules' INTENT (a non-fallback switch was picked) only decides WHICH success colour
-                // to use once the apply is confirmed — NetworkStatusUi.IconFor gates it on the outcome.
-                // Deriving the icon straight from the switch, as this did before issue #37, is
-                // what let a failed bind show a confident green "bridged". Compared by switch ID.
-                bool bridgedTarget = !HostIdentity.Same(result.SwitchId, _config!.Current.Fallback.SwitchId);
-                var  state         = NetworkStatusUi.IconFor(result.ApplyStatus, bridgedTarget);
-                if (state != _iconState)
-                {
-                    _iconState = state;
-                    SetTrayIcon(state);
-
-                    // Issue #54, item 3 — the milestone that matters to the user, logged where the fact
-                    // actually becomes true rather than inferred by subtracting switcher.log timestamps
-                    // across files (which is what #52 had to do to arrive at "~8 s", and at second
-                    // resolution). The first ESTABLISHED state is the moment the icon first means
-                    // something — success or failure alike. #52's real complaint is the length of the
-                    // window before that; this is the number for it.
-                    //
-                    // NetworkStatusUi.IsEstablished, not an inline `state != Unknown` (issue #56): the
-                    // icon now starts amber rather than grey, so the old test would have called Starting
-                    // "established" and logged this milestone at ~2 s — turning #56's part 1 into a
-                    // spurious 6 s improvement on the very metric its part 2 is measured by.
-                    if (!_iconMeaningfulLogged && NetworkStatusUi.IsEstablished(state))
-                    {
-                        _iconMeaningfulLogged = true;
-                        LogStartupMilestone($"tray icon first showed an established state ({state})");
-                    }
-                }
+                ApplyTrayIcon(result);
                 _dashboard?.OnSwitchApplied(result);
             }
             catch (Exception ex) { LogCrash("OnSwitchApplied UI update", ex); }
@@ -651,9 +624,104 @@ public partial class App : Application
         // The app just (re)bound a virtual switch — the one switch-change the state watcher can't see —
         // so invalidate VmService's switch cache, show the new switch name at once, and kick a refresh
         // for fresh VM IPs (which lands back on the tooltip via OnVmStatuses → StatusesChanged).
+        //
+        // The uplink verdict deliberately is NOT read here: it comes from the switch map this line has
+        // just invalidated, so anything read now describes the host BEFORE the rebind. The refresh below
+        // ends in OnVmStatuses, which re-asks and re-renders every tray surface with a current answer.
         _vm?.InvalidateSwitchCache();
         PostTooltipFromCaches();
         _ = _vm?.RefreshOnceAsync();
+    }
+
+    /// <summary>
+    /// Sets the tray icon from an applied result and the switch's current uplink verdict. UI thread only.
+    ///
+    /// <para>Called from two places, and it needs both: <see cref="OnSwitchApplied"/> for a change the
+    /// RULES made, and <see cref="OnVmStatuses"/> for a change the HOST made underneath a decision the
+    /// rules already settled. Unplugging a dock from a switch every rule still agrees on produces no
+    /// apply pass at all, so an icon driven only by the first would stay green over a VM with no
+    /// network — the #37 defect, arrived at from the other direction.</para>
+    /// </summary>
+    private void ApplyTrayIcon(MatchResult result)
+    {
+        // The rules' INTENT (a non-fallback switch was picked) only decides WHICH success colour
+        // to use once the apply is confirmed — NetworkStatusUi.IconFor gates it on the outcome.
+        // Deriving the icon straight from the switch, as this did before issue #37, is
+        // what let a failed bind show a confident green "bridged". Compared by switch ID.
+        bool bridgedTarget = !HostIdentity.Same(result.SwitchId, _config!.Current.Fallback.SwitchId);
+        var  state         = NetworkStatusUi.IconFor(result.ApplyStatus, bridgedTarget, UplinkOf(result));
+        if (state == _iconState) return;
+
+        _iconState = state;
+        SetTrayIcon(state);
+
+        // Issue #54, item 3 — the milestone that matters to the user, logged where the fact
+        // actually becomes true rather than inferred by subtracting switcher.log timestamps
+        // across files (which is what #52 had to do to arrive at "~8 s", and at second
+        // resolution). The first ESTABLISHED state is the moment the icon first means
+        // something — success or failure alike. #52's real complaint is the length of the
+        // window before that; this is the number for it.
+        //
+        // NetworkStatusUi.IsEstablished, not an inline `state != Unknown` (issue #56): the
+        // icon now starts amber rather than grey, so the old test would have called Starting
+        // "established" and logged this milestone at ~2 s — turning #56's part 1 into a
+        // spurious 6 s improvement on the very metric its part 2 is measured by.
+        if (!_iconMeaningfulLogged && NetworkStatusUi.IsEstablished(state))
+        {
+            _iconMeaningfulLogged = true;
+            LogStartupMilestone($"tray icon first showed an established state ({state})");
+        }
+    }
+
+    /// <summary>
+    /// What the switch named by <paramref name="result"/> has for a way out — the fallback's NAT switch
+    /// answers <see cref="SwitchUplinkState.NotExternal"/>, since it has no uplink to lose and marking it
+    /// short of one would put an amber icon over a perfectly healthy NAT host. Compared by switch ID.
+    /// </summary>
+    private SwitchUplinkState UplinkOf(MatchResult result)
+    {
+        if (_vm is null || _config is null) return SwitchUplinkState.Unknown;
+        return HostIdentity.Same(result.SwitchId, _config.Current.Fallback.SwitchId)
+            ? SwitchUplinkState.NotExternal
+            : _vm.UplinkOf(result.SwitchId);
+    }
+
+    // Keeps the no-uplink balloon to one per onset: the same latch-what-was-shown rule the apply-failure
+    // balloon uses, and its own instance so a recovered uplink re-arms this message and nothing else.
+    private readonly FailureAnnouncer _uplinkWarning = new();
+
+    /// <summary>
+    /// Balloons a bridged switch that has no way out. Distinct from <see cref="NotifyIfApplyFailed"/>
+    /// because the apply did not fail — the bind worked, the VM's adapter is where the rules asked for
+    /// it, and the host is what is missing — so it can never be reached through
+    /// <c>NetworkStatusUi.FailureMessage</c>. Silent for every other verdict, which re-arms the latch,
+    /// so a dock that goes and comes back announces itself once each time it goes and never in between.
+    ///
+    /// <para><b>Not suppressed for a user-initiated pass</b>, unlike the failure balloon. That rule
+    /// exists so one click does not produce two reports of the same fact, and this is a different fact:
+    /// an override onto the bridged switch reports that the VM moved, which is true and complete about
+    /// the move and says nothing whatsoever about there being no network on the other side. Suppressing
+    /// this would leave the one warning that matters unsaid at the one moment it is most wanted.</para>
+    /// </summary>
+    private void NotifyIfUplinkLost(MatchResult result)
+    {
+        try
+        {
+            bool bridgedTarget = !HostIdentity.Same(result.SwitchId, _config!.Current.Fallback.SwitchId);
+            var  text = NetworkStatusUi.BridgeHasNoUplink(result.ApplyStatus, bridgedTarget, UplinkOf(result))
+                ? NetworkStatusUi.UplinkLostMessage(
+                    string.IsNullOrWhiteSpace(result.SwitchName) ? result.SwitchId : result.SwitchName)
+                : null;
+
+            var message = _uplinkWarning.Next(text, userInitiated: false);
+            if (message is null) return;
+
+            // The dashboard says the same thing inline, on the host card and on every affected VM card.
+            ShowBalloon($"{AppInfo.Name} — network", message,
+                        isError: true, suppressWhenDashboardVisible: true,
+                        onShown: () => _uplinkWarning.MarkAnnounced(message));
+        }
+        catch (Exception ex) { LogCrash("Uplink-lost tray toast", ex); }
     }
 
     /// <summary>
@@ -664,7 +732,24 @@ public partial class App : Application
     /// <see cref="VmService.SubscribeStateWatcher"/> this makes the tooltip track VM state changes
     /// even while the dashboard is closed (issue #16, conversion #2).
     /// </summary>
-    private void OnVmStatuses(IReadOnlyList<Models.VmStatus> statuses) => PostTooltipFromCaches();
+    private void OnVmStatuses(IReadOnlyList<Models.VmStatus> statuses)
+    {
+        PostTooltipFromCaches();
+
+        // This read is where a changed uplink verdict arrives, and no apply pass need have run for it to
+        // have changed: a dock unplugged under a switch the rules still agree on moves the host without
+        // moving the rules. The icon and the balloon are therefore refreshed from the LAST applied
+        // result, not from a new one. Nothing published here claims anything the app has not read —
+        // NetworkStatusUi gates the amber state on a CONFIRMED apply and a CONFIRMED down uplink.
+        if (_monitor?.LastApplied is not { } applied) return;
+
+        _ui.TryEnqueue(() =>
+        {
+            try { ApplyTrayIcon(applied); }
+            catch (Exception ex) { LogCrash("Tray icon refresh", ex); }
+        });
+        NotifyIfUplinkLost(applied);
+    }
 
     /// <summary>
     /// <see cref="HyperVServiceMonitor.StateChanged"/> (background thread). vmms leaving or reaching the
@@ -903,7 +988,10 @@ public partial class App : Application
         // `?? "No switch"`, which asserted an unlooked-at host for the whole startup window (issue #56).
         var switchName   = NetworkStatusUi.TooltipSwitchName(
             applied is null ? null : string.IsNullOrWhiteSpace(applied.SwitchName) ? applied.SwitchId : applied.SwitchName, status);
-        var switchSuffix = NetworkStatusUi.TooltipSwitchSuffix(status);
+        // The hover is where someone looks first when a guest says it has no network, so the switch row
+        // carries the uplink as well as the apply outcome.
+        var uplink       = applied is null ? SwitchUplinkState.Unknown : UplinkOf(applied);
+        var switchSuffix = NetworkStatusUi.TooltipSwitchSuffix(status, uplink);
 
         var lines = new System.Collections.Generic.List<string>
         {
@@ -923,7 +1011,10 @@ public partial class App : Application
             // old test would have hung a warning triangle on a healthy app for its first 8 s — the tray's
             // loudest "something is wrong" marker, raised because nothing is wrong yet. IsFailure is the
             // one place that decides what counts as a problem; ask it rather than re-deriving from text.
-            TruncateLine($"{(NetworkStatusUi.IsFailure(status) ? "⚠️" : "\U0001F500")} Switch: {switchName}",
+            // ShowsAsProblem, not IsFailure (which it was until the uplink existed): a bridge with
+            // nothing behind it classifies as a successful apply, so IsFailure alone left the row
+            // unmarked for the one state the person is hovering to diagnose.
+            TruncateLine($"{(NetworkStatusUi.ShowsAsProblem(status, uplink) ? "⚠️" : "\U0001F500")} Switch: {switchName}",
                          63 - switchSuffix.Length) + switchSuffix,
         };
 
