@@ -75,10 +75,13 @@ internal sealed class AppUpdate : IDisposable
     /// on the UI thread — the dialogs need that thread's comctl32 version 6 activation context.
     /// </summary>
     /// <param name="owner">Parent window for the dialogs, captured by the caller before it awaits.</param>
-    /// <remarks>One run at a time, across both the tray menu and the About window: a second request
-    /// while one is on screen returns <see cref="UpdateFlowResult.AlreadyRunning"/> and shows
-    /// nothing.</remarks>
-    public Task<UpdateFlowResult> RunManualAsync(IntPtr owner)
+    /// <remarks>One install at a time, across both the tray menu and the About window: a second
+    /// request while an install is on screen returns <see cref="UpdateFlowResult.AlreadyRunning"/>
+    /// and shows nothing. A second request arriving while the CHECK is still in flight joins that
+    /// check and reads its result, rather than being refused.</remarks>
+    /// <returns>The outcome and, when one was found, the release it refers to. Both call sites
+    /// discard it today — they are buttons whose reporting the flow does itself.</returns>
+    public Task<UpdateFlowRun> RunManualAsync(IntPtr owner)
     {
         _prompts.Owner = owner;
         return _flow.RunAsync(UpdateTrigger.Manual);
