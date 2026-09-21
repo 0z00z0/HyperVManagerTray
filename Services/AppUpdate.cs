@@ -6,6 +6,7 @@ using ZeroZero.Update.Win32;
 
 namespace HyperVManagerTray.Services;
 
+
 /// <summary>
 /// This app's self-update, over the shared update component.
 ///
@@ -72,20 +73,19 @@ internal sealed class AppUpdate : IDisposable
 
     /// <summary>
     /// The explicit check: ask, and on a yes download, verify and run the installer. Must be awaited
-    /// on the UI thread — the dialogs need that thread's comctl32 version 6 activation context.
+    /// on the thread that owns this app's windows — the update window is shown on it, and the flow
+    /// returns to it after every await.
     /// </summary>
-    /// <param name="owner">Parent window for the dialogs, captured by the caller before it awaits.</param>
     /// <remarks>One install at a time, across both the tray menu and the About window: a second
     /// request while an install is on screen returns <see cref="UpdateFlowResult.AlreadyRunning"/>
     /// and shows nothing. A second request arriving while the CHECK is still in flight joins that
-    /// check and reads its result, rather than being refused.</remarks>
+    /// check and reads its result, rather than being refused. No owner window is passed: the update
+    /// window centres itself on the monitor under the cursor and stays on top.</remarks>
     /// <returns>The outcome and, when one was found, the release it refers to. Both call sites
-    /// discard it today — they are buttons whose reporting the flow does itself.</returns>
-    public Task<UpdateFlowRun> RunManualAsync(IntPtr owner)
-    {
-        _prompts.Owner = owner;
-        return _flow.RunAsync(UpdateTrigger.Manual);
-    }
+    /// discard it today — they are buttons whose reporting the flow does itself. A download the
+    /// user stopped answers <see cref="UpdateFlowResult.DownloadCancelled"/>, and nothing is said
+    /// about it: the person who pressed the button knows.</returns>
+    public Task<UpdateFlowRun> RunManualAsync() => _flow.RunAsync(UpdateTrigger.Manual);
 
     public void Dispose() => _service.Dispose();
 }

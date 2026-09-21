@@ -196,7 +196,7 @@
        assembly and the application can never resolve a component at two different versions.
 
        Every one of these is plain net10.0, which is what keeps this test assembly runtime-free:
-       neither ZeroZero.Brand.WinUI nor ZeroZero.Mqtt.WinUI nor ZeroZero.Update.Win32 is referenced
+       neither ZeroZero.Brand.WinUI nor ZeroZero.Mqtt.WinUI nor ZeroZero.Update.WinUI is referenced
        here, so nothing drags in the Windows App SDK runtime. -->
   <ItemGroup>
     <!-- AboutInfo / ExternalLibrary, required by the linked AppAbout.cs. -->
@@ -211,6 +211,11 @@
          splits back apart are read off the real GitHubReleaseSource rather than off a copy of its
          wording. -->
     <PackageReference Include="ZeroZero.Update" />
+    <!-- UpdateFlowResult, so the rule that this app reads none of its members is asserted against
+         the real enum rather than against a list copied out of it. Plain net10.0 and no XAML: the
+         window that shows the flow's outcomes is ZeroZero.Update.WinUI, which is not referenced
+         here. -->
+    <PackageReference Include="ZeroZero.Update.Win32" />
   </ItemGroup>
 
   <!-- The same publisher certificate the app embeds, under the same logical resource name, so

@@ -1,94 +1,68 @@
 using HyperVManagerTray.Helpers;
 using ZeroZero.Update;
 using ZeroZero.Update.Win32;
+using ZeroZero.Update.WinUI;
 
 namespace HyperVManagerTray.UI;
 
 /// <summary>
-/// What the update flow asks and says, in this app's own dialogs and this app's own words. The
-/// shared component ships prompts of its own; they are deliberately not used, because every sentence
-/// the user reads about an update is decided in <see cref="UpdateStatusUi"/>, where it is assertable
-/// without a running app.
+/// What the update flow asks and says: the shared update window, wrapped so this app keeps the two
+/// things the window has no way to do for it.
+///
+/// <para>Every sentence a user reads during an update is the shared component's, in one window that
+/// carries the question, the download's progress and the answer. Nothing here words anything —
+/// <see cref="UpdateStatusUi"/> keeps this app's own update wording for what the window never
+/// shows: the tray badge and the report the next start makes about an unattended update.</para>
 /// </summary>
 /// <remarks>
-/// Every method here must be called on the UI thread: the task dialog needs that thread's comctl32
-/// version 6 activation context, and a thread-pool thread throws
-/// <c>EntryPointNotFoundException</c> instead of showing anything.
+/// Every method here must be called on the thread that owns this app's windows, and the flow's own
+/// awaits return to it, so the window appears where the check was started.
 /// </remarks>
 internal sealed class TrayUpdatePrompts : IUpdatePrompts
 {
-    /// <summary>Parent window for the dialogs, captured by the caller before it awaits. Settable
-    /// because one flow instance serves both the tray menu and the About window, and the guard that
-    /// keeps two checks from running at once lives in that one instance.</summary>
-    public IntPtr Owner { get; set; }
+    /// <summary>The window follows the system theme, as every other window of this app does: no
+    /// RequestedTheme is set anywhere, so ElementTheme.Default is what light and dark both mean
+    /// here. The release notes come from the release body, which is where this app's are.</summary>
+    private readonly UpdateWindowPrompts _window =
+        new(new UpdateWindowOptions { ApplicationName = AppInfo.Name });
 
     /// <summary>The version the user last agreed to install, or null. Read when the installer has
-    /// started, to record what the unattended update was for.</summary>
+    /// started, to record what the unattended update was for. The window reports a choice to the
+    /// flow and not to this app, so the choice is caught on its way past.</summary>
     public string? AcceptedVersion { get; private set; }
 
-    public InstallChoice AskToInstall(ReleaseInfo release, Version runningVersion)
+    public async Task<InstallChoice> AskToInstallAsync(ReleaseInfo release, Version runningVersion)
     {
         ArgumentNullException.ThrowIfNull(release);
-        ArgumentNullException.ThrowIfNull(runningVersion);
         AcceptedVersion = null;
 
-        // The release must carry the installer under exactly the expected name; the shared flow never
-        // takes the first executable it finds. Without it the only honest offer is the releases page.
-        var installer = AppUpdateOptions.InstallerFileNameFor(release.VersionText);
-        var canDownload = release.FindAsset(installer) is not null;
-
-        var action = NativeMethods.ShowUpdateDialog(
-            release.VersionText, AppInfo.FormatVersion(runningVersion),
-            ReleaseNotesText.Strip(release.Body), AppInfo.Name,
-            canDownload, Owner);
-
-        switch (action)
-        {
-            case NativeMethods.UpdateAction.Update:
-                NativeMethods.Info(UpdateStatusUi.DownloadingMessage(release.VersionText), AppInfo.Name);
-                AcceptedVersion = release.VersionText;
-                return InstallChoice.Install;
-
-            case NativeMethods.UpdateAction.ShowReleases:
-                return InstallChoice.OpenReleasePage;
-
-            default:
-                return InstallChoice.Later;
-        }
+        var choice = await _window.AskToInstallAsync(release, runningVersion);
+        if (choice == InstallChoice.Install) AcceptedVersion = release.VersionText;
+        return choice;
     }
 
-    public void SayUpToDate(Version runningVersion) =>
-        Say(UpdateStatusUi.ReportFor(
-            new UpdateCheckDetail(UpdateCheckReason.UpToDate, 0, string.Empty),
-            rateLimitResetsAt: null, AppInfo.FormatVersion(runningVersion), DateTimeOffset.Now));
+    public DownloadSurface BeginDownload(ReleaseInfo release) => _window.BeginDownload(release);
 
-    public void SayNothingReleased() =>
-        Say(UpdateStatusUi.ReportFor(
-            new UpdateCheckDetail(UpdateCheckReason.NoReleases, 0, string.Empty),
-            rateLimitResetsAt: null, AppInfo.Version, DateTimeOffset.Now));
+    public Task SayUpToDateAsync(Version runningVersion) => _window.SayUpToDateAsync(runningVersion);
 
-    public void SayCheckFailed(UpdateCheckResult result) =>
-        Say(UpdateStatusUi.ReportFor(result, AppInfo.FormatVersion(result?.RunningVersion),
-                                     DateTimeOffset.Now));
+    public Task SayNothingReleasedAsync() => _window.SayNothingReleasedAsync();
 
-    public void SayCannotInstall(PreparedUpdate update)
+    public Task SayCheckFailedAsync(UpdateCheckResult result) => _window.SayCheckFailedAsync(result);
+
+    public async Task SayLaunchFailedAsync(PreparedUpdate update, LaunchResult result) =>
+        await _window.SayLaunchFailedAsync(update, result);
+
+    public async Task SayCannotInstallAsync(PreparedUpdate update)
     {
         ArgumentNullException.ThrowIfNull(update);
-        Say(UpdateStatusUi.CannotInstallReport(update));
+        await _window.SayCannotInstallAsync(update);
 
-        // Only where the failure leaves the released file trustworthy. A refusal deliberately does
-        // not send the user to fetch by hand the file that was just rejected.
+        // After the window has been read, and only where the failure leaves the released file
+        // trustworthy. A refusal deliberately does not send the user to fetch by hand the file that
+        // was just rejected.
         if (UpdateStatusUi.OffersReleasePageAfter(update.Outcome) && update.Release.HtmlUri is { } page)
             Shell.Open(page.AbsoluteUri);
     }
 
-    public void SayLaunchFailed(PreparedUpdate update, LaunchResult result) =>
-        Say(UpdateStatusUi.LaunchFailedReport(result));
-
-    private static void Say(UpdateStatusUi.UpdateReport? report)
-    {
-        if (report is not { } value) return;
-        if (value.IsError) NativeMethods.Warn(value.Message, AppInfo.Name);
-        else               NativeMethods.Info(value.Message, AppInfo.Name);
-    }
+    public void Dismiss() => _window.Dismiss();
 }

@@ -5,9 +5,16 @@ namespace HyperVManagerTray.Helpers;
 /// <summary>
 /// Pure outcome → UI decisions for the update flow — the update-side counterpart to
 /// <see cref="NetworkStatusUi"/> and <see cref="ConfigLoadUi"/>. No HTTP, no WinUI, so every sentence
-/// the user can read about an update is assertable here (docs/DISPLAY-VOCABULARY.md, corollary 4).
+/// decided here is assertable without a running app (docs/DISPLAY-VOCABULARY.md, corollary 4).
 /// A report states only what was verified (corollary 3): each arm names what actually happened, and only
 /// <see cref="UpdateCheckReason.NetworkUnavailable"/> may mention the user's connection.
+///
+/// <para>What a person reads <b>during</b> an explicit check is the shared component's, shown in its
+/// own window since the update component moved to 0.11.0. Two decisions here are still reached from
+/// the running app: the report the next start makes about an unattended update, and whether the
+/// releases page is offered after a failure. The rest is this app's own vocabulary for outcomes the
+/// shared window now words itself, and is kept rather than removed alongside a dependency raise —
+/// whether this app keeps a second set of sentences at all is a decision of its own.</para>
 /// </summary>
 internal static class UpdateStatusUi
 {

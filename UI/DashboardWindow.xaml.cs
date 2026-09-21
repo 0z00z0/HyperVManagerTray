@@ -8,6 +8,7 @@ using Windows.Foundation;
 using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Models;
 using HyperVManagerTray.Services;
+using ZeroZero.Win32;
 
 namespace HyperVManagerTray.UI;
 
@@ -340,12 +341,24 @@ public sealed partial class DashboardWindow : Window
         AppWindow.Move(new Windows.Graphics.PointInt32(work.Right - w - margin, work.Bottom - h - margin));
     }
 
+    /// <summary>
+    /// Losing focus hides this window. A short-lived window of this app's own on screen holds it
+    /// open instead: the update window opens in front of whatever is there, and without this the
+    /// dashboard would vanish the moment an update question appeared above it — the same trap the
+    /// shared About window answers with the same question.
+    ///
+    /// <para>A window hidden while a transient one was open is deliberately not reconsidered when
+    /// the last one closes; it stays until the user looks away again.</para>
+    /// </summary>
     private void OnActivated(object sender, WindowActivatedEventArgs e)
     {
         if (_priming) return;   // ignore activation churn during the off-screen warm-up
 
         if (e.WindowActivationState == WindowActivationState.Deactivated)
+        {
+            if (TransientWindows.AnyOpen) return;
             HideWindow();
+        }
         else
             SubscribeMetricsIfNeeded();   // triggers an immediate refresh (see VmService.SubscribeMetrics)
     }
