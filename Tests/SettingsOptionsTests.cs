@@ -322,4 +322,35 @@ public class SettingsOptionsTests
         Assert.True(SettingsOptions.DeclaresNoCondition(rule));
         Assert.False(SettingsOptions.IsPersistableRule(rule));
     }
+
+    // ── The collapsed rule row's summary line ───────────────────────────────────
+
+    /// <summary>
+    /// The refusals a collapsed rule row has to show, because they are the only place a rule that binds
+    /// nothing is visible without opening every rule in turn. A rule naming a switch this host does not
+    /// have looks complete in the editor and does nothing at all in use.
+    /// </summary>
+    [Fact]
+    public void DescribeRule_SaysWhyARuleCannotWork()
+    {
+        var onHost = new[] { new HostSwitch("{11111111-1111-1111-1111-111111111111}", "Bridged") };
+
+        var noSwitch = BlankTemplate();
+        noSwitch.Conditions.IpCidr = "10.0.0.0/23";
+        Assert.Contains("Cannot work: no virtual switch is chosen.",
+                        SettingsOptions.DescribeRule(noSwitch, hostReadable: true, onHost));
+
+        var missing = BlankTemplate();
+        missing.Conditions.IpCidr = "10.0.0.0/23";
+        missing.SwitchId   = "{99999999-9999-9999-9999-999999999999}";
+        missing.SwitchName = "Lab";
+        Assert.Contains("Cannot work: the switch “Lab” is not on this host.",
+                        SettingsOptions.DescribeRule(missing, hostReadable: true, onHost));
+
+        // An unreadable host says nothing about which switches exist, so the refusal is withheld rather
+        // than asserted from an empty list — the row must not accuse a switch of being missing because
+        // Virtual Machine Management happened to be stopped.
+        Assert.DoesNotContain("Cannot work",
+                              SettingsOptions.DescribeRule(missing, hostReadable: false, []));
+    }
 }
