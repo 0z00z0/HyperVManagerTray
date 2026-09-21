@@ -203,6 +203,71 @@ public static class SettingsOptions
         && !string.IsNullOrWhiteSpace(rule.SwitchId)
         && !DeclaresNoCondition(rule);
 
+    /// <summary>
+    /// The one line a collapsed rule row shows under its name: which network the rule recognises, which
+    /// virtual switch it selects and how many VMs it covers — or, where the rule cannot do any of that,
+    /// why not.
+    ///
+    /// <para>Built here rather than in the window so the wording of the refusals is assertable. That is
+    /// the part that has to be right: a rule naming a switch this host does not have binds nothing, and
+    /// until the row says so the only symptom is a red tray icon and VMs that never move. The row is the
+    /// one place the problem can be seen without opening every rule in turn.</para>
+    ///
+    /// <para><paramref name="hostReadable"/> is false when the host was never enumerated or could not be
+    /// read — Hyper-V absent, or Virtual Machine Management stopped. Nothing may be concluded from an
+    /// empty switch list in that case, so the "not on this host" refusal is withheld: saying a switch is
+    /// missing because nothing could be read would be a claim about the host this app cannot make.</para>
+    /// </summary>
+    public static string DescribeRule(
+        Models.NetworkRule? rule, bool hostReadable, IReadOnlyList<HostSwitch>? hostSwitches)
+    {
+        if (rule is null) return "";
+        return $"{DescribeRuleMatch(rule)} {DescribeRuleEffect(rule, hostReadable, hostSwitches)}";
+    }
+
+    /// <summary>The network half of <see cref="DescribeRule"/>. A rule declaring no condition at all
+    /// matches every network, which is stated plainly rather than left blank — it is the state that
+    /// shadows every rule after it.</summary>
+    private static string DescribeRuleMatch(Models.NetworkRule rule)
+    {
+        string? mac  = BlankToNull(rule.Conditions?.AdapterMac);
+        string? cidr = BlankToNull(rule.Conditions?.IpCidr);
+        return (mac, cidr) switch
+        {
+            (not null, not null) => $"Recognises the adapter {mac} on {cidr}.",
+            (not null, null)     => $"Recognises the adapter {mac}.",
+            (null, not null)     => $"Recognises any adapter on {cidr}.",
+            _                    => "Recognises every network.",
+        };
+    }
+
+    /// <summary>The switch-and-VMs half of <see cref="DescribeRule"/>, or the refusal that replaces it.
+    /// Switch trouble is reported ahead of everything else: a rule that cannot bind a switch does
+    /// nothing at all, whatever else it lists.</summary>
+    private static string DescribeRuleEffect(
+        Models.NetworkRule rule, bool hostReadable, IReadOnlyList<HostSwitch>? hostSwitches)
+    {
+        string shown = BlankToNull(rule.SwitchName) ?? BlankToNull(rule.LegacyVirtualSwitch) ?? "";
+        string named = shown.Length > 0 ? $"“{shown}”" : "the chosen switch";
+
+        // Matched by switch ID, never by name: two switches may share a name, and a name is the one
+        // thing about a switch that can change without the switch changing.
+        if (BlankToNull(rule.SwitchId) is null)
+            return shown.Length > 0
+                ? $"Cannot work: the switch {named} from an older settings file is not identified yet."
+                : "Cannot work: no virtual switch is chosen.";
+
+        if (hostReadable && hostSwitches is not null
+            && !hostSwitches.Any(s => HostIdentity.Same(s.Id, rule.SwitchId)))
+            return $"Cannot work: the switch {named} is not on this host.";
+
+        int vms = rule.TargetVmIds?.Count ?? 0;
+        if (vms == 0) return $"Selects {named}, with no VMs listed.";
+
+        // The count is shown to a person, so it is formatted for the machine's own culture.
+        return $"Connects {vms.ToString(CultureInfo.CurrentCulture)} {(vms == 1 ? "VM" : "VMs")} to {named}.";
+    }
+
     /// <summary>Trims, drops blanks, and removes case-insensitive duplicates (first spelling wins).</summary>
     public static List<string> CleanVmList(IEnumerable<string> names)
     {

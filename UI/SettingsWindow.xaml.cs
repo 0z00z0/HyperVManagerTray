@@ -112,6 +112,12 @@ internal sealed partial class SettingsWindow : Window
 
     private StackPanel? _rulesListPanel;
 
+    // One per collapsed rule row, re-reading the rule and the cached host to redraw the row's name and
+    // its summary line. Held because an edit does not rebuild the cards — every field commits in place —
+    // so without this the row would go on describing the rule as it was when the list was last built.
+    // Cleared with the cards themselves: each closure captures the row it was built for.
+    private readonly List<Action> _ruleRowRefreshers = [];
+
 
     // ── Live host values for the identity pickers (issue #41) ────────────────────
     //
@@ -1253,6 +1259,7 @@ internal sealed partial class SettingsWindow : Window
         _rulesListPanel.Children.Clear();
 
         _ruleConsumers.Clear();
+        _ruleRowRefreshers.Clear();
         if (_workingRules.Count == 0)
         {
             _rulesListPanel.Children.Add(Card(new TextBlock
@@ -1476,7 +1483,69 @@ internal sealed partial class SettingsWindow : Window
         Grid.SetRow(servicesNote, row); Grid.SetColumn(servicesNote, 0); Grid.SetColumnSpan(servicesNote, 2);
         grid.Children.Add(servicesNote);
 
-        return Card(grid);
+        return CollapseRuleRow(rule, grid);
+    }
+
+    /// <summary>
+    /// Wraps a rule's editor in the row the Network page actually shows: the rule's name over a one-line
+    /// summary of what it does, with a chevron at the right, and the editor — every field, the name box
+    /// and Remove exactly as they were — one click behind it.
+    ///
+    /// <para>Eleven fields per rule meant one rule filled the page and a list of them could not be read
+    /// at all. Collapsed, the list is one line per rule, and the summary carries the part a person is
+    /// looking for: what the rule recognises, what it selects, and whether it can work here at all.</para>
+    ///
+    /// <para>The row follows the MQTT category's shape — a heading, a quieter summary line beneath it,
+    /// collapsed until asked for, and no coordination between rows, so any number may be open at once.
+    /// The in-box expander is used rather than the shared panel's toolkit control because the editor is
+    /// a grid rather than a list of settings cards, and this one takes it as its content untouched.</para>
+    ///
+    /// <para>A rule the person has just added opens expanded: it has nothing worth summarising yet, and
+    /// filling it in is the whole reason it exists. Draft membership is by reference, which is what
+    /// <see cref="_draftRules"/> holds — never by the rule's name, which two rules may share.</para>
+    /// </summary>
+    private Expander CollapseRuleRow(NetworkRule rule, FrameworkElement editor)
+    {
+        var nameText = new TextBlock
+        {
+            FontSize     = 13,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        var summaryText = new TextBlock
+        {
+            FontSize     = 11,
+            Opacity      = 0.7,
+            TextWrapping = TextWrapping.Wrap,
+            // Bounded like the other wrapping lines on this page: a header presenter is sized by its
+            // content, so an unbounded line would push the row wider than the window instead of wrapping.
+            MaxWidth     = 460,
+        };
+
+        void Refresh()
+        {
+            nameText.Text = string.IsNullOrWhiteSpace(rule.Name) ? "Unnamed rule" : rule.Name.Trim();
+            summaryText.Text = SettingsOptions.DescribeRule(
+                rule, _inventory?.HyperV.Readable ?? false, _inventory?.HyperV.Switches);
+        }
+
+        Refresh();
+        _ruleRowRefreshers.Add(Refresh);
+        // The summary names the switch and says whether this host has it, so it is stale until the host
+        // read lands. Registered like any other consumer, so it is dropped with the cards it belongs to.
+        _consumerSink.Add(_ => Refresh());
+
+        var headerText = new StackPanel { Spacing = 2 };
+        headerText.Children.Add(nameText);
+        headerText.Children.Add(summaryText);
+
+        return new Expander
+        {
+            Header                     = headerText,
+            Content                    = editor,
+            IsExpanded                 = _draftRules.Contains(rule),
+            HorizontalAlignment        = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+        };
     }
 
     /// <summary>
@@ -1513,6 +1582,20 @@ internal sealed partial class SettingsWindow : Window
                 });
             }
         });
+
+        // Every field commit lands here, so this is the one place a collapsed row's summary can be kept
+        // true without rebuilding the cards under the person typing into them.
+        RefreshRuleRows();
+    }
+
+    /// <summary>Redraws every collapsed rule row from the working rules and the cached host read.</summary>
+    private void RefreshRuleRows()
+    {
+        foreach (var refresh in _ruleRowRefreshers)
+        {
+            try { refresh(); }
+            catch (Exception ex) { AppInfo.AppendCrashLogLine("SettingsWindow", $"RefreshRuleRows: {ex}"); }
+        }
     }
 
     /// <summary>
