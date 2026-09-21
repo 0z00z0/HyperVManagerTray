@@ -52,7 +52,8 @@ internal static class AppAbout
             new ExternalLibrary("ZeroZero.Mqtt.WinUI", "ZeroZero Software", "Broker connection, Home Assistant discovery and the MQTT settings panel", "MIT", "https://github.com/0z00z0/0z0-shared"),
             new ExternalLibrary("ZeroZero.Lifecycle", "ZeroZero Software", "Single-instance lock and the limited relaunch after an unasked-for exit", "MIT", "https://github.com/0z00z0/0z0-shared"),
             new ExternalLibrary("ZeroZero.Startup", "ZeroZero Software", "The logon task that starts the app with Windows, and its repair", "MIT", "https://github.com/0z00z0/0z0-shared"),
-            new ExternalLibrary("ZeroZero.Update.Win32", "ZeroZero Software", "Update check, and the download verified by checksum and signature before it runs", "MIT", "https://github.com/0z00z0/0z0-shared"),
+            new ExternalLibrary("ZeroZero.Update.WinUI", "ZeroZero Software", "Update check and its window, and the download verified by checksum and signature before it runs", "MIT", "https://github.com/0z00z0/0z0-shared"),
+            new ExternalLibrary("ZeroZero.Win32", "ZeroZero Software", "Counts this app's short-lived windows, so the dashboard stays open under the update window", "MIT", "https://github.com/0z00z0/0z0-shared"),
         ],
     };
 }

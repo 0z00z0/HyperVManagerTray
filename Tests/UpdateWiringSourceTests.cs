@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using Xunit;
+using ZeroZero.Update.Win32;
 
 namespace HyperVManagerTray.Tests;
 
@@ -119,23 +120,84 @@ public class UpdateWiringSourceTests
     // ── The wording stays where it can be asserted ──────────────────────────────
 
     /// <summary>
-    /// Every sentence the user reads about an update is decided in <c>UpdateStatusUi</c>, which links
-    /// into this assembly and is exercised there. A literal handed straight to a message box would be a
-    /// sentence no test can see.
+    /// The shared update window words every step a person sees during an explicit check, so the
+    /// prompts this app supplies are an adapter and nothing more. A sentence written here would be
+    /// one no test can see and one the window would show beside its own wording for the same
+    /// outcome.
     /// </summary>
     [Fact]
     public void ThePromptsSayNothingOfTheirOwn()
     {
         var code = CodeOf("UI", "TrayUpdatePrompts.cs");
-        var calls = Regex.Matches(code, @"NativeMethods\.(?:Warn|Info)\(\s*(?<argument>[^,]*)").Cast<Match>().ToList();
+        var literals = Regex.Matches(code, @"""[^""]*""").Cast<Match>().Select(m => m.Value).ToArray();
 
-        Assert.NotEmpty(calls);
-        foreach (var call in calls)
+        Assert.True(literals.Length == 0,
+            $"UI\\TrayUpdatePrompts.cs carries a string literal ({string.Join(", ", literals)}). The shared "
+          + "update window words every outcome a person reads during a check; anything this app still says "
+          + "for itself belongs in Helpers\\UpdateStatusUi.cs, where it is asserted without a running app.");
+    }
+
+    // ── The dashboard survives a window opened on top of it ─────────────────────
+
+    private static string DashboardActivationBody()
+    {
+        var match = Regex.Match(CodeOf("UI", "DashboardWindow.xaml.cs"),
+            @"private void OnActivated\(object sender, WindowActivatedEventArgs e\)\s*\{(?<body>.*?)\n    \}",
+            RegexOptions.Singleline);
+
+        Assert.True(match.Success,
+            "DashboardWindow.OnActivated could not be located, so the rule that the dashboard asks before "
+          + "hiding itself is no longer being asserted. Fix this test's pattern, don't skip it.");
+        return match.Groups["body"].Value;
+    }
+
+    /// <summary>
+    /// The dashboard hides itself the moment it loses focus, and the shared update window opens in
+    /// front of whatever is there. Without the count of this app's own short-lived windows, choosing
+    /// "Check for updates" from the dashboard would close the dashboard in the same gesture — the
+    /// trap the shared About window answers with the same question. The order is what matters: the
+    /// question has to be asked before the window is hidden, not after.
+    /// </summary>
+    [Fact]
+    public void TheDashboardAsksTheSharedCountBeforeHidingItselfOnLostFocus()
+    {
+        var body  = DashboardActivationBody();
+        var asked = body.IndexOf("TransientWindows.AnyOpen", StringComparison.Ordinal);
+        var hides = body.IndexOf("HideWindow()", StringComparison.Ordinal);
+
+        Assert.True(asked >= 0,
+            "DashboardWindow.OnActivated hides the window on lost focus without asking "
+          + "TransientWindows.AnyOpen first, so the dashboard closes the moment the update window opens "
+          + "above it.");
+        Assert.True(hides > asked,
+            "DashboardWindow.OnActivated hides the window before asking TransientWindows.AnyOpen, so the "
+          + "question changes nothing.");
+    }
+
+    // ── A result this app never reads cannot change what it shows ───────────────
+
+    /// <summary>
+    /// The update component appends outcomes as it grows — a download the user stopped is the
+    /// newest. This app reads none of them: both call sites discard the run and let the shared
+    /// window do the reporting, so an appended member cannot quietly take an arm meant for
+    /// something else. The day this app starts matching on the result, this fails, and whoever
+    /// wrote the match handles every member including the stopped download.
+    /// </summary>
+    [Fact]
+    public void ThisAppReadsNoUpdateFlowResult()
+    {
+        Assert.True(Enum.IsDefined(UpdateFlowResult.DownloadCancelled),
+            "The update component no longer names the outcome of a download the user stopped, so the "
+          + "reporting this app leaves to the shared window has changed shape.");
+
+        foreach (var file in ApplicationSourceFiles())
         {
-            var argument = call.Groups["argument"].Value.TrimStart();
-            Assert.False(argument.StartsWith('"') || argument.StartsWith("$\"", StringComparison.Ordinal),
-                $"TrayUpdatePrompts shows a literal sentence ({argument}). Every word the user reads about "
-              + "an update belongs in Helpers\\UpdateStatusUi.cs, where it is asserted without a running app.");
+            var code = Regex.Replace(Regex.Replace(File.ReadAllText(file), @"/\*.*?\*/", "", RegexOptions.Singleline),
+                                     @"//[^\n]*", "");
+            Assert.False(code.Contains("UpdateFlowResult.", StringComparison.Ordinal),
+                $"'{Path.GetRelativePath(RepoRoot(), file)}' reads a member of UpdateFlowResult. The component "
+              + "appends members — UpdateFlowResult.DownloadCancelled is the newest — so a match over them "
+              + "has to name every one, including the ones added after it was written.");
         }
     }
 
@@ -152,10 +214,8 @@ public class UpdateWiringSourceTests
     {
         var hex = new Regex(@"(?<![0-9A-Za-z])(?:[0-9a-f]{40}|[0-9A-F]{40}|[0-9a-f]{64}|[0-9A-F]{64})(?![0-9A-Za-z])");
 
-        foreach (var file in Directory.EnumerateFiles(RepoRoot(), "*.cs", SearchOption.AllDirectories))
+        foreach (var file in ApplicationSourceFiles())
         {
-            if (IsExcluded(file)) continue;
-
             var match = hex.Match(File.ReadAllText(file));
             Assert.False(match.Success,
                 $"'{Path.GetRelativePath(RepoRoot(), file)}' carries a {match.Length}-digit hexadecimal literal. "
@@ -163,6 +223,12 @@ public class UpdateWiringSourceTests
               + "and Helpers\\ExpectedPublisher.cs reads — never written out beside it.");
         }
     }
+
+    /// <summary>Every C# file the application itself is built from — build output and this test
+    /// assembly left out. One enumeration, so two rules about the application's source cannot come
+    /// to disagree about what the application's source is.</summary>
+    private static IEnumerable<string> ApplicationSourceFiles() =>
+        Directory.EnumerateFiles(RepoRoot(), "*.cs", SearchOption.AllDirectories).Where(f => !IsExcluded(f));
 
     /// <summary>Build output, and this test assembly, whose fixtures state hashes on purpose.</summary>
     private static bool IsExcluded(string file)

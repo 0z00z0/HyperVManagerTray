@@ -1915,10 +1915,9 @@ internal sealed partial class SettingsWindow : Window
 
     private async Task CheckForUpdatesAsync()
     {
-        // Parent the dialog to this window so it isn't orphaned. The manual flow must stay on the UI
-        // thread (comctl32 v6 activation context for the Task Dialog).
-        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        try { await _update.RunManualAsync(hwnd); }
+        // No owner window is passed: the update window centres itself on the monitor under the cursor
+        // and stays on top. The manual flow must stay on the thread that owns this app's windows.
+        try { await _update.RunManualAsync(); }
         catch (Exception ex) { AppInfo.AppendCrashLogLine("SettingsWindow", $"CheckForUpdates: {ex}"); }
     }
 

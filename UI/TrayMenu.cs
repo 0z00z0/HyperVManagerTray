@@ -248,11 +248,10 @@ internal sealed class TrayMenu
 
     private async Task<bool> CheckForUpdatesAsync()
     {
-        // Capture the foreground HWND now (tray flyout is open) so the update dialog has a parent
-        // even if the flyout is dismissed by the time the HTTP check completes. The flow must stay on
-        // the UI thread (comctl32 v6 activation context for TaskDialogIndirect).
-        var hwnd = NativeMethods.CaptureHwnd();
-        await _update.RunManualAsync(hwnd);
+        // No owner window is captured: the update window centres itself on the monitor under the
+        // cursor and stays on top, so it survives the tray flyout being dismissed while the check
+        // is still in flight. The flow must stay on the thread that owns this app's windows.
+        await _update.RunManualAsync();
         // The installer (Inno Setup) closes and relaunches the app itself, so the shared About window
         // never needs to own the exit — always report "no self-exit required".
         return false;
