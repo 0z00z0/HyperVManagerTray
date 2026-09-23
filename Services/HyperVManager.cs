@@ -63,16 +63,18 @@ public sealed class HyperVManager : IDisposable
     /// an unchanged connection briefly bounces the VM's network, so the "already on that switch" case is
     /// a no-op (e.g. on every app launch, where the in-session guards start empty).
     ///
-    /// <para><b>Returns true only when the NIC is confirmed to be on <paramref name="sw"/></b> —
-    /// whether this call moved it there or it was already there. False means the reconnect could not be
-    /// performed (switch/VM/NIC not found, or the WMI modify failed) and the VM is NOT on that switch.
-    /// Before issue #37 this returned <c>void</c> and swallowed every failure into a log line, so
-    /// <see cref="NetworkMonitor"/> had no way to tell the UI that a reconnect had failed.</para>
+    /// <para><b>Only <see cref="SwitchMoveOutcome.Failed"/> means the VM is NOT on
+    /// <paramref name="sw"/></b> — the reconnect could not be performed (switch/VM/NIC not found, or the
+    /// WMI modify failed). Before issue #37 this returned <c>void</c> and swallowed every failure into a
+    /// log line, so <see cref="NetworkMonitor"/> had no way to tell the UI that a reconnect had failed.
+    /// The two success cases are told apart because the caller acts on them differently: only a real
+    /// <see cref="SwitchMoveOutcome.Moved"/> changed the network under the guest, and only that may lead
+    /// to asking the guest for a new address (see <see cref="SwitchMoveOutcome"/>).</para>
     /// </summary>
     /// <param name="vm">The VM, found by its VM ID; the name is for the log.</param>
     /// <param name="nicId">The adapter's ID, or null for the VM's only adapter.</param>
     /// <param name="sw">The switch, found by its ID; the name is for the log.</param>
-    public Task<bool> ApplySwitchAsync(VmRef vm, string? nicId, SwitchRef sw) =>
+    public Task<SwitchMoveOutcome> ApplySwitchAsync(VmRef vm, string? nicId, SwitchRef sw) =>
         WithLock(() => ApplySwitchCore(vm, nicId, sw));
 
     /// <summary>
@@ -112,8 +114,8 @@ public sealed class HyperVManager : IDisposable
         }
     });
 
-    /// <summary>Performs the VM-NIC reconnect; true = the NIC is now on <paramref name="target"/>.</summary>
-    private bool ApplySwitchCore(VmRef vm, string? nicId, SwitchRef target)
+    /// <summary>Performs the VM-NIC reconnect and says which of the three things happened.</summary>
+    private SwitchMoveOutcome ApplySwitchCore(VmRef vm, string? nicId, SwitchRef target)
     {
         var vmName     = $"{vm.Shown} ({vm.Id})";
         var switchName = $"{target.Shown} ({target.Id})";
@@ -123,18 +125,18 @@ public sealed class HyperVManager : IDisposable
             var scope = _scope!;
 
             using var sw = FindSwitch(scope, target.Id);
-            if (sw is null) { _logger.LogError("ApplySwitchAsync: switch '{Switch}' not found", switchName); return false; }
+            if (sw is null) { _logger.LogError("ApplySwitchAsync: switch '{Switch}' not found", switchName); return SwitchMoveOutcome.Failed; }
             var switchPath = sw.Path.Path;
             var switchId   = sw["Name"] as string ?? "";   // switch GUID, embedded in a connection's HostResource path
 
             using var vmSettings = FindVmSettings(scope, vm.Id);
-            if (vmSettings is null) { _logger.LogError("ApplySwitchAsync: VM '{Vm}' not found", vmName); return false; }
+            if (vmSettings is null) { _logger.LogError("ApplySwitchAsync: VM '{Vm}' not found", vmName); return SwitchMoveOutcome.Failed; }
 
             using var nic = FindSyntheticNic(vmSettings, nicId);
             if (nic is null)
             {
                 _logger.LogError("ApplySwitchAsync: network adapter '{Nic}' on VM '{Vm}' not found", nicId ?? "(the only adapter)", vmName);
-                return false;
+                return SwitchMoveOutcome.Failed;
             }
 
             using var connection = FindNicConnection(scope, nic);
@@ -145,7 +147,7 @@ public sealed class HyperVManager : IDisposable
                 SwitchWmiHelpers.ConnectionTargetsSwitch(connection["HostResource"] as string[], switchId))
             {
                 _logger.LogInformation("VM {Vm} already on '{Switch}' — no reconnect", vmName, switchName);
-                return true;   // already where the caller wants it — a success, not a failure
+                return SwitchMoveOutcome.AlreadyThere;   // already where the caller wants it — a success, not a failure
             }
 
             if (connection is not null)
@@ -164,11 +166,93 @@ public sealed class HyperVManager : IDisposable
             }
 
             _logger.LogInformation("Switch applied: {Vm} → {Switch}", vmName, switchName);
-            return true;
+            return SwitchMoveOutcome.Moved;
         }
         // AddVmResource/ModifyVmResource throw via CheckJob on a WMI failure — the reconnect did NOT
-        // happen, so this must report false rather than let the caller assume success (issue #37).
-        catch (Exception ex) { _logger.LogError(ex, "ApplySwitchAsync error"); return false; }
+        // happen, so this must report a failure rather than let the caller assume success (issue #37).
+        catch (Exception ex) { _logger.LogError(ex, "ApplySwitchAsync error"); return SwitchMoveOutcome.Failed; }
+    }
+
+    /// <summary>
+    /// Takes a VM's network link down and brings it straight back up, so the guest's address client sees
+    /// the medium disappear and return and asks for a new address. Nothing is run inside the guest and no
+    /// guest credentials are needed: the host disconnects the adapter's existing allocation from its
+    /// switch and reconnects it to the same switch.
+    ///
+    /// <para><b>Why disconnect-and-reconnect rather than disabling the port.</b> Both produce a link
+    /// cycle, and they fail differently. A cycle that disconnects clears the allocation's
+    /// <c>HostResource</c>, so if the process dies between the two halves the adapter is left pointing at
+    /// no switch — which the next evaluation repairs by itself, because
+    /// <see cref="ApplySwitchCore"/>'s skip guard sees a connection that does not target the switch and
+    /// re-points it. Disabling the port instead leaves <c>HostResource</c> untouched, so that same guard
+    /// would skip the adapter and a half-finished cycle would strand the guest with no network until
+    /// somebody noticed. The recoverable failure is the one to choose.</para>
+    ///
+    /// <para><b>Never throws, and answers only for what it confirmed.</b> False means the link was not
+    /// cycled — no adapter, no existing connection, or the modify was refused — and the caller must not
+    /// then wait for an address that was never going to change. A host that refuses to clear
+    /// <c>HostResource</c> at all fails on the first half, before anything has been changed.</para>
+    ///
+    /// <para><b>Not verified against a running machine.</b> Whether a guest's address client treats this
+    /// as grounds to ask for a new address, rather than resuming its existing lease, is only visible from
+    /// inside the guest.</para>
+    /// </summary>
+    /// <param name="vm">The VM, found by its VM ID; the name is for the log.</param>
+    /// <param name="nicId">The adapter's ID, or null for the VM's only adapter.</param>
+    public Task<bool> CycleNicLinkAsync(VmRef vm, string? nicId) =>
+        WithLock(() => CycleNicLinkCore(vm, nicId));
+
+    /// <summary>How long the link is held down. Long enough for the guest's driver to report the medium
+    /// gone rather than filter out a change that came and went inside one poll.</summary>
+    private static readonly TimeSpan LinkDownHold = TimeSpan.FromSeconds(3);
+
+    private bool CycleNicLinkCore(VmRef vm, string? nicId)
+    {
+        var vmName = $"{vm.Shown} ({vm.Id})";
+        try
+        {
+            EnsureScope();
+            var scope = _scope!;
+
+            using var vmSettings = FindVmSettings(scope, vm.Id);
+            if (vmSettings is null) { _logger.LogWarning("Link cycle: VM '{Vm}' not found", vmName); return false; }
+
+            using var nic = FindSyntheticNic(vmSettings, nicId);
+            if (nic is null)
+            {
+                _logger.LogWarning("Link cycle: network adapter '{Nic}' on VM '{Vm}' not found", nicId ?? "(the only adapter)", vmName);
+                return false;
+            }
+
+            using var connection = FindNicConnection(scope, nic);
+            if (connection is null)
+            {
+                _logger.LogWarning("Link cycle: VM '{Vm}' has no switch connection to cycle", vmName);
+                return false;
+            }
+
+            // The switch to come back to, captured before anything is changed: the reconnect must restore
+            // exactly what was there, never whatever the rules would choose a moment later.
+            if (connection["HostResource"] is not string[] hostResource || hostResource.Length == 0)
+            {
+                _logger.LogWarning("Link cycle: VM '{Vm}' connection names no switch", vmName);
+                return false;
+            }
+
+            connection["HostResource"] = Array.Empty<string>();
+            ModifyVmResource(scope, connection);
+
+            try { Thread.Sleep(LinkDownHold); }
+            finally
+            {
+                connection["HostResource"] = hostResource;
+                ModifyVmResource(scope, connection);
+            }
+
+            _logger.LogInformation("Link cycled: {Vm}", vmName);
+            return true;
+        }
+        catch (Exception ex) { _logger.LogError(ex, "Link cycle error on VM '{Vm}'", vmName); return false; }
     }
 
     /// <summary>

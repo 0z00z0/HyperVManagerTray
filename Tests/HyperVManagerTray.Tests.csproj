@@ -43,6 +43,16 @@
          apart are otherwise only reachable by unplugging a dock from a running host. Every surface that
          says a VM has no network renders this and nothing else. -->
     <Compile Include="..\Helpers\SwitchUplink.cs"     Link="Linked\SwitchUplink.cs" />
+    <!-- The verdict on whether a machine's own address belongs to the network its switch leads to, the
+         rule deciding when a machine may be asked for a new one, and the two marks the card shows for
+         them. Pure — the host readings arrive as arguments — which is the only way the states it tells
+         apart can be tested at all: they are otherwise reached by docking a laptop and waiting for a
+         guest's address client to decide something. Depends on the linked AdapterMatcher.cs (the CIDR
+         test), SwitchUplink.cs and SwitchMoveOutcome.cs below. -->
+    <Compile Include="..\Helpers\GuestAddress.cs"     Link="Linked\GuestAddress.cs" />
+    <!-- The three-name outcome ApplySwitchAsync returns. Its own file for the same reason
+         SwitchBindOutcome.cs is: linking it here drags in no System.Management/WMI. -->
+    <Compile Include="..\Services\SwitchMoveOutcome.cs" Link="Linked\SwitchMoveOutcome.cs" />
     <!-- The announce/suppress decision behind the failed-apply balloon, lifted out of App.xaml.cs so
          its two rules are testable without a WinUI host: a user command owns its own report (no double
          toast), and only a balloon actually SHOWN may be latched as announced. State, but no IO and no

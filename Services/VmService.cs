@@ -138,6 +138,17 @@ public sealed class VmService : IDisposable
     /// <summary>Raised (on a background thread) as a power action progresses. Marshal to the UI.</summary>
     public event Action<VmOperationProgress>? OperationProgress;
 
+    /// <summary>Raised (on a background thread) when a machine starts or stops being asked for a new
+    /// address, carrying the VM ID. Marshal to the UI: the card's mark changes with it.</summary>
+    public event Action<string>? AddressRenewalChanged;
+
+    // The machines with an address renewal in flight. Held here rather than in NetworkMonitor because
+    // this is where the dashboard already asks what a machine's address is, and the mark and the address
+    // are one value on the card — reading them from two services could show a mark beside an address
+    // read a moment apart.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _renewingAddress =
+        new(StringComparer.OrdinalIgnoreCase);
+
     public VmService(ILogger<VmService> logger, ILogger powerLog)
     {
         _logger   = logger;
@@ -149,6 +160,30 @@ public sealed class VmService : IDisposable
     /// <summary>The VM's cached guest IPv4 address, by VM ID, or null when none is known.</summary>
     public string? GetCachedVmIp(string vmId) =>
         vmId is not null && _vmIps.TryGetValue(vmId, out var ip) ? ip : null;
+
+    /// <summary>The ID of the switch the VM's adapter is on as of the last published read, or null when
+    /// the VM is not in it — including before the first read and while vmms is down. Read off the
+    /// published status list rather than the switch map behind it, which is a plain dictionary written
+    /// under the refresh lock and must not be read from another thread.</summary>
+    public string? SwitchIdOf(string? vmId)
+    {
+        if (string.IsNullOrWhiteSpace(vmId)) return null;
+        var id = _statuses?.FirstOrDefault(s => HostIdentity.Same(s.Id, vmId))?.SwitchId;
+        return string.IsNullOrWhiteSpace(id) ? null : id;
+    }
+
+    /// <summary>True while this machine is being asked for a new address.</summary>
+    public bool IsAddressRenewing(string? vmId) =>
+        !string.IsNullOrWhiteSpace(vmId) && _renewingAddress.ContainsKey(vmId);
+
+    /// <summary>Records that a machine is being asked for a new address, or that it no longer is, and
+    /// tells the surfaces that show it. Raised only on a real change, so a repeat costs nothing.</summary>
+    public void SetAddressRenewing(string vmId, bool renewing)
+    {
+        if (string.IsNullOrWhiteSpace(vmId)) return;
+        bool changed = renewing ? _renewingAddress.TryAdd(vmId, 0) : _renewingAddress.TryRemove(vmId, out _);
+        if (changed) AddressRenewalChanged?.Invoke(vmId);
+    }
 
     /// <summary>
     /// Every VM discovered on the host (managed or not), or null before the first refresh. Read from the
