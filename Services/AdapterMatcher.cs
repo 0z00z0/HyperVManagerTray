@@ -41,6 +41,13 @@ public sealed record MatchResult(
     public string HostAdapterInterfaceId { get; init; } = "";   // NetworkInterface.Id — what the bind targets
     public string HostAdapterAlias       { get; init; } = "—";  // connection alias ("Ethernet 5") — shown only
     public string HostIp                   { get; init; } = "—";
+    /// <summary>The network <see cref="HostIp"/> sits on, in <c>network/prefix</c> form, or empty when no
+    /// adapter was resolved. Not shown anywhere: this is the comparand
+    /// <see cref="Helpers.GuestAddressRules.For"/> judges a machine's own address against, and it is the
+    /// switch's network because it is read off the adapter that switch is bound to — including the case
+    /// where the switch is bridged and the address has moved onto the Hyper-V vNIC, which is where
+    /// <see cref="BuildResult"/> sources it from.</summary>
+    public string HostCidr                 { get; init; } = "";
     public string Gateway                  { get; init; } = "—";
     public IReadOnlyList<string> DnsServers { get; init; } = [];
 
@@ -140,6 +147,7 @@ public sealed record MatchResult(
                   HostAdapterName = next.HostAdapterName,
                   HostAdapterAlias = next.HostAdapterAlias,
                   HostIp          = next.HostIp,
+                  HostCidr        = next.HostCidr,
                   Gateway         = next.Gateway,
                   DnsServers      = next.DnsServers,
               }
@@ -492,9 +500,12 @@ public static class AdapterMatcher
             }
         }
 
-        var ip = props?.UnicastAddresses
-            .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
-            ?.Address.ToString() ?? "—";
+        var unicast = props?.UnicastAddresses
+            .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork);
+        var ip = unicast?.Address.ToString() ?? "—";
+        // The same address as a network: the comparand a guest's own address is judged against. Empty
+        // when no adapter was resolved, which is the state that must never produce a verdict.
+        var cidr = unicast is not null ? CalculateCidr(unicast) : "";
 
         var gw = props?.GatewayAddresses
             .Where(g => g.Address.AddressFamily == AddressFamily.InterNetwork)
@@ -514,6 +525,7 @@ public static class AdapterMatcher
             HostAdapterInterfaceId = nic?.Id ?? "",
             HostAdapterAlias       = nic?.Name ?? "—",
             HostIp                   = ip,
+            HostCidr                 = cidr,
             Gateway                  = gw,
             DnsServers               = dns
         };

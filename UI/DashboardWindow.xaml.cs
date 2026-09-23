@@ -138,6 +138,7 @@ public sealed partial class DashboardWindow : Window
 
         _vm.StatusesChanged   += OnVmStatusesChanged;
         _vm.OperationProgress += OnVmOperationProgress;
+        _vm.AddressRenewalChanged += OnAddressRenewalChanged;
         _services.StateChanged += OnServiceStateChanged;
 
         Activated       += OnActivated;
@@ -147,6 +148,7 @@ public sealed partial class DashboardWindow : Window
             UnsubscribeMetricsIfNeeded();
             _vm.StatusesChanged   -= OnVmStatusesChanged;
             _vm.OperationProgress -= OnVmOperationProgress;
+            _vm.AddressRenewalChanged -= OnAddressRenewalChanged;
             _services.StateChanged -= OnServiceStateChanged;
         };
     }
@@ -813,11 +815,48 @@ public sealed partial class DashboardWindow : Window
     private string ShownIp(string vmId, VmStatus? s) =>
         VmmsDown || s?.SwitchUplinkDown == true ? "" : _vm.GetCachedVmIp(vmId) ?? "";
 
+    /// <summary>
+    /// Whether this machine's address belongs to the network its switch leads to. Judged against the
+    /// outcome the monitor last applied, which carries both the switch and the network of the adapter
+    /// behind it — see <see cref="GuestAddressRules.For"/> for every state that answers
+    /// <see cref="GuestAddressFit.Unknown"/> rather than marking a card.
+    /// </summary>
+    private GuestAddressFit AddressFit(string vmId, VmStatus? s)
+    {
+        if (VmmsDown || s is null || _monitor.LastApplied is not { } applied) return GuestAddressFit.Unknown;
+        return GuestAddressRules.For(
+            _vm.GetCachedVmIp(vmId), s.SwitchId, applied.SwitchId, applied.HostCidr, _vm.UplinkOf(s.SwitchId));
+    }
+
+    /// <summary>Writes the address column: the address, and before it the one character saying either that
+    /// it does not belong to this network or that a new one has been asked for. The words are in the
+    /// tooltip, so the row itself stays a switch name and an address.</summary>
+    private void ApplyAddress(VmCard card, VmStatus? s)
+    {
+        var renewing = !VmmsDown && _vm.IsAddressRenewing(card.VmId);
+        var fit      = AddressFit(card.VmId, s);
+        card.Ip.Text = GuestAddressUi.AddressText(ShownIp(card.VmId, s), fit, renewing);
+
+        var tip = GuestAddressUi.TooltipFor(fit, renewing);
+        ToolTipService.SetToolTip(card.Ip, tip.Length > 0 ? tip : null);
+    }
+
+    /// <summary>Repaints one machine's address column when its renewal starts or finishes. Raised on a
+    /// background thread by <see cref="VmService"/>.</summary>
+    private void OnAddressRenewalChanged(string vmId)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_cards.TryGetValue(vmId, out var card))
+                ApplyAddress(card, ShownStatus(_latest, card.VmId));
+        });
+    }
+
     private void UpdateCard(VmCard card, VmStatus? s)
     {
         ApplyOverlay(card, s);
         ApplySubtitle(card.Subtitle, card.VmId, s);
-        card.Ip.Text        = ShownIp(card.VmId, s);
+        ApplyAddress(card, s);
         if (card.Uptime is not null) card.Uptime.Text = FormatUptime(s);
         if (s is null) return;
         if (card.CpuValue is not null) { card.CpuValue.Text = $"{s.Cpu}%"; SetBar(card.CpuBar, s.Cpu / 100.0); }
@@ -1181,6 +1220,7 @@ public sealed partial class DashboardWindow : Window
             DiskValue    = disk?.Value,
         };
         ApplyOverlay(card, s);
+        ApplyAddress(card, s);   // the mark and its tooltip, which the initial Text above cannot carry
         return card;
     }
 
@@ -1336,6 +1376,16 @@ public sealed partial class DashboardWindow : Window
     /// host. This method is only wiring, and is meant to stay that way: the bug it fixes (issue #45) was
     /// precisely a <c>bool</c> quietly discarded in four lines of code-behind that nothing could test.</para>
     /// </summary>
+    /// <summary>Puts the machine on the switch the rules settled on, and — when that actually moved it —
+    /// asks it for an address of that network on the way. The flow above only needs to know whether the
+    /// machine is now on the switch; the monitor owns the rule about when a link may be cycled.</summary>
+    private async Task<bool> MoveForConnectAsync(VmTarget vm, SwitchRef sw)
+    {
+        var outcome = await _hyperV.ApplySwitchAsync(vm.Ref, vm.NicId, sw);
+        _monitor.RenewAddressAfterMove(vm, outcome);
+        return outcome != SwitchMoveOutcome.Failed;
+    }
+
     private async Task ConnectAsync(VmTarget vm)
     {
         // Read ONCE and use that value everywhere below, including the log. _monitor.LastApplied is a
@@ -1349,7 +1399,7 @@ public sealed partial class DashboardWindow : Window
         var result = await VmConnectFlow.RunAsync(
             vm.Ref.Shown,
             appliedSwitch,
-            sw     => _hyperV.ApplySwitchAsync(vm.Ref, vm.NicId, sw),
+            sw     => MoveForConnectAsync(vm, sw),
             // Same channel and same reasoning as the tray's manual network actions (App.InitTrayIcon):
             // a balloon, NOT suppressed by a visible dashboard. The dashboard is by definition visible
             // here — the user just clicked a button on it — so the default suppression would swallow

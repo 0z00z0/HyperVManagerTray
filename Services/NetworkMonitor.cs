@@ -416,6 +416,7 @@ public sealed class NetworkMonitor : IDisposable
         var  shown     = current?.AdapterDescription ?? "";
         bool acquired  = false;
         bool bound     = false;
+        bool moved     = false;
 
         try
         {
@@ -438,7 +439,14 @@ public sealed class NetworkMonitor : IDisposable
                     else { _lastBoundAdapterBySwitch[sw.Id] = adapterId!; bound = true; }
                     return o;
                 },
-                move: () => _hyperV.ApplySwitchAsync(vm.Ref, vm.NicId, sw));
+                move: async () =>
+                {
+                    var o = await _hyperV.ApplySwitchAsync(vm.Ref, vm.NicId, sw);
+                    // A machine the override found already on this switch has not changed network, so it
+                    // is not asked for a new address — the same rule the apply pass follows.
+                    moved = GuestAddressRules.ShouldRenewAfter(o);
+                    return o != SwitchMoveOutcome.Failed;
+                });
 
             _logger.LogInformation("Manual override {Outcome}: {Vm} → {Switch} (adapter '{Adapter}' {AdapterId})",
                 outcome, vm.Ref.Shown, sw.Shown, shown, adapterId ?? "none");
@@ -454,6 +462,7 @@ public sealed class NetworkMonitor : IDisposable
                     HostAdapterInterfaceId = host.HostAdapterInterfaceId,
                     HostAdapterAlias       = host.HostAdapterAlias,
                     HostIp                 = host.HostIp,
+                    HostCidr               = host.HostCidr,
                     Gateway                = host.Gateway,
                     DnsServers             = host.DnsServers,
                     ApplyStatus = ok ? NetworkStatusUi.SwitchApplyStatus.Applied
@@ -473,6 +482,7 @@ public sealed class NetworkMonitor : IDisposable
 
                 _lastApplied = result;
                 Publish(result);
+                if (ok && moved) BeginAddressRenewal(vm, result);
             }
             return new OverrideReport(outcome, shown);
         }
@@ -487,6 +497,125 @@ public sealed class NetworkMonitor : IDisposable
             }
         }
     }
+
+    // ── Guest address renewal after a real move ──────────────────────────────────
+    // A machine keeps the address it was given until its own address client asks for another, so after
+    // its adapter is re-pointed at a different switch it can sit for hours holding an address from the
+    // network it has left. Nothing here runs inside the guest: the host takes the machine's link down and
+    // straight back up, which is the one prompt available without credentials for the guest.
+
+    /// <summary>How long a machine is given to come back with an address that belongs to its new network
+    /// before the cycle is tried once more.</summary>
+    private static readonly TimeSpan RenewalSettleBudget = TimeSpan.FromSeconds(24);
+
+    /// <summary>How often the machine's address is re-read while waiting. Each poll costs one WMI read,
+    /// so this is deliberately slower than the metrics tick.</summary>
+    private static readonly TimeSpan RenewalPollInterval = TimeSpan.FromSeconds(4);
+
+    /// <summary>One link cycle, and at most one more. Never a loop: a guest that will not take a new
+    /// address is a state to report, not one to keep bouncing the network over.</summary>
+    private const int RenewalAttempts = 2;
+
+    /// <summary>The machines with a renewal in flight, so a second move landing mid-renewal cannot start
+    /// a second one against the same adapter.</summary>
+    private readonly ConcurrentDictionary<string, byte> _renewing = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Asks a machine for a new address after a move made outside an apply pass actually changed its
+    /// switch — the dashboard's Connect button puts a machine on the applied switch on its way to opening
+    /// a console, and that is a move like any other. Does nothing for the other two outcomes, or before
+    /// any outcome has been applied, since the address would then have nothing to be judged against.
+    /// </summary>
+    public void RenewAddressAfterMove(VmTarget vm, SwitchMoveOutcome outcome)
+    {
+        if (!GuestAddressRules.ShouldRenewAfter(outcome)) return;
+        if (_lastApplied is { } applied) BeginAddressRenewal(vm, applied);
+    }
+
+    /// <summary>
+    /// Asks a machine for a new address after its switch has actually changed. Returns at once; the work
+    /// runs on the thread pool, because an apply pass must not wait out a guest's address client.
+    /// </summary>
+    /// <param name="vm">The managed machine, by ID, with the adapter to cycle.</param>
+    /// <param name="applied">The outcome this pass settled on — the switch and the host network the
+    /// address is judged against.</param>
+    private void BeginAddressRenewal(VmTarget vm, MatchResult applied)
+    {
+        if (_disposing || string.IsNullOrWhiteSpace(vm.Id)) return;
+        if (!_renewing.TryAdd(vm.Id, 0)) return;
+        _vm.SetAddressRenewing(vm.Id, true);
+
+        _ = Task.Run(async () =>
+        {
+            try { await RunAddressRenewalAsync(vm, applied).ConfigureAwait(false); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Address renewal for VM '{Vm}' on switch '{Switch}' ended in an error",
+                    vm.Ref.Shown, applied.SwitchName);
+            }
+            finally
+            {
+                _renewing.TryRemove(vm.Id, out _);
+                _vm.SetAddressRenewing(vm.Id, false);
+            }
+        });
+    }
+
+    private async Task RunAddressRenewalAsync(VmTarget vm, MatchResult applied)
+    {
+        for (int attempt = 1; attempt <= RenewalAttempts; attempt++)
+        {
+            if (_disposing) return;
+
+            var cycled = await _hyperV.CycleNicLinkAsync(vm.Ref, vm.NicId).ConfigureAwait(false);
+            _logger.LogInformation("Address renewal {Attempt}/{Total}: VM '{Vm}' on switch '{Switch}' — link cycle {Result}",
+                attempt, RenewalAttempts, vm.Ref.Shown, applied.SwitchName, cycled ? "performed" : "not performed");
+
+            // Nothing was cycled, so nothing was asked of the machine and waiting would prove nothing.
+            // The failure is already logged by the cycle itself.
+            if (!cycled) return;
+
+            if (await WaitForAddressToFitAsync(vm.Id, applied).ConfigureAwait(false))
+            {
+                _logger.LogInformation("Address renewal: VM '{Vm}' on switch '{Switch}' now holds an address of that network",
+                    vm.Ref.Shown, applied.SwitchName);
+                return;
+            }
+        }
+
+        // Once, at the end, and never again: the mark on the card is what keeps saying it from here.
+        _logger.LogWarning("Address renewal: VM '{Vm}' on switch '{Switch}' still holds an address of another network after {Total} link cycles",
+            vm.Ref.Shown, applied.SwitchName, RenewalAttempts);
+    }
+
+    /// <summary>Waits for the machine's address to belong to the network its switch leads to. False when
+    /// the budget runs out, when the verdict cannot be established, or while disposal has begun.</summary>
+    private async Task<bool> WaitForAddressToFitAsync(string vmId, MatchResult applied)
+    {
+        var deadline = DateTime.UtcNow + RenewalSettleBudget;
+        while (DateTime.UtcNow < deadline)
+        {
+            try { await Task.Delay(RenewalPollInterval).ConfigureAwait(false); }
+            catch (Exception) { return false; }
+            if (_disposing) return false;
+
+            // The address is read from the guest's own configuration, and the cache behind it only
+            // refreshes while something is subscribed to metrics — which the dashboard may not be. Ask
+            // for a read rather than waiting on one that may never come.
+            _vm.InvalidateSwitchCache();
+            await _vm.RefreshOnceAsync().ConfigureAwait(false);
+
+            if (AddressFit(vmId, applied) == GuestAddressFit.Fits) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Whether this machine's address belongs to the network its switch leads to, from the
+    /// readings this monitor and <see cref="VmService"/> already hold.</summary>
+    private GuestAddressFit AddressFit(string vmId, MatchResult applied) =>
+        GuestAddressRules.For(
+            _vm.GetCachedVmIp(vmId), _vm.SwitchIdOf(vmId), applied.SwitchId, applied.HostCidr,
+            _vm.UplinkOf(applied.SwitchId));
 
     /// <summary>An override that holds against the rules: until when it ignores changes, and the network
     /// it belongs to once captured.</summary>
@@ -669,6 +798,7 @@ public sealed class NetworkMonitor : IDisposable
         // Collect the VMs whose NIC could not be attached, so the UI can name them (issue #37). Before
         // #37 both failure paths below were log-only and the pass reported success regardless.
         var failedVms = new List<string>();
+        var movedVms  = new List<VmTarget>();
         foreach (var targetVm in result.TargetVms)
         {
             ThrowIfDisposing();
@@ -683,9 +813,14 @@ public sealed class NetworkMonitor : IDisposable
                 failedVms.Add(targetVm.Shown);
                 continue;
             }
-            if (string.IsNullOrWhiteSpace(result.SwitchId)
-                || !await _hyperV.ApplySwitchAsync(vm.Ref, vm.NicId, target))
+            if (string.IsNullOrWhiteSpace(result.SwitchId))
+            {
                 failedVms.Add(vm.Ref.Shown);
+                continue;
+            }
+            var moved = await _hyperV.ApplySwitchAsync(vm.Ref, vm.NicId, target);
+            if (moved == SwitchMoveOutcome.Failed) failedVms.Add(vm.Ref.Shown);
+            else if (GuestAddressRules.ShouldRenewAfter(moved)) movedVms.Add(vm);
         }
 
         var status = NetworkStatusUi.Classify(bindStep, failedVms.Count);
@@ -696,6 +831,11 @@ public sealed class NetworkMonitor : IDisposable
         // Stamp the outcome onto the result BEFORE it is published/remembered — from here on this is
         // what the icon, tooltip and dashboard render.
         result = result with { ApplyStatus = status, FailedVms = failedVms, UserInitiated = userInitiated };
+
+        // Only the machines whose switch actually changed under them are asked for a new address, and
+        // only once the outcome is stamped, so the wait below compares against the network this pass
+        // settled on rather than the one it started from.
+        foreach (var moved in movedVms) BeginAddressRenewal(moved, result);
 
         // Autostart, service stops and bridge-lost actions all schedule work that outlives this pass.
         ThrowIfDisposing();
