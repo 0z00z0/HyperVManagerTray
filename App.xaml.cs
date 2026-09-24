@@ -329,7 +329,14 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            NativeMethods.Error($"Failed to start Hyper-V Manager Tray:\n\n{ex}", AppInfo.Name);
+            // The whole exception, stack trace included, went into this dialog and told a person
+            // nothing they could act on. It belongs in crash.log, which the sentence points at.
+            LogCrash("Startup failed", ex);
+            NativeMethods.Error(
+                $"{AppInfo.Name} could not start, so it has closed.\n\n"
+              + "Starting it again is worth one attempt; if it closes the same way, what went wrong "
+              + $"is written to crash.log in %AppData%\\{AppInfo.Id}.",
+                AppInfo.Name);
             ExitIntentionally();   // startup failed — relaunching would just fail again
         }
     }
@@ -444,10 +451,15 @@ public partial class App : Application
         {
             var ex = e.ExceptionObject as Exception;
             LogCrash("AppDomain UnhandledException (fatal)", ex);
+            // An exception carrying no message used to leave this dialog saying "Unknown error", which
+            // reads as a fault in the report rather than in what it is reporting.
+            var said = string.IsNullOrWhiteSpace(ex?.Message)
+                ? "Nothing more was reported about the fault itself."
+                : ex!.Message.Trim();
             NativeMethods.Error(
-                $"Hyper-V Manager Tray crashed and needs to close.\n\n" +
-                $"{ex?.Message ?? "Unknown error"}\n\n" +
-                $"Details written to crash.log in %AppData%\\{AppInfo.Id}.",
+                $"{AppInfo.Name} has to close after an unexpected fault.\n\n" +
+                $"{said}\n\n" +
+                $"The full report is written to crash.log in %AppData%\\{AppInfo.Id}.",
                 AppInfo.Name);
         };
 
@@ -844,9 +856,10 @@ public partial class App : Application
     private void OnVmOperationFailed(Models.VmOperationProgress p)
     {
         if (p.Phase != Models.VmOpPhase.Failed) return;
-        var message = p.Kind == Models.VmOpKind.Start
-            ? VmPowerUi.StartFailedMessage(p.VmName, p.Message)
-            : string.IsNullOrWhiteSpace(p.Message) ? "Power action failed." : p.Message!;
+        // Every failed action, not only a start, names what did not happen and why: the card's short
+        // line is not enough on its own, and a balloon that said only "Power action failed" left a
+        // person with neither the operation nor the reason.
+        var message = VmPowerUi.FailedMessage(p.VmName, p.Kind, p.Detail ?? p.Message);
         ShowBalloon($"{AppInfo.Name} — {p.VmName}", message,
                     isError: true,
                     suppressWhenDashboardVisible: VmPowerUi.SuppressWhenDashboardVisible(p.Kind));

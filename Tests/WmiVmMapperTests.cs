@@ -104,7 +104,7 @@ public class WmiVmMapperTests
         Assert.Equal("Requesting start…", WmiVmMapper.ProgressMessage(VmOpKind.Start, VmOpPhase.Requested, null, null));
         Assert.Equal("Saving (47%)…",     WmiVmMapper.ProgressMessage(VmOpKind.Save,  VmOpPhase.Running, 47, null));
         Assert.Equal("Saving…",           WmiVmMapper.ProgressMessage(VmOpKind.Save,  VmOpPhase.Running, null, null));
-        Assert.Equal("Failed: not enough memory", WmiVmMapper.ProgressMessage(VmOpKind.Start, VmOpPhase.Failed, null, "not enough memory"));
+        Assert.Equal("Not enough memory", WmiVmMapper.ProgressMessage(VmOpKind.Start, VmOpPhase.Failed, null, "Not enough memory"));
         Assert.Equal("", WmiVmMapper.ProgressMessage(VmOpKind.Start, VmOpPhase.Succeeded, null, null));
     }
 
@@ -122,26 +122,30 @@ public class WmiVmMapperTests
         Assert.Equal(runningText,   WmiVmMapper.ProgressMessage(kind, VmOpPhase.Running, null, null));
     }
 
+    /// <summary>With nothing from Hyper-V the card still names the operation and where to look, rather
+    /// than leaving an empty red label.</summary>
     [Theory]
-    [InlineData(VmOpKind.Start,    "Failed to start")]
-    [InlineData(VmOpKind.Resume,   "Failed to resume")]
-    [InlineData(VmOpKind.Pause,    "Failed to pause")]
-    [InlineData(VmOpKind.Save,     "Failed to save")]
-    [InlineData(VmOpKind.Shutdown, "Failed to shut down")]
-    public void ProgressMessage_Failed_NoErrorText_UsesVerbFallback(VmOpKind kind, string expected)
+    [InlineData(VmOpKind.Start,    "Start failed, see the log")]
+    [InlineData(VmOpKind.Resume,   "Resume failed, see the log")]
+    [InlineData(VmOpKind.Pause,    "Pause failed, see the log")]
+    [InlineData(VmOpKind.Save,     "Save failed, see the log")]
+    [InlineData(VmOpKind.Shutdown, "Shutdown failed, see the log")]
+    public void ProgressMessage_Failed_NoErrorText_NamesTheOperationAndTheLog(VmOpKind kind, string expected)
         => Assert.Equal(expected, WmiVmMapper.ProgressMessage(kind, VmOpPhase.Failed, null, null));
 
     [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
-    public void ProgressMessage_Failed_WhitespaceOnlyError_UsesVerbFallback(string? error)
-        => Assert.Equal("Failed to start", WmiVmMapper.ProgressMessage(VmOpKind.Start, VmOpPhase.Failed, null, error));
+    public void ProgressMessage_Failed_WhitespaceOnlyError_NamesTheOperationAndTheLog(string? error)
+        => Assert.Equal("Start failed, see the log", WmiVmMapper.ProgressMessage(VmOpKind.Start, VmOpPhase.Failed, null, error));
 
+    /// <summary>The card line arrives ready to show — VmFailureText already fitted it — so the mapper
+    /// passes it through rather than prefixing it.</summary>
     [Fact]
-    public void ProgressMessage_Failed_TrimsErrorText()
-        => Assert.Equal("Failed: disk full",
-            WmiVmMapper.ProgressMessage(VmOpKind.Save, VmOpPhase.Failed, null, "  disk full  "));
+    public void ProgressMessage_Failed_PassesTheCardLineThroughTrimmed()
+        => Assert.Equal("Disk full",
+            WmiVmMapper.ProgressMessage(VmOpKind.Save, VmOpPhase.Failed, null, "  Disk full  "));
 
     [Fact]
     public void ProgressMessage_UnrecognizedKind_FallsBackToGenericVerb()

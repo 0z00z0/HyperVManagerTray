@@ -1119,9 +1119,8 @@ public sealed class VmService : IDisposable
         if (!_serviceAvailable)
         {
             // Answered at once rather than by a WMI call that would fail slowly or hang.
-            const string reason = "Hyper-V Virtual Machine Management is not running";
-            _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): {Error}", kind, vmName, origin, reason);
-            Emit(target, kind, VmOpPhase.Failed, null, reason);
+            _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): vmms is not running", kind, vmName, origin);
+            EmitFailure(target, kind, VmFailureText.ServiceNotRunning(kind));
             return;
         }
         try
@@ -1132,33 +1131,37 @@ public sealed class VmService : IDisposable
             if (vm is null)
             {
                 _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): VM not found", kind, vmName, origin);
-                Emit(target, kind, VmOpPhase.Failed, null, "VM not found");
+                EmitFailure(target, kind, VmFailureText.MachineNotFound(kind));
                 return;
+            }
+
+            // Duplicate-request guard. Compares the MAPPED state NAME (via WmiVmMapper, the single
+            // source of truth) rather than a raw EnabledState code, so a user pause — which reports
+            // EnabledState 9 (Quiesce), not the vendor 32768 — still counts as "already Paused".
+            // A machine already MOVING towards the requested state counts too: a rule's autostart can
+            // run again while a dock settles, and re-issuing RequestStateChange against a machine that
+            // is already Starting is refused with 32775 and replaces the running start's progress on
+            // the card. The rule itself is in VmRequestRules, where every combination is tested.
+            var state = WmiVmMapper.MapState(Convert.ToUInt16(vm["EnabledState"]));
+            switch (VmRequestRules.Standing(kind, state))
+            {
+                case VmRequestStanding.AlreadyThere:
+                    _powerLog.LogInformation("SUCCEEDED {Kind} '{Vm}' (origin={Origin}): already {State} — no-op",
+                        kind, vmName, origin, state);
+                    Emit(target, kind, VmOpPhase.Succeeded, null, null);
+                    return;
+                case VmRequestStanding.AlreadyUnderWay:
+                    // Not a failure and not a success: the change asked for is already running, so the
+                    // card keeps showing it rather than reporting a refusal that never happened.
+                    _powerLog.LogInformation("NO-OP {Kind} '{Vm}' (origin={Origin}): already {State} — not requested again",
+                        kind, vmName, origin, state);
+                    Emit(target, kind, VmOpPhase.Running, null, null);
+                    return;
             }
 
             if (kind == VmOpKind.Shutdown)
             {
                 RunShutdown(scope, vm, target, origin);
-                return;
-            }
-
-            // Already-in-target-state no-op guard. Compare the MAPPED state NAME (via WmiVmMapper, the
-            // single source of truth) rather than a raw EnabledState code, so a user pause — which
-            // reports EnabledState 9 (Quiesce), not the vendor 32768 — still counts as "already
-            // Paused". Guards a second click (e.g. from the tray VM-power submenu, which offers Pause
-            // unconditionally) after a prior job outran TrackJob's deadline but still succeeded;
-            // re-issuing RequestStateChange for an already-satisfied state returns 0x8007.
-            string targetStateName = kind switch
-            {
-                VmOpKind.Pause => "Paused",
-                VmOpKind.Save  => "Saved",
-                _              => "Running",   // Start / Resume
-            };
-            if (WmiVmMapper.MapState(Convert.ToUInt16(vm["EnabledState"])) == targetStateName)
-            {
-                _powerLog.LogInformation("SUCCEEDED {Kind} '{Vm}' (origin={Origin}): already {State} — no-op",
-                    kind, vmName, origin, targetStateName);
-                Emit(target, kind, VmOpPhase.Succeeded, null, null);
                 return;
             }
 
@@ -1179,14 +1182,15 @@ public sealed class VmService : IDisposable
             if (ret == 0)    { _powerLog.LogInformation("SUCCEEDED {Kind} '{Vm}' (origin={Origin})", kind, vmName, origin); Emit(target, kind, VmOpPhase.Succeeded, null, null); return; }
             if (ret == 4096) { TrackJob(scope, (string)outParams["Job"], target, kind, origin); return; }
 
-            _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): RequestStateChange error 0x{Ret:X}", kind, vmName, origin, ret);
-            Emit(target, kind, VmOpPhase.Failed, null, $"error 0x{ret:X}");
+            _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): RequestStateChange returned {Ret} (0x{Hex:X})",
+                kind, vmName, origin, ret, ret);
+            EmitFailure(target, kind, VmFailureText.ForRequestRefusal(kind, ret));
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Power action {Kind} on {Vm} failed", kind, vmName);
             _powerLog.LogError(ex, "FAILED {Kind} '{Vm}' (origin={Origin}): {Error}", kind, vmName, origin, ex.Message);
-            Emit(target, kind, VmOpPhase.Failed, null, ex.Message);
+            EmitFailure(target, kind, VmFailureText.ForRequestFault(kind));
         }
         finally
         {
@@ -1206,7 +1210,7 @@ public sealed class VmService : IDisposable
         if (sc is null)
         {
             _powerLog.LogWarning("FAILED Shutdown '{Vm}' (origin={Origin}): integration services not available", vmName, origin);
-            Emit(target, VmOpKind.Shutdown, VmOpPhase.Failed, null, "Integration services not available");
+            EmitFailure(target, VmOpKind.Shutdown, VmFailureText.NoShutdownSupport());
             return;
         }
         using (sc)
@@ -1225,8 +1229,9 @@ public sealed class VmService : IDisposable
             }
             else
             {
-                _powerLog.LogWarning("FAILED Shutdown '{Vm}' (origin={Origin}): error 0x{Ret:X}", vmName, origin, ret);
-                Emit(target, VmOpKind.Shutdown, VmOpPhase.Failed, null, $"error 0x{ret:X}");
+                _powerLog.LogWarning("FAILED Shutdown '{Vm}' (origin={Origin}): InitiateShutdown returned {Ret} (0x{Hex:X})",
+                    vmName, origin, ret, ret);
+                EmitFailure(target, VmOpKind.Shutdown, VmFailureText.ForShutdownRefusal(ret));
             }
         }
     }
@@ -1271,7 +1276,7 @@ public sealed class VmService : IDisposable
                 {
                     var err = snap["ErrorDescription"] as string;
                     _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): job {JobState} — {Error}", kind, vmName, origin, jobState, err ?? "(no detail)");
-                    Emit(target, kind, VmOpPhase.Failed, null, err); done.Set();
+                    EmitFailure(target, kind, VmFailureText.ForJobFailure(kind, err)); done.Set();
                 }
                 return true;
             }
@@ -1318,8 +1323,9 @@ public sealed class VmService : IDisposable
             // Block on the event (not a poll loop) until terminal or the fallback timeout.
             if (!done.Wait(timeout) && Interlocked.Exchange(ref completed, 1) == 0)
             {
-                _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): job timed out", kind, vmName, origin);
-                Emit(target, kind, VmOpPhase.Failed, null, "timed out");
+                _powerLog.LogWarning("FAILED {Kind} '{Vm}' (origin={Origin}): no terminal job state within {Timeout}",
+                    kind, vmName, origin, timeout);
+                EmitFailure(target, kind, VmFailureText.ForNoResult(kind, timeout));
             }
         }
         catch (Exception ex)
@@ -1328,7 +1334,7 @@ public sealed class VmService : IDisposable
             if (Interlocked.Exchange(ref completed, 1) == 0)
             {
                 _powerLog.LogError(ex, "FAILED {Kind} '{Vm}' (origin={Origin}): job tracking error — {Error}", kind, vmName, origin, ex.Message);
-                Emit(target, kind, VmOpPhase.Failed, null, ex.Message);
+                EmitFailure(target, kind, VmFailureText.ForTrackingFault(kind));
             }
         }
         finally
@@ -1339,9 +1345,26 @@ public sealed class VmService : IDisposable
         }
     }
 
-    private void Emit(VmRef vm, VmOpKind kind, VmOpPhase phase, int? pct, string? error) =>
+    private void Emit(VmRef vm, VmOpKind kind, VmOpPhase phase, int? pct, string? error, string? detail = null) =>
         OperationProgress?.Invoke(new VmOperationProgress(vm.Id, kind, phase, pct,
-            WmiVmMapper.ProgressMessage(kind, phase, pct, error), vm.Shown));
+            WmiVmMapper.ProgressMessage(kind, phase, pct, error), vm.Shown, detail));
+
+    /// <summary>A failure, in both lengths: the card's short line and the sentence every surface shows
+    /// behind it.</summary>
+    private void EmitFailure(VmRef vm, VmOpKind kind, VmFailure failure) =>
+        Emit(vm, kind, VmOpPhase.Failed, null, failure.Card, failure.Full);
+
+    /// <summary>
+    /// Reports a power action that was never attempted, so the machine's card says why it stayed where
+    /// it is. Used by a rule's autostart when the host is not in a fit state to be asked — nothing else
+    /// would account for a machine the rule names being left alone.
+    /// </summary>
+    public void ReportNotAttempted(VmRef target, VmOpKind kind, VmOpOrigin origin, VmFailure failure)
+    {
+        _powerLog.LogWarning("NOT ATTEMPTED {Kind} '{Vm}' (origin={Origin}): {Error}",
+            kind, Label(target), origin, failure.Full);
+        EmitFailure(target, kind, failure);
+    }
 
     // ── WMI plumbing ─────────────────────────────────────────────────────────────
 

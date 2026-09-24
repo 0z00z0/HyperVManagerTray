@@ -93,15 +93,15 @@ internal static class AdapterRenamer
         var classGuid = NetClassGuid;
         var set = SetupDiCreateDeviceInfoList(ref classGuid, IntPtr.Zero);
         if (set == InvalidHandle)
-            throw new InvalidOperationException(
-                $"SetupDiCreateDeviceInfoList failed (0x{Marshal.GetLastWin32Error():X8}).");
+            throw DeviceFailure("Create device info list",
+                "Windows would not open its list of network devices, so the adapter could not be restarted.");
 
         try
         {
             var devInfo = new SP_DEVINFO_DATA { cbSize = (uint)Marshal.SizeOf<SP_DEVINFO_DATA>() };
             if (!SetupDiOpenDeviceInfo(set, deviceInstanceId, IntPtr.Zero, 0, ref devInfo))
-                throw new InvalidOperationException(
-                    $"Device \"{deviceInstanceId}\" could not be opened (0x{Marshal.GetLastWin32Error():X8}).");
+                throw DeviceFailure("Open device info",
+                    "Windows would not open this network device, so it could not be restarted.");
 
             ChangeState(set, ref devInfo, DICS_DISABLE);
             ChangeState(set, ref devInfo, DICS_ENABLE);
@@ -125,12 +125,27 @@ internal static class AdapterRenamer
         };
 
         if (!SetupDiSetClassInstallParams(set, ref devInfo, ref pcp, (uint)Marshal.SizeOf<SP_PROPCHANGE_PARAMS>()))
-            throw new InvalidOperationException(
-                $"SetupDiSetClassInstallParams failed (0x{Marshal.GetLastWin32Error():X8}).");
+            throw DeviceFailure($"Prepare {StateWord(stateChange)}",
+                $"Windows would not accept the request to {StateWord(stateChange)} this network device.");
 
         if (!SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, set, ref devInfo))
-            throw new InvalidOperationException(
-                $"SetupDiCallClassInstaller failed (0x{Marshal.GetLastWin32Error():X8}).");
+            throw DeviceFailure($"Run {StateWord(stateChange)}",
+                $"Windows could not {StateWord(stateChange)} this network device. "
+              + "The new name appears after the adapter is disabled and enabled again, or after a restart.");
+    }
+
+    /// <summary>The half of the restart being attempted, for both the log line and the sentence.</summary>
+    private static string StateWord(uint stateChange) => stateChange == DICS_DISABLE ? "disable" : "enable";
+
+    /// <summary>
+    /// Records the Windows error code and returns the failure a person is shown. The code is what
+    /// diagnoses this and is worth keeping; it means nothing in a dialog, so it stays in crash.log.
+    /// </summary>
+    private static InvalidOperationException DeviceFailure(string step, string message)
+    {
+        AppInfo.AppendCrashLogLine("AdapterRename",
+            $"{step} failed with Windows error 0x{Marshal.GetLastWin32Error():X8}.");
+        return new InvalidOperationException(message);
     }
 
     // ── SetupAPI P/Invoke ────────────────────────────────────────────────────────

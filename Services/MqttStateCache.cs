@@ -58,9 +58,32 @@ public sealed class MqttStateCache
         }
     }
 
-    /// <summary>The operation as one line: the verb, its phase, and whatever the WMI job said.</summary>
-    internal static string Describe(VmOperationProgress progress) =>
-        string.IsNullOrWhiteSpace(progress.Message)
+    /// <summary>
+    /// The operation as one line: the verb, its phase, and what happened in the same words the card's
+    /// tooltip and the balloon carry — the published entity used to show a bare Hyper-V return value,
+    /// which is the least useful place of the three for a number.
+    /// </summary>
+    internal static string Describe(VmOperationProgress progress)
+    {
+        var said = string.IsNullOrWhiteSpace(progress.Detail) ? progress.Message : progress.Detail;
+        if (string.IsNullOrWhiteSpace(said) && progress.Phase == VmOpPhase.Failed)
+            said = "What happened is recorded in vm-power.log.";
+
+        return string.IsNullOrWhiteSpace(said)
             ? $"{progress.Kind} {progress.Phase}"
-            : $"{progress.Kind} {progress.Phase}: {progress.Message}";
+            : Fit($"{progress.Kind} {progress.Phase}: {said.Trim()}");
+    }
+
+    /// <summary>A state value longer than this is refused by Home Assistant, so a long description from
+    /// the host is cut at a word rather than costing the entity its reading.</summary>
+    private const int StateLimit = 255;
+
+    private static string Fit(string line)
+    {
+        if (line.Length <= StateLimit) return line;
+        var cut   = line[..(StateLimit - 1)];
+        int space = cut.LastIndexOf(' ');
+        if (space > 0) cut = cut[..space];
+        return cut.TrimEnd(' ', ',', '.', ';', ':') + "…";
+    }
 }

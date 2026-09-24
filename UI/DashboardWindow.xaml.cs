@@ -550,7 +550,10 @@ public sealed partial class DashboardWindow : Window
             // The flows report their own outcomes; this is only for a fault in the plumbing itself.
             UiActivityLog.Logger.LogWarning(ex, "Dashboard: service {Service} action failed", kind);
             _notify($"{AppInfo.Name} — Hyper-V services",
-                    $"{HyperVServiceNames.DisplayName(kind)}: {ex.Message}", true);
+                    $"{HyperVServiceNames.DisplayName(kind)} could not be "
+                  + (stop ? "stopped" : "started")
+                  + ". Its state on the dashboard says where it is now, and what went wrong is "
+                  + "recorded in the app log.", true);
         }
         finally
         {
@@ -592,7 +595,10 @@ public sealed partial class DashboardWindow : Window
         catch (Exception ex)
         {
             UiActivityLog.Logger.LogWarning(ex, "Dashboard: starting the services for '{Vm}' ({Id}) failed", vm.Shown, vm.Id);
-            _notify($"{AppInfo.Name} — {vm.Shown}", ex.Message, true);
+            _notify($"{AppInfo.Name} — {vm.Shown}",
+                    "The Hyper-V services could not be started, so the machine was not started either. "
+                  + "The services row on the dashboard says where each one is now, and what went wrong "
+                  + "is recorded in the app log.", true);
         }
         finally
         {
@@ -893,13 +899,20 @@ public sealed partial class DashboardWindow : Window
 
         if (_op.TryGetValue(card.VmId, out var op) && op.Message is { Length: > 0 } msg)
         {
-            card.State.Text       = Truncate(msg, 30);
-            card.State.Foreground = op.Phase == VmOpPhase.Failed ? AppColors.IndicatorRedBrush : AppColors.IndicatorOrangeBrush;
-            // The status text is truncated to keep the card compact (e.g. a WMI failure message can
-            // run far longer than the "Failed: 'name' failed to…" that fits) — surface the full
-            // message on hover so it isn't lost. Only set when actually truncated, so a short message
-            // doesn't get a redundant tooltip.
-            ToolTipService.SetToolTip(card.State, msg.Length > 30 ? msg : null);
+            // A failure stays until it is cleared, so it carries the mark that says it can be, and its
+            // tooltip carries both the sentence behind the short line and how to clear it. Progress
+            // messages keep the old behaviour: hover text only where the line had to be cut.
+            bool failed = op.Phase == VmOpPhase.Failed;
+            var line    = Truncate(msg, failed ? VmFailureText.CardLimit : 30);
+
+            card.State.Text       = failed ? $"{line} {VmFailureText.DismissMark}" : line;
+            card.State.Foreground = failed ? AppColors.IndicatorRedBrush : AppColors.IndicatorOrangeBrush;
+
+            var detail = string.IsNullOrWhiteSpace(op.Detail) ? msg : op.Detail!.Trim();
+            ToolTipService.SetToolTip(card.State,
+                failed                 ? $"{detail} {VmFailureText.DismissHint}"
+              : msg.Length > 30        ? msg
+              :                          null);
         }
         else if (_startingViaService.Contains(card.VmId))
         {
@@ -997,6 +1010,25 @@ public sealed partial class DashboardWindow : Window
     {
         _op.Remove(vmName);
         _opSince.Remove(vmName);
+    }
+
+    /// <summary>
+    /// Clears a machine's failure when its mark is selected. A failure no longer ages off the card — a
+    /// start that fails a minute after it was asked for would otherwise arrive on a card that had
+    /// already forgotten the operation — so this, or the machine reaching the state the operation was
+    /// after, is what retires it. Returns whether there was a failure to clear, so a tap on a card
+    /// showing anything else falls through untouched.
+    /// </summary>
+    private bool DismissFailure(string vmId)
+    {
+        if (!_op.TryGetValue(vmId, out var op) || op.Phase != VmOpPhase.Failed) return false;
+        RemoveOp(vmId);
+        if (_cards.TryGetValue(vmId, out var card))
+        {
+            ApplyOverlay(card, ShownStatus(_latest, vmId));
+            ApplyRowTooltips(_contentWidth);
+        }
+        return true;
     }
 
     private static void SetButtonsEnabled(VmCard card, bool enabled)
@@ -1114,6 +1146,9 @@ public sealed partial class DashboardWindow : Window
             VerticalAlignment    = VerticalAlignment.Center,
             HorizontalAlignment  = HorizontalAlignment.Right,
         };
+        // Selecting the label clears a failure showing on it; every other state ignores the tap.
+        var stateVmId = vm.Id;
+        stateLabel.Tapped += (_, e) => e.Handled = DismissFailure(stateVmId);
         Grid.SetColumn(stateLabel, 1);
         Grid.SetRow(stateLabel, 0);
         header.Children.Add(title);
@@ -1439,7 +1474,7 @@ public sealed partial class DashboardWindow : Window
         void OnProgress(VmOperationProgress p)
         {
             if (p.Phase == VmOpPhase.Failed && p.Kind == VmOpKind.Start && HostIdentity.Same(p.VmId, vm.Id))
-                failure = p.Message;
+                failure = p.Detail ?? p.Message;
         }
 
         VmService.StartReadiness readiness;
