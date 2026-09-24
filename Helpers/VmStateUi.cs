@@ -92,17 +92,17 @@ public static class VmStateUi
     /// reaches Off, well before this fires.</summary>
     public static readonly TimeSpan ShutdownDeadline = TimeSpan.FromMinutes(30);
 
-    /// <summary>A sticky "Failed: …" overlay ages out after this long so it doesn't linger forever
-    /// (finding 7).</summary>
-    public static readonly TimeSpan FailedOverlayLifetime = TimeSpan.FromSeconds(45);
-
     /// <summary>
-    /// Whether an in-flight/failed power-op overlay should be retired based on its age. Covers the two
-    /// overlays that otherwise never clear on their own: a hung/cancelled graceful Shutdown that stays
-    /// in the Running phase (finding 1), and a sticky Failed overlay (finding 7). Other ops clear when
-    /// the VM reaches their target state, so they are never expired by age here.
+    /// Whether an in-flight power-op overlay should be retired based on its age. Only one overlay ages
+    /// out: a hung or cancelled graceful Shutdown that stays in the Running phase (finding 1). Every
+    /// other operation clears when the machine reaches the state it was after.
+    ///
+    /// <para><b>A failure never ages out.</b> A start is accepted as a job and can fail more than a
+    /// minute later, by which time an age-based overlay would already have retired the progress it
+    /// replaced — and the reason that matters, the one Hyper-V supplies with the failed job, is the one
+    /// that arrives last. A failure now stays on the card until it is dismissed or until the machine
+    /// reaches the state that makes it irrelevant.</para>
     /// </summary>
     public static bool IsOverlayExpired(VmOpKind kind, VmOpPhase phase, TimeSpan age) =>
-        (phase == VmOpPhase.Failed && age >= FailedOverlayLifetime) ||
-        (kind == VmOpKind.Shutdown && phase == VmOpPhase.Running && age >= ShutdownDeadline);
+        kind == VmOpKind.Shutdown && phase == VmOpPhase.Running && age >= ShutdownDeadline;
 }

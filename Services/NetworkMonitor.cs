@@ -739,7 +739,9 @@ public sealed class NetworkMonitor : IDisposable
         if (result.RuleId != previousRule) CancelServiceStops();
 
         // Services the rule starts come up before the bind below, which goes through vmms (issue #114).
-        if (activeRule is not null) await StartRuleServicesAsync(activeRule);
+        // A host that came back but is still not answering is carried to the autostart block: it used to
+        // be a warning in the log, after which the pass asked for a start anyway.
+        string? hostNotReady = activeRule is not null ? await StartRuleServicesAsync(activeRule) : null;
 
         // When a specific rule matched, re-bind the Hyper-V virtual switch to the detected
         // physical adapter before connecting any VMs.  This is what makes an "Internal"
@@ -845,17 +847,28 @@ public sealed class NetworkMonitor : IDisposable
         if (activeRule is { AutoStart: true } rule && rule.TargetVmIds.Count > 0)
         {
             // A stopped service is started before any VM start, whatever the rule says about it.
-            string? servicesError = _services.AnyServiceDown
+            string? servicesError = hostNotReady ?? (_services.AnyServiceDown
                 ? await _services.EnsureRunningForVmStartAsync(VmOpOrigin.Auto, $"rule '{rule.Name}' autostart")
-                : null;
+                : null);
 
             if (servicesError is not null)
             {
                 _logger.LogWarning("Autostart for rule '{Rule}' skipped: {Error}", rule.Name, servicesError);
                 _powerLog.LogWarning("AUTO Start skipped for rule '{Rule}': {Error}", rule.Name, servicesError);
+                // Each machine the rule names says why it stayed where it is; a log line alone left a
+                // machine that never started with nothing on its card to explain it.
+                foreach (var vmRef in _config.Current.VmRefs(rule.TargetVmIds))
+                    _vm.ReportNotAttempted(vmRef, VmOpKind.Start, VmOpOrigin.Auto,
+                        VmFailureText.NotAttempted(VmOpKind.Start, servicesError));
+            }
+            else if (AutostartIsStillSettling(rule.Id))
+            {
+                _logger.LogInformation("Autostart for rule '{Rule}' skipped: it ran moments ago and the match is still settling", rule.Name);
+                _powerLog.LogInformation("AUTO Start skipped for rule '{Rule}': already run while the match settles", rule.Name);
             }
             else
             {
+                _lastAutostart = (rule.Id, DateTime.UtcNow);
                 foreach (var vmRef in _config.Current.VmRefs(rule.TargetVmIds))
                 {
                     _logger.LogInformation("Autostart: starting/resuming {Vm} ({Id}) for rule '{Rule}'", vmRef.Shown, vmRef.Id, rule.Name);
@@ -877,11 +890,33 @@ public sealed class NetworkMonitor : IDisposable
     // ── Hyper-V services per rule (issue #114) ──────────────────────────────────
 
     /// <summary>
-    /// Starts the services <paramref name="rule"/> asks for, vmms first, and waits for the VMs to be
-    /// readable when vmms had to start — the bind and the reconnects after this go through it. A failure
-    /// is logged and the pass carries on: the bind then fails and says so on the icon.
+    /// A rule counts as newly active whenever the match differs from the one before it, and a dock
+    /// settling flips the match between its rule and the fallback several times inside a minute or two.
+    /// A repeat inside this window is that flapping, not a return to the network, so the rule's
+    /// autostart does not run again; a genuine return after it still does.
     /// </summary>
-    private async Task StartRuleServicesAsync(NetworkRule rule)
+    private static readonly TimeSpan AutostartSettleWindow = TimeSpan.FromMinutes(2);
+
+    /// <summary>The rule whose autostart last ran, and when. Read and written only inside a pass, which
+    /// holds <c>_evalLock</c>.</summary>
+    private (string RuleId, DateTime At)? _lastAutostart;
+
+    private bool AutostartIsStillSettling(string ruleId) =>
+        _lastAutostart is { } last
+        && string.Equals(last.RuleId, ruleId, StringComparison.Ordinal)
+        && DateTime.UtcNow - last.At < AutostartSettleWindow;
+
+    /// <summary>
+    /// Starts the services <paramref name="rule"/> asks for, vmms first, and waits for the VMs to be
+    /// readable when vmms had to start — the bind and the reconnects after this go through it. A service
+    /// that will not start is logged and the pass carries on: the bind then fails and says so on the icon.
+    /// </summary>
+    /// <returns>
+    /// Null when the host is fit to be asked for a VM action, or the sentence saying why it is not.
+    /// A readiness wait that runs out is the second case: vmms reports running while its interface is
+    /// still not answering, and a start requested then goes out against a host that cannot serve it.
+    /// </returns>
+    private async Task<string?> StartRuleServicesAsync(NetworkRule rule)
     {
         bool startedVmms = false;
         foreach (var kind in rule.ServicesToStart())
@@ -901,7 +936,11 @@ public sealed class NetworkMonitor : IDisposable
 
         ThrowIfDisposing();
         if (startedVmms && !await _vm.WaitForStatesAsync(ServiceStatesTimeout))
+        {
             _logger.LogWarning("Rule '{Rule}': vmms is running, but the VMs could not be read yet", rule.Name);
+            return "Hyper-V was running but still not answering";
+        }
+        return null;
     }
 
     /// <summary>

@@ -3,44 +3,47 @@ using HyperVManagerTray.Models;
 namespace HyperVManagerTray.Helpers;
 
 /// <summary>
-/// What a failed VM start says, and where it is shown (issue #69). Pure text and decisions, so the
-/// balloon and the "Start &amp; Connect" report are testable without a tray icon or a Hyper-V host.
+/// What a failed VM power action says in a balloon, and whether the balloon is shown at all (issue
+/// #69). Pure text and decisions, so the announcement and the "Start &amp; Connect" report are testable
+/// without a tray icon or a Hyper-V host.
+///
+/// <para>The sentence comes from <see cref="VmFailureText"/> by way of
+/// <see cref="VmOperationProgress.Detail"/>, so the balloon, the card's tooltip and the published
+/// entity all say the same thing.</para>
 /// </summary>
 internal static class VmPowerUi
 {
-    /// <summary>What <see cref="WmiVmMapper.ProgressMessage"/> puts in front of Hyper-V's own reason.</summary>
-    private const string FailedPrefix = "Failed: ";
-
     /// <summary>
-    /// A failed start is announced even while the dashboard is open: the card's inline report is cut to
-    /// a few words and fades after 45 s, and an automatic start may concern a VM with no card at all.
-    /// Other failed power actions keep deferring to the card while the dashboard is visible.
+    /// A failed start is announced even while the dashboard is open: an automatic start may concern a
+    /// machine with no card at all, and the card's own report is one short line. Other failed power
+    /// actions keep deferring to the card while the dashboard is visible.
     /// </summary>
     internal static bool SuppressWhenDashboardVisible(VmOpKind kind) => kind != VmOpKind.Start;
 
-    /// <summary>Hyper-V's reason for a failure, taken from the progress message, or null when it gave none.</summary>
-    internal static string? Reason(string? progressMessage)
-    {
-        if (string.IsNullOrWhiteSpace(progressMessage)) return null;
-        var text = progressMessage.Trim();
-        if (!text.StartsWith(FailedPrefix, StringComparison.Ordinal)) return null;
-        var reason = text[FailedPrefix.Length..].Trim();
-        return reason.Length == 0 ? null : reason;
-    }
-
-    /// <summary>The balloon for a failed start: the VM, that it did not start, and why.</summary>
-    internal static string StartFailedMessage(string vmName, string? progressMessage) =>
-        $"'{vmName}' did not start. {ReasonSentence(progressMessage)}";
+    /// <summary>The balloon for any failed power action: the machine, what did not happen to it, and why.</summary>
+    internal static string FailedMessage(string vmName, VmOpKind kind, string? detail) =>
+        $"'{vmName}' {DidNot(kind)}. {ReasonSentence(detail)}";
 
     /// <summary>
-    /// "Start &amp; Connect" giving up: both halves — the VM did not start, and its console was not
+    /// "Start &amp; Connect" giving up: both halves — the machine did not start, and its console was not
     /// opened — with the reason, since this report can replace the start balloon on screen.
     /// </summary>
-    internal static string StartAndConnectAbandonedMessage(string vmName, string? progressMessage) =>
-        $"'{vmName}' did not start, so its console was not opened. {ReasonSentence(progressMessage)}";
+    internal static string StartAndConnectAbandonedMessage(string vmName, string? detail) =>
+        $"'{vmName}' did not start, so its console was not opened. {ReasonSentence(detail)}";
 
-    private static string ReasonSentence(string? progressMessage) =>
-        Reason(progressMessage) is { } reason
-            ? $"Hyper-V reported: {reason}"
-            : "Hyper-V gave no reason; see vm-power.log.";
+    /// <summary>What did not happen to the machine, as the balloon puts it.</summary>
+    private static string DidNot(VmOpKind kind) => kind switch
+    {
+        VmOpKind.Start    => "did not start",
+        VmOpKind.Resume   => "was not resumed",
+        VmOpKind.Pause    => "was not paused",
+        VmOpKind.Save     => "was not saved",
+        VmOpKind.Shutdown => "was not shut down",
+        _                 => "was not changed",
+    };
+
+    private static string ReasonSentence(string? detail) =>
+        string.IsNullOrWhiteSpace(detail)
+            ? "What happened is recorded in vm-power.log."
+            : detail.Trim();
 }

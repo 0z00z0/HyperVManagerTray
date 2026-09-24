@@ -95,8 +95,10 @@ public static class WmiVmMapper
     // ── Power-operation progress text ────────────────────────────────────────────
 
     /// <summary>
-    /// The message shown for a given operation phase. For a running job with a percent it produces
-    /// e.g. "Saving (47%)…"; for failure it is the raw WMI <c>ErrorDescription</c> passed through.
+    /// The short line the dashboard card shows for a given operation phase. For a running job with a
+    /// percent it produces e.g. "Saving (47%)…"; for a failure it is the card line
+    /// <see cref="VmFailureText"/> already built, which is short enough for the card's state column.
+    /// The sentence behind a failure travels beside this as <c>VmOperationProgress.Detail</c>.
     /// </summary>
     public static string ProgressMessage(VmOpKind kind, VmOpPhase phase, int? percent, string? error)
     {
@@ -111,8 +113,8 @@ public static class WmiVmMapper
                 return "";  // real state takes over
             case VmOpPhase.Failed:
                 return string.IsNullOrWhiteSpace(error)
-                    ? $"Failed to {Verb(kind)}"
-                    : $"Failed: {error.Trim()}";
+                    ? VmFailureText.NoReasonGiven(kind)
+                    : error.Trim();
             default:
                 return "";
         }

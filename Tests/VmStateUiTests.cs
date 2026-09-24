@@ -115,14 +115,18 @@ public class VmStateUiTests
         Assert.False(VmStateUi.IsOverlayExpired(VmOpKind.Save,  VmOpPhase.Running, TimeSpan.FromMinutes(10)));
     }
 
+    /// <summary>A start is accepted as a job and can fail more than a minute later, so an age-based
+    /// retirement drops the very message that carries the reason. A failure now leaves the card only by
+    /// being dismissed or by the machine reaching the state the operation was after.</summary>
     [Theory]
     [InlineData(VmOpKind.Start)]
     [InlineData(VmOpKind.Shutdown)]
     [InlineData(VmOpKind.Pause)]
-    public void IsOverlayExpired_Failed_ExpiresAfterLifetime_ForAnyKind(VmOpKind kind)
+    public void IsOverlayExpired_Failed_NeverExpiresByAge_ForAnyKind(VmOpKind kind)
     {
         Assert.False(VmStateUi.IsOverlayExpired(kind, VmOpPhase.Failed, TimeSpan.FromSeconds(44)));
-        Assert.True(VmStateUi.IsOverlayExpired(kind, VmOpPhase.Failed, VmStateUi.FailedOverlayLifetime));
+        Assert.False(VmStateUi.IsOverlayExpired(kind, VmOpPhase.Failed, TimeSpan.FromMinutes(45)));
+        Assert.False(VmStateUi.IsOverlayExpired(kind, VmOpPhase.Failed, TimeSpan.FromHours(12)));
     }
 
     [Fact]

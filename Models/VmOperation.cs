@@ -28,10 +28,18 @@ public enum VmOpPhase { Requested, Running, Succeeded, Failed }
 /// </summary>
 /// <param name="Percent">0–100 when the WMI job reports it; null otherwise.</param>
 /// <param name="Message">
-/// Human-readable status/failure text for the UI (e.g. "Requesting start…", "Saving (47%)…",
-/// "Failed: not enough memory") — built by <see cref="Helpers.WmiVmMapper.ProgressMessage"/>.
+/// The short line for the dashboard card's state column (e.g. "Requesting start…", "Saving (47%)…",
+/// "Not enough memory") — built by <see cref="Helpers.WmiVmMapper.ProgressMessage"/> and short enough
+/// for that column, so the card never cuts it mid-word.
 /// </param>
 /// <param name="VmId">The VM ID the operation acts on — what every listener keys by.</param>
 /// <param name="VmName">The VM's name, for balloons and logs only.</param>
+/// <param name="Detail">
+/// The sentence behind <paramref name="Message"/>: what was being done, what stopped it and what can be
+/// done about it, built by <see cref="Helpers.VmFailureText"/>. Carried separately so the card's
+/// tooltip, the balloon and the published entity all say the same thing while the card itself stays one
+/// short line. Null for every phase but a failure.
+/// </param>
 public readonly record struct VmOperationProgress(
-    string VmId, VmOpKind Kind, VmOpPhase Phase, int? Percent, string? Message, string VmName = "");
+    string VmId, VmOpKind Kind, VmOpPhase Phase, int? Percent, string? Message, string VmName = "",
+    string? Detail = null);
