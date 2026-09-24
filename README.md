@@ -18,7 +18,7 @@ When you move between networks — office LAN, home Wi-Fi, mobile hotspot — th
 
 The app watches for network changes in the background. The moment the host connects to a recognised network, the VM's NIC is automatically reconnected to the right Hyper-V virtual switch. If no rule matches, it falls back to the configured fallback switch (the Hyper-V **Default Switch** on a fresh install). All Hyper-V interaction — switch binding, VM NIC reconnects, VM status and power — goes through the native Hyper-V WMI providers (`root\virtualization\v2`); no PowerShell is involved. When a reconnect or switch bind **fails**, the app says so rather than pretending: the tray icon turns red and a balloon reports what could not be done.
 
-It also includes a **WinUI 3 dashboard** (left-click the tray icon) that shows the live host-network/switch status and a control card per managed VM — state, CPU / memory / VHD-size meters, and power buttons appropriate to the state. A rule can optionally **auto-start** its VMs when its network becomes active. A **Settings window** (right-click → **Settings…**) covers the whole configuration — managed VMs, network rules, fallback, adapter renaming, logging, startup — so nothing requires hand-editing a file (though that stays supported).
+It also includes a **WinUI 3 dashboard** (left-click the tray icon) that shows the live host-network/switch status and a control card per managed VM — state, CPU / memory / VHD-size meters, and power buttons appropriate to the state. A rule can optionally **auto-start** its VMs when its network becomes active. A **Settings window** (right-click → **Settings…**) covers the whole configuration — managed VMs, network rules, fallback, adapter renaming, logging — so nothing requires hand-editing a file (though that stays supported).
 
 ---
 
@@ -111,7 +111,7 @@ Output folder: `bin\Release\net10.0-windows10.0.26100.0\win-x64\publish\` (run `
 
 ### Auto-start with Windows
 
-**Settings → General → Run on startup** toggles auto-start at login. (This toggle used to live on the tray menu; it moved to Settings.)
+The tray menu's **Launch at startup** checkmark toggles auto-start at sign-in. It is the only place the setting is shown or changed.
 
 Because this app requires elevation (UAC), it **cannot** auto-start from a `HKCU\...\Run` entry — Windows launches Run-key items with a standard token and silently skips apps that demand administrator rights. Instead, the toggle creates a **Scheduled Task** with "Run with highest privileges" and a logon trigger. The task runs in your interactive session, so the tray icon still appears, with no UAC prompt at logon.
 
@@ -138,7 +138,7 @@ To inspect or verify it from PowerShell:
 schtasks /Query /TN "HyperVManagerTray" /V /FO LIST
 ```
 
-> **Migration note:** older versions wrote a value named `HyperVManagerTray` under `HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`. That entry never worked for this elevated app and is now removed automatically the first time you toggle **Run on startup**.
+> **Migration note:** older versions wrote a value named `HyperVManagerTray` under `HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`. That entry never worked for this elevated app and is now removed automatically the first time you toggle **Launch at startup**.
 
 ---
 
@@ -161,15 +161,16 @@ The tray menu is the **quick-command surface**; the Settings window is the compl
 | Item | Description |
 |---|---|
 | **⬆ Update available: vX.Y.Z** | Only shown when a newer release is published — opens the GitHub releases page |
+| **Settings…** | Opens the [Settings window](#settings-window) |
 | **Re-check network now** | Re-runs rule matching, applies any change, and reports the result |
 | **Override VM switch (until next network change) ▶** | Force a managed VM onto a specific switch — transient, undone by the next network change |
 | **Manage VMs ▶** | Every VM on the host as a checkable list: a checkmark means this app manages it. Click an unmanaged VM to start managing it, a managed one to stop (with one confirmation) |
-| **Settings…** | Opens the [Settings window](#settings-window) |
 | **Check for updates** | Runs an update check now and reports the answer either way — including "you're up to date", which the badge above can never say |
+| **Launch at startup** | Checkmark: the app starts at sign-in through an elevated scheduled task. The tick is re-read from the task itself each time the menu opens |
 | **About…** | Version, links, licences, check for updates |
 | **Exit** | Stops the application |
 
-Items from older versions didn't vanish — they moved to Settings: **Repair host networking** and the config/log actions are under Settings → Maintenance, **Add current network as bridged** is under Settings → Network, and **Run on startup** is under Settings → General.
+Items from older versions didn't vanish — they moved to Settings: **Repair host networking** and the config/log actions are under Settings → Maintenance, and **Add current network as bridged** is under Settings → Network.
 
 ## Settings window
 
@@ -177,7 +178,7 @@ Right-click the tray icon → **Settings…**. Seven sections in a sidebar; ever
 
 | Section | What's there |
 |---|---|
-| **General** | Run on startup (the elevated scheduled task); log level for all of the app's log files |
+| **General** | Log level for all of the app's log files |
 | **Managed VMs** | The VMs this app looks after: add one from the host's VMs or remove one, the network adapter each is reconnected through, and an optional action (pause / save / shutdown, after a configurable delay) when the bridged network is lost. Settings that name something not identified on this host are listed here as needing attention |
 | **Network** | The rules editor — add, edit, remove and re-prioritise rules; **Add current network** captures the live adapter's MAC and subnet in one step; the fallback switch and target VMs; the transient per-VM switch override. Each rule can also start or stop each Hyper-V service when it becomes active: a start runs before any VM starts, and a stop waits for the rule's delay, is dropped if the network changes first, saves every running VM on the host before stopping, and is skipped while the rule auto-starts VMs |
 | **Adapters** | Rename a physical adapter. Note this renames the adapter's **description** (what Device Manager, Hyper-V Manager and this app show) — not its Windows connection name/alias. Renaming briefly drops that adapter's connection; only real physical NICs are listed, and a rename can be reset to the factory name |
@@ -475,7 +476,7 @@ from a slow one by comparing two consecutive opens.
 
 | Symptom | Likely cause |
 |---|---|
-| UAC prompt on every launch | Normal — required for Hyper-V access. Enable **Settings → General → Run on startup** for a prompt-free elevated auto-start. |
+| UAC prompt on every launch | Normal — required for Hyper-V access. Enable the tray menu's **Launch at startup** for a prompt-free elevated auto-start. |
 | Status shows "Fallback" on the office LAN | MAC or CIDR in the rule does not match — check `switcher.log` |
 | VM card shows "Unknown" / no CPU·memory meters | The configured VM name doesn't match a VM on the host, or the VM isn't running (only running VMs report metrics) |
 | Tray icon turns red / a balloon reports a failure | A switch bind or VM reconnect failed — commonly the account lacks Hyper-V Administrator rights, or the named switch doesn't exist. Details in `switcher.log`. |

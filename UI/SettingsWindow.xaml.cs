@@ -18,7 +18,7 @@ namespace HyperVManagerTray.UI;
 
 /// <summary>
 /// The consolidated Settings window — a left-nav <see cref="NavigationView"/> (issue #23) with one
-/// category per pane item: General (run-on-startup, log level), Managed VMs (per-VM on-bridge-lost
+/// category per pane item: General (log level), Managed VMs (per-VM on-bridge-lost
 /// action + delay), Network (the full rules editor + editable fallback switch/target-VMs — values that
 /// were previously reachable only by hand-editing config.json), Adapters (rename a physical NIC's
 /// description), MQTT (the shared <see cref="MqttSettingsPanel"/>, hosted whole — this window supplies
@@ -45,7 +45,6 @@ internal sealed partial class SettingsWindow : Window
     // rather than picked round, and unit-tested there without a GUI. See issue #31.
 
     private readonly ConfigManager    _config;
-    private readonly StartupManager   _startup;
     private readonly AppUpdate        _update;
     private readonly AdapterRenameFlow _renameFlow;
     private readonly DispatcherQueue  _ui;
@@ -81,16 +80,11 @@ internal sealed partial class SettingsWindow : Window
     // synchronously to completion before anything else can fire.
     private bool _updating;
 
-    // Set once the user physically flips the startup toggle, so the initial background schtasks read
-    // (which finishes ~1-2 s later) can't clobber a deliberate user action with a now-stale value.
-    private bool _userToggledStartup;
-
-    // Set in the Closed handler so any in-flight background callback (schtasks read, adapter
-    // enumeration, an error toast) early-returns instead of touching a torn-down window.
+    // Set in the Closed handler so any in-flight background callback (adapter enumeration, an error
+    // toast) early-returns instead of touching a torn-down window.
     private bool _closed;
 
-    private ComboBox?     _logLevelCombo;
-    private ToggleSwitch? _startupToggle;
+    private ComboBox? _logLevelCombo;
 
     // Network rules editor (issue #23). _workingRules is the UI's authoritative copy while the window is
     // open (deep copies of config rules); edits mutate it in place and persist via _config.SaveRules, so
@@ -182,13 +176,12 @@ internal sealed partial class SettingsWindow : Window
     /// single explanatory card instead of the panel: a settings category that silently disappears is
     /// harder to explain than one that says why it is empty.
     /// </param>
-    public SettingsWindow(ConfigManager config, StartupManager startup, AppUpdate update,
+    public SettingsWindow(ConfigManager config, AppUpdate update,
                           NetworkMonitor monitor, HyperVManager hyperV,
                           Action<string, string, bool> notify, MqttService? mqtt)
     {
         _consumerSink  = _sectionConsumers;   // RebuildRuleCards swaps this while it builds
         _config        = config;
-        _startup       = startup;
         _update        = update;
         _monitor       = monitor;
         _mqtt          = mqtt;
@@ -279,7 +272,6 @@ internal sealed partial class SettingsWindow : Window
     private void OnClosed(object sender, WindowEventArgs e)
     {
         _closed = true;
-        if (_startupToggle is not null) _startupToggle.Toggled         -= OnStartupToggled;
         if (_logLevelCombo is not null) _logLevelCombo.SelectionChanged -= OnLogLevelChanged;
 
         // An in-flight broker probe outlives this window by up to its own budget, and marshalling back
@@ -716,20 +708,8 @@ internal sealed partial class SettingsWindow : Window
     {
         var panel = Section("General");
 
-        // Run on startup — the tray toggle moved here. IsEnabled reflects the scheduled task, read
-        // off the UI thread (schtasks can take up to a couple of seconds).
-        _startupToggle = new ToggleSwitch { OnContent = "On", OffContent = "Off" };
-        _startupToggle.Toggled += OnStartupToggled;
-        // The description says what the SETTING does, not what the control is doing while it loads
-        // (issue #42): "Off until the status loads." leaked this window's own async read into a
-        // sentence meant to explain the feature. The brief pre-load Off state is not a lie the user
-        // needs warning about — LoadStartupStateAsync corrects it in place, and _userToggledStartup
-        // makes a toggle during the load win rather than be clobbered.
-        panel.Children.Add(SettingRow(
-            "Run on startup",
-            "Start automatically at sign-in (elevated scheduled task).",
-            _startupToggle));
-        LoadStartupStateAsync();
+        // Run at logon is the tray menu's "Launch at startup" tick and nowhere else, so that the
+        // setting has one place to be read and changed.
 
         // Log level — previously only editable by hand in config.json.
         _logLevelCombo = new ComboBox { MinWidth = 200 };
@@ -743,62 +723,6 @@ internal sealed partial class SettingsWindow : Window
             _logLevelCombo));
 
         return panel;
-    }
-
-    private void LoadStartupStateAsync() => Task.Run(() =>
-    {
-        bool enabled;
-        try   { enabled = _startup.IsEnabled; }
-        catch { enabled = false; }
-        _ui.TryEnqueue(() =>
-        {
-            // Don't clobber a torn-down window, nor a value the user has since set by hand.
-            if (_closed || _userToggledStartup) return;
-            WithUpdatingSuppressed(() =>
-            {
-                if (_startupToggle is not null) _startupToggle.IsOn = enabled;
-            });
-        });
-    });
-
-    private void OnStartupToggled(object sender, RoutedEventArgs e)
-    {
-        if (_updating || _startupToggle is null) return;
-        _userToggledStartup = true;   // a real user action — the initial load must not overwrite it
-        bool wanted = _startupToggle.IsOn;
-        Task.Run(() =>
-        {
-            try
-            {
-                if (wanted)
-                    _startup.Enable(Environment.ProcessPath
-                        ?? throw new InvalidOperationException("Cannot determine executable path."));
-                else
-                    _startup.Disable();
-            }
-            catch (Exception ex)
-            {
-                _ui.TryEnqueue(() =>
-                {
-                    if (_closed) return;
-                    NativeMethods.Warn(
-                        $"Could not change the startup setting:\n\n{ex.Message}", AppInfo.Name);
-                });
-            }
-
-            // Re-sync to the task's real state (the write may have failed or been overridden).
-            bool actual;
-            try   { actual = _startup.IsEnabled; }
-            catch { actual = false; }
-            _ui.TryEnqueue(() =>
-            {
-                if (_closed) return;
-                WithUpdatingSuppressed(() =>
-                {
-                    if (_startupToggle is not null) _startupToggle.IsOn = actual;
-                });
-            });
-        });
     }
 
     private void OnLogLevelChanged(object sender, SelectionChangedEventArgs e)
@@ -2034,7 +1958,7 @@ internal sealed partial class SettingsWindow : Window
     /// way to pick up VMs/rules added or removed by an out-of-band edit; every populate path is already
     /// re-entrancy-guarded (<see cref="WithUpdatingSuppressed"/>) so the rebuild itself commits nothing.
     /// The visible category is preserved (panel visibility is owned by the nav, which BuildSections leaves
-    /// untouched). _userToggledStartup is reset so the fresh startup toggle re-reads the real task state.
+    /// untouched).
     /// </summary>
     /// <param name="keepReloadResult">
     /// True ONLY from the "Reload config from disk" button, which has just done the disk read
@@ -2054,7 +1978,6 @@ internal sealed partial class SettingsWindow : Window
     {
         if (_closed) return;
         if (!keepReloadResult) _reloadResultMessage = null;
-        _userToggledStartup = false;
         try { BuildSections(); }
         catch (Exception ex) { AppInfo.AppendCrashLogLine("SettingsWindow", $"RefreshValuesFromConfig: {ex}"); }
     }

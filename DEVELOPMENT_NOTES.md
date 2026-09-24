@@ -167,7 +167,7 @@ self-contained deployments**, returning null and failing to initialise.
 
 ### 9. `HKCU\…\Run` cannot auto-start an elevated app
 The app is `requireAdministrator`. Windows launches `Run`-key items with a **standard token**
-and silently skips apps that demand elevation — so the old "Run on startup" never actually
+and silently skips apps that demand elevation — so the old Run-key auto-start never actually
 started it (and didn't even show in Task Manager until reopened).
 
 **Fix (`StartupManager`):** a Scheduled Task with `/SC ONLOGON /RL HIGHEST`. It runs in the

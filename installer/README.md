@@ -30,7 +30,7 @@ wizard shows the app icon (`app.ico`) in the `[Setup]` `SetupIconFile` entry.
 - **"Run at startup"** (optional, off by default) creates a `/RL HIGHEST /SC ONLOGON` scheduled
   task via an elevated `schtasks` (one UAC prompt, only if you tick it). That task then starts
   the elevated app at every sign-in with **no** boot-time prompt. It uses the same task name as
-  the app's tray **Run on startup** toggle, so the two stay in sync.
+  the app's tray **Launch at startup** checkmark, so the two stay in sync.
 - **Post-install launch** runs the logon task if it exists (no prompt), otherwise shell-launches
   the exe (the single UAC prompt). It never uses a `[Run]` entry — `CreateProcess` can't start a
   `requireAdministrator` exe.

@@ -15,7 +15,8 @@ namespace HyperVManagerTray.UI;
 /// H.NotifyIcon builds a native Win32 popup menu from <see cref="Flyout"/> on every right-click
 /// and invokes each item's <c>Command</c> (the XAML <c>Click</c>/<c>Opening</c> events do NOT
 /// fire for the native menu).  Items are created once with command bindings; <see cref="RefreshState"/>
-/// resyncs the dynamic parts (override list, managed-VM list) right before the menu opens.
+/// resyncs the dynamic parts (override list, managed-VM list, the "Launch at startup" tick) right
+/// before the menu opens.
 /// </summary>
 /// <remarks>
 /// <para><b>The tray is the QUICK-COMMAND surface; Settings is the complete superset</b> (issue #34,
@@ -49,6 +50,10 @@ internal sealed class TrayMenu
     // fact, but a user browsing the menu deserves to know before they click.
     private readonly MenuFlyoutSubItem _overrideMenu   = new() { Text = "Override VM switch (until next network change)" };
     private readonly MenuFlyoutSubItem _manageVmsMenu  = new() { Text = "Manage VMs" };
+
+    // "Run at Windows logon", as a checkmark. The tick is the only place this state is shown or
+    // changed — the Settings window carries no startup control.
+    private readonly ToggleMenuFlyoutItem _startupItem = new() { Text = "Launch at startup" };
 
     private MenuFlyoutItem? _updateBadge;
     private BrandAboutWindow? _aboutWindow;
@@ -92,29 +97,41 @@ internal sealed class TrayMenu
 
         Flyout = new MenuFlyout();
 
-        // ── The quick commands (see the class remarks for what is deliberately NOT here) ──
+        // The target state is the item's own tick flipped, not a fresh read of the scheduler: reading
+        // again here would race the click against whatever the last background read left behind.
+        _startupItem.Command = new RelayCommand(() =>
+        {
+            LogClick("Launch at startup");
+            ToggleStartup(!_startupItem.IsChecked);
+        });
+
+        // The shape ChargeKeeper's menu uses (issue #46): Settings alone at the top, then the quick
+        // commands, then the update check beside the startup tick, then About, then Exit — one group
+        // each. See the class remarks for what is deliberately NOT among the quick commands.
+        Add("Settings…", ShowSettings);
+        Flyout.Items.Add(new MenuFlyoutSeparator());
+
         Add("Re-check network now", () => _ = _network.ReCheckNetworkAsync());
         Flyout.Items.Add(_overrideMenu);
         Flyout.Items.Add(_manageVmsMenu);
         Flyout.Items.Add(new MenuFlyoutSeparator());
 
-        // The window group, ordered as ChargeKeeper orders its own (issue #46): Settings…, then
-        // Check for updates, then About…, then Exit. Each opens a window rather than acting on the
-        // host, which is why "Check for updates" belongs here and not among the quick commands above.
-        //
-        // It is NOT redundant with the "Update available" badge, and the two must not be conflated:
-        // the badge appears only when a background check has ALREADY found a newer version, and it
-        // jumps straight to the release page. This item is the user ASKING — it runs a check now and
-        // reports the answer either way, including "you are up to date", which the badge can never
-        // say (its absence is indistinguishable from "not checked yet"). Restoring it fixes the
-        // regression Espen reported: without it the tray offered no way to ask.
+        // "Check for updates" is NOT redundant with the "Update available" badge, and the two must not
+        // be conflated: the badge appears only when a background check has ALREADY found a newer
+        // version, and it jumps straight to the release page. This item is the user ASKING — it runs a
+        // check now and reports the answer either way, including "you are up to date", which the badge
+        // can never say (its absence is indistinguishable from "not checked yet").
         //
         // Settings → Maintenance → Updates keeps its own row; that is #34's Settings-is-the-superset
         // rule working as intended, not a duplicate. All three routes call the one flow below.
-        Add("Settings…",         ShowSettings);
         Add("Check for updates", () => _ = CheckForUpdatesAsync());
-        Add("About…",            ShowAbout);
-        Add("Exit",              onExit);
+        Flyout.Items.Add(_startupItem);
+        Flyout.Items.Add(new MenuFlyoutSeparator());
+
+        Add("About…", ShowAbout);
+        Flyout.Items.Add(new MenuFlyoutSeparator());
+
+        Add("Exit", onExit);
 
         RefreshState();
     }
@@ -124,7 +141,47 @@ internal sealed class TrayMenu
     {
         RebuildOverrideMenu();
         RebuildManageVmsMenu();
+        QueueStartupRefresh();
     }
+
+    // ── Launch at startup ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Re-reads the logon task and re-ticks the item. Off the UI thread: the scheduler read can take
+    /// a couple of seconds, and the right-click path must not block on it. Every menu open starts one,
+    /// and every change to the setting ends in one, so the tick tracks the task rather than a value
+    /// captured once.
+    /// </summary>
+    private void QueueStartupRefresh() => Task.Run(() =>
+    {
+        var enabled = _startup.IsEnabled;   // never throws: absent, disabled and unreachable all read Off
+        _ui.TryEnqueue(() => _startupItem.IsChecked = enabled);
+    });
+
+    /// <summary>
+    /// Registers or deletes the logon task, off the UI thread because the write can block for seconds.
+    /// A failure is reported and then re-read, so a write that did not take cannot leave the tick
+    /// claiming it did.
+    /// </summary>
+    private void ToggleStartup(bool enable) => Task.Run(() =>
+    {
+        try
+        {
+            if (enable)
+                _startup.Enable(Environment.ProcessPath
+                    ?? throw new InvalidOperationException("Cannot determine executable path."));
+            else
+                _startup.Disable();
+        }
+        catch (Exception ex)
+        {
+            NativeMethods.Warn($"Could not change the startup setting:\n\n{ex.Message}", AppInfo.Name);
+        }
+        finally
+        {
+            QueueStartupRefresh();
+        }
+    });
 
     // ── Manage VMs ──────────────────────────────────────────────────────────────
 
@@ -310,7 +367,7 @@ internal sealed class TrayMenu
             }
 
             UiActivityLog.Logger.LogInformation("Window: Settings opened");
-            _settingsWindow = new SettingsWindow(_config, _startup, _update, _monitor, _hyperV,
+            _settingsWindow = new SettingsWindow(_config, _update, _monitor, _hyperV,
                                                  _notify, _mqtt());
             _settingsWindow.Closed += (_, _) =>
             {
