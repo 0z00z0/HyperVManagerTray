@@ -70,12 +70,20 @@ public class MqttConfigStoreTests : IDisposable
     /// <see cref="Changed_IsRaisedOffTheThreadThatWrote"/>.</summary>
     private static MqttConfigStore InlineStore(ConfigManager config) => new(config, work => work());
 
+    /// <summary>The rule identifier in <see cref="PopulatedConfig"/>, in the shape
+    /// <c>ConfigIdentityMigration.NewRuleId</c> writes and every config the app has saved carries. A rule
+    /// that arrives without one is given a fresh identifier by the load, and the identifier is inside the
+    /// projection <c>AffectsNetwork</c> compares — so a fixture that omits it cannot express an edit that
+    /// leaves the network alone.</summary>
+    private const string OfficeRuleId = "11112222333344445555666677778888";
+
     /// <summary>A config with something in every section, so a write that drops one is visible.</summary>
     private static AppConfig PopulatedConfig() => new()
     {
         VirtualMachines = [new VmTarget { Id = "Dev", Name = "Dev", NicName = "Network Adapter",
                                           OnBridgeLostAction = "pause", OnBridgeLostDelaySeconds = 30 }],
-        Rules           = [new NetworkRule { Name = "Office", Priority = 1, SwitchId = "Bridged",
+        Rules           = [new NetworkRule { Id = OfficeRuleId, Name = "Office", Priority = 1,
+                                             SwitchId = "Bridged",
                                              TargetVmIds = ["Dev"], AutoStart = true,
                                              Conditions = new RuleConditions { IpCidr = "10.0.0.0/24" } }],
         Fallback        = new FallbackAction { SwitchId = "Default Switch", TargetVmIds = ["Dev"] },
@@ -597,7 +605,12 @@ public class MqttConfigStoreTests : IDisposable
 
     /// <summary>Second save path: the debounced file watcher. A hand-edit is classified by exactly the
     /// same rule as an in-app write, so editing the broker host by hand must no more move a VM's switch
-    /// than the settings panel that writes the same field.</summary>
+    /// than the settings panel that writes the same field.
+    ///
+    /// <para>The fixture's rule carries <see cref="OfficeRuleId"/>, which is what makes this a broker-only
+    /// edit: a rule arriving without an identifier is given one by the load, and that is a network change
+    /// in its own right — pinned by
+    /// <see cref="AConfigWhoseRulesCarryNoIdentifier_ReadsAsANetworkChange"/>.</para></summary>
     [Fact]
     public async Task AHandEditToTheMqttSection_DoesNotAffectTheNetwork()
     {
@@ -620,6 +633,46 @@ public class MqttConfigStoreTests : IDisposable
         File.WriteAllText(path, JsonSerializer.Serialize(edited, WriteOpts));
         Assert.True(await seen.WaitAsync(TimeSpan.FromSeconds(10)), "the file watcher never fired");
         Assert.Equal([false, true], affected);
+    }
+
+    /// <summary>
+    /// The other half of the classification, pinned rather than fixed. A rule with no identifier is given a
+    /// fresh one by every load, and the identifier is inside the compared projection — the monitor finds a
+    /// rule by it, its skip guard matches on it and its auto-start repeat guard is keyed on it — so a file
+    /// whose rules carry none re-evaluates the network on ANY reload, a broker-only edit included.
+    ///
+    /// <para>Accepted, and self-closing: the identity migration writes the identifiers down on the first
+    /// run, after which the same edit is classified as leaving the network alone. Excluding the identifier
+    /// from the comparison instead would only defer the re-evaluation to the next network event, and would
+    /// put a conditional entry in a list whose safety comes from holding plain property names. Pinned here
+    /// so the answer cannot move unnoticed.</para>
+    /// </summary>
+    [Fact]
+    public async Task AConfigWhoseRulesCarryNoIdentifier_ReadsAsANetworkChange()
+    {
+        // Null, not empty: WhenWritingNull drops the property, so the file carries no `id` key at all —
+        // the shape a rule hand-written into config.json has.
+        static AppConfig WithoutRuleId()
+        {
+            var cfg = PopulatedConfig();
+            cfg.Rules[0].Id = null!;
+            return cfg;
+        }
+
+        var path = WriteTempConfig(WithoutRuleId());
+        using var config = MakeManager(path);
+
+        var affected = new List<bool>();
+        using var seen = new SemaphoreSlim(0);
+        config.ConfigReloaded += (_, e) => { affected.Add(e.AffectsNetwork); seen.Release(); };
+
+        var edited = WithoutRuleId();
+        edited.Mqtt.Settings.Enabled = true;
+        edited.Mqtt.Settings.Host = "broker.lan";
+        File.WriteAllText(path, JsonSerializer.Serialize(edited, WriteOpts));
+
+        Assert.True(await seen.WaitAsync(TimeSpan.FromSeconds(10)), "the file watcher never fired");
+        Assert.Equal([true], affected);
     }
 
     // ── The snapshot is built inside the save lock (the issue #31 bug class) ──────
