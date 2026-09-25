@@ -32,23 +32,42 @@ internal static class Shell
     }
 
     /// <summary>
-    /// Opens Hyper-V's VM Connection (<c>vmconnect.exe</c>) for the VM with <paramref name="vmId"/> on the
-    /// local host — by its ID (<c>-G</c>), since a name may be shared by two VMs — warning the user if the
-    /// Hyper-V tools aren't installed.
+    /// The command line <c>vmconnect.exe</c> is started with for the VM with <paramref name="vmId"/> on
+    /// the local host, or <c>null</c> when that is not a well-formed VM ID.
+    ///
+    /// <para>The VM is named by its ID (<c>-G</c>) and never by its name, because two VMs may share a
+    /// name. <paramref name="settingsOnly"/> adds <c>/edit</c>, which opens the connection's own settings
+    /// dialog — display size, saved credentials and which local resources the session may reach — instead
+    /// of the console. Hyper-V's documented switch, and it combines with <c>-G</c>.</para>
     /// </summary>
-    public static void OpenVmConnect(string vmId)
+    internal static string? VmConnectArguments(string vmId, bool settingsOnly)
     {
         // Only a well-formed GUID reaches the command line.
-        if (!Guid.TryParse(HostIdentity.Bare(vmId), out var guid)) return;
+        if (!Guid.TryParse(HostIdentity.Bare(vmId), out var guid)) return null;
+        return settingsOnly ? $"localhost -G {guid:D} /edit" : $"localhost -G {guid:D}";
+    }
+
+    /// <summary>
+    /// Opens Hyper-V's VM Connection (<c>vmconnect.exe</c>) for the VM with <paramref name="vmId"/> on the
+    /// local host — its console, or with <paramref name="settingsOnly"/> the connection settings dialog —
+    /// warning the user if the Hyper-V tools aren't installed.
+    /// </summary>
+    /// <param name="vmName">Used in that warning only, so it can say which machine could not be opened.
+    /// The launch itself never carries a name.</param>
+    public static void OpenVmConnect(string vmId, bool settingsOnly = false, string? vmName = null)
+    {
+        var arguments = VmConnectArguments(vmId, settingsOnly);
+        if (arguments is null) return;
         try
         {
-            Process.Start(new ProcessStartInfo("vmconnect.exe", $"localhost -G {guid:D}")
-                { UseShellExecute = true });
+            Process.Start(new ProcessStartInfo("vmconnect.exe", arguments) { UseShellExecute = true });
         }
         catch
         {
+            var what    = settingsOnly ? "connection settings" : "connection window";
+            var machine = string.IsNullOrWhiteSpace(vmName) ? "this machine" : vmName;
             NativeMethods.Warn(
-                "Could not open VM Connection.\n\nEnsure Hyper-V Manager tools are installed.",
+                $"The {what} could not be opened for {machine}.\n\nEnsure the Hyper-V management tools are installed.",
                 AppInfo.Name);
         }
     }

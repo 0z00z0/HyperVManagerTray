@@ -711,7 +711,7 @@ public sealed partial class DashboardWindow : Window
         public required TextBlock   State;
         public required TextBlock   Subtitle;
         public required TextBlock   Ip;            // right-justified IPv4 on the subtitle line
-        public required StackPanel  ButtonsPanel;   // power buttons — disabled while an op is in flight
+        public required CardButtonRow ButtonsPanel; // power buttons — disabled while an op is in flight
         public TextBlock?   Uptime;
         public TextBlock?   CpuValue;
         public ProgressBar? CpuBar;
@@ -1031,10 +1031,12 @@ public sealed partial class DashboardWindow : Window
         return true;
     }
 
+    // Control, not Button: Connect is a SplitButton, which is not a Button, and a row left half-live
+    // during an operation would still open the connection settings.
     private static void SetButtonsEnabled(VmCard card, bool enabled)
     {
         foreach (var child in card.ButtonsPanel.Children)
-            if (child is Button b) b.IsEnabled = enabled;
+            if (child is Control c) c.IsEnabled = enabled;
     }
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..(max - 1)] + "…";
@@ -1305,29 +1307,36 @@ public sealed partial class DashboardWindow : Window
     }
 
     /// <summary>
-    /// Horizontal padding of a card's action buttons. Trimmed 8 → 6 when the brand mono face landed
-    /// (issue #44), because this non-wrapping row is the one place the dashboard's fixed 320 DIP width
-    /// genuinely binds. The worst case is a Running VM — "Shut down" + "Pause" + "Save" + "Connect":
+    /// Horizontal padding of a card's action buttons, and the arithmetic the row's width turns on. This
+    /// non-wrapping row is the one place the dashboard's width floor genuinely binds, so the padding is
+    /// 6 rather than the stock 11: at 11 px these captions are already small, and shrinking the text is a
+    /// worse trade than shaving padding.
     ///
-    ///   available = 320 - Root padding (20+20) - card padding (10+10) - card border (1+1) = 258 DIP
+    /// The worst case is a Running VM — "Shut down" + "Pause" + "Save" + "Connect", where Connect is a
+    /// split button:
+    ///
+    ///   available = 340 floor - Root padding (20+20) - card padding (10+10) - card border (1+1) = 278 DIP
     ///   captions at 11 px Cascadia Mono (0.586 em/char, measured from the shipped .ttf) = 161.1
-    ///   button chrome = (6 + 6 padding + 1 + 1 border) × 4 = 56;  spacing = 6 × 3 gaps = 18
-    ///   total = 235.1 DIP  → ~23 DIP of slack
+    ///   three plain buttons = (6 + 6 padding + 1 + 1 border) × 3 = 42;  spacing = 6 × 3 gaps = 18
+    ///   Connect's chevron half = a fixed 35 DIP column plus a 1 DIP separator, and no primary border
+    ///   total = 269.1 DIP  → ~9 DIP of slack
     ///
-    /// At the previous padding of 8 the same row measured ~251 of 258 — it still fitted, but on ~7 DIP
-    /// of slack, less than a single character, with no margin for the difference between that measure
-    /// and DirectWrite's own. The trim restores the ~25 DIP the row had in the default sans (~233 of
-    /// 258), i.e. this keeps the row's density where it was rather than making it tighter.
+    /// The chevron is what sets <see cref="DashboardSizing.MinContentWidth"/>: it costs ~34 DIP more than
+    /// the same caption as a Button, which the previous 320 floor had no room for. WinUI's own SplitButton
+    /// template sizes that column from <c>SplitButtonSecondaryButtonSize</c>, declared 35 DIP beside the
+    /// control and 32 in the framework's older dictionary — the row fits at either.
     ///
-    /// The font size is deliberately NOT reduced: at 11 px these captions are already small, and
-    /// shrinking text is a worse trade than shaving padding. If a future verb set overflows anyway,
-    /// the fix is to let the row wrap, not to shrink it further.
+    /// A row that still cannot fit keeps every caption at its natural width and overflows rather than
+    /// cutting one (<see cref="CardButtonRow"/>).
     /// </summary>
     private const double CardButtonPaddingX = 6;
 
-    private StackPanel BuildButtons(VmTarget vm, VmStatus? s)
+    /// <summary>Gap between adjacent buttons on a card's action row, in DIP.</summary>
+    private const double CardButtonSpacing = 6;
+
+    private CardButtonRow BuildButtons(VmTarget vm, VmStatus? s)
     {
-        var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(0, 2, 0, 0) };
+        var panel = new CardButtonRow { Spacing = CardButtonSpacing, Margin = new Thickness(0, 2, 0, 0) };
 
         // Power actions are synchronous, non-blocking fire-and-forget calls: BeginPowerAction
         // raises the optimistic "Requesting …" overlay before returning, then reports live
@@ -1335,9 +1344,10 @@ public sealed partial class DashboardWindow : Window
         // itself from that event and from the state watcher.
         void PowerBtn(string text, VmOpKind kind) => panel.Children.Add(new Button
         {
-            Content  = text,
-            FontSize = 11,
-            Padding  = new Thickness(CardButtonPaddingX, 3, CardButtonPaddingX, 3),
+            Content             = text,
+            FontSize            = 11,
+            Padding             = new Thickness(CardButtonPaddingX, 3, CardButtonPaddingX, 3),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             Command  = new RelayCommand(() =>
             {
                 UiActivityLog.Logger.LogInformation("Dashboard: {Command} '{Vm}' ({Id})", text, vm.Name, vm.Id);
@@ -1345,18 +1355,55 @@ public sealed partial class DashboardWindow : Window
             }),
         });
 
-        // The two actions that also launch vmconnect.exe still need an awaited Task.
+        // The actions that bring a service or a machine up before opening a console need an awaited Task.
         void TaskBtn(string text, Func<Task> action) => panel.Children.Add(new Button
         {
-            Content  = text,
-            FontSize = 11,
-            Padding  = new Thickness(CardButtonPaddingX, 3, CardButtonPaddingX, 3),
+            Content             = text,
+            FontSize            = 11,
+            Padding             = new Thickness(CardButtonPaddingX, 3, CardButtonPaddingX, 3),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             Command  = new RelayCommand(() =>
             {
                 UiActivityLog.Logger.LogInformation("Dashboard: {Command} '{Vm}' ({Id})", text, vm.Name, vm.Id);
                 _ = action();
             }),
         });
+
+        // Connect carries a second action, so it is a SplitButton: the main half opens the console exactly
+        // as the plain button did, and the chevron offers Hyper-V's own connection settings dialog for the
+        // same machine. Built the way the Settings window builds its drop-downs — a MenuFlyout of
+        // MenuFlyoutItems, each with a RelayCommand. Both alignments are set because the stock SplitButton
+        // style pins itself Left and Center, which would leave it short of the share the row gives it.
+        void ConnectSplitBtn()
+        {
+            var connect = new SplitButton
+            {
+                Content             = "Connect",
+                FontSize            = 11,
+                Padding             = new Thickness(CardButtonPaddingX, 3, CardButtonPaddingX, 3),
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment   = VerticalAlignment.Stretch,
+                Command             = new RelayCommand(() =>
+                {
+                    UiActivityLog.Logger.LogInformation("Dashboard: Connect '{Vm}' ({Id})", vm.Name, vm.Id);
+                    _ = ConnectAsync(vm);
+                }),
+            };
+
+            var menu = new MenuFlyout();
+            menu.Items.Add(new MenuFlyoutItem
+            {
+                Text    = "Connection settings…",
+                Command = new RelayCommand(() =>
+                {
+                    UiActivityLog.Logger.LogInformation("Dashboard: Connection settings '{Vm}' ({Id})", vm.Name, vm.Id);
+                    Shell.OpenVmConnect(vm.Id, settingsOnly: true, vmName: vm.Name);
+                }),
+            });
+            connect.Flyout = menu;
+
+            panel.Children.Add(connect);
+        }
 
         // A service is down (issue #114): the one offer is Start, which brings the services up and then
         // the VM. With vmms down the VM's state is unknown, so Start is always offered; with only the
@@ -1381,7 +1428,7 @@ public sealed partial class DashboardWindow : Window
         if (allowed.Contains(VmOpKind.Start))
             TaskBtn("Start & Connect", () => StartAndConnectAsync(vm));
         if (VmStateUi.CanConnect(s?.State))
-            TaskBtn("Connect", () => ConnectAsync(vm));
+            ConnectSplitBtn();
         return panel;
     }
 
