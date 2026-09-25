@@ -25,7 +25,7 @@ public readonly record struct SplitRow(
 /// inside a card that shrank with the window: Auto could demand more than the row had, Star was
 /// starved toward zero, and the WRAPPING description degenerated into one character per line. Here
 /// the Auto child is a single IPv4 (<c>VmService.ReadIps</c> selects one dotted, colon-free address),
-/// so it is bounded at 15 characters ≈ 113 DIP of a 258 DIP row — Star always keeps ≥ 144 DIP and
+/// so it is bounded at 15 characters ≈ 106 DIP of a 278 DIP row — Star always keeps ≥ 164 DIP and
 /// cannot starve. The Star text is also NoWrap, so it truncates rather than collapsing. The sub-row
 /// truncates for an ordinary reason: the popup's width was a hard-pinned constant (320) and the value
 /// is simply longer than the budget. #31's fix (stack the control beneath the text) would be actively
@@ -67,11 +67,16 @@ public static class DashboardSizing
     public const double MonoAdvanceEm = 1200.0 / 2048.0;
 
     /// <summary>
-    /// Floor for the popup's content width (DIP) — the width it has always opened at, kept as the
-    /// minimum so a host with short VM names sees exactly the popup it sees today. Issue #57 turned
-    /// this from a hard pin into the bottom of a band.
+    /// Floor for the popup's content width (DIP) — the bottom of the band, so a host with short VM names
+    /// still gets a popup wide enough for everything a card has to show.
+    ///
+    /// <para>What sets it is the widest action row a card can hold: a Running machine's Shut down, Pause,
+    /// Save and Connect, where Connect is a split button. That row needs ~269 DIP (see
+    /// <c>DashboardWindow.CardButtonPaddingX</c>), which with <see cref="CardChromeWidth"/> is ~331 DIP of
+    /// content width; the floor sits above that rather than on it, for the same reason
+    /// <see cref="FitSlack"/> exists — a dead-even fit renders short anyway.</para>
     /// </summary>
-    public const double MinContentWidth = 320;
+    public const double MinContentWidth = 340;
 
     /// <summary>
     /// Cap for the popup's content width (DIP), chosen by Espen in issue #57. Past this the popup
@@ -104,8 +109,8 @@ public static class DashboardSizing
     /// <summary>
     /// Horizontal chrome between the popup's content width and a card row's usable width:
     /// <c>Root</c>'s Padding (20+20) + the card Border's Padding (10+10) and BorderThickness (1+1).
-    /// At the 320 floor this leaves 258 DIP — the figure issue #44 independently measured the
-    /// (non-wrapping) button row against at ~251 of 258.
+    /// At the <see cref="MinContentWidth"/> floor this leaves 278 DIP, which the widest (non-wrapping)
+    /// card button row measures ~269 against.
     /// </summary>
     public const double CardChromeWidth = 62;
 
@@ -144,7 +149,7 @@ public static class DashboardSizing
     ///
     /// <para><paramref name="screenLimit"/> is the work area's width minus both edge margins, in DIP.
     /// It WINS over the floor, matching <see cref="WindowPlacement.ClampToWorkArea"/>'s established
-    /// rule that the work area beats the minimum: on a display too narrow for even 320 the popup is
+    /// rule that the work area beats the minimum: on a display too narrow for even the floor the popup is
     /// sized to the display rather than pushed off it. This is what keeps a now-variable width on
     /// screen beside the tray at every DPI — the caller converts DIP to physical pixels with the
     /// monitor's own scale, so 480 DIP is 480 px at 100 % and 840 px at 175 %, and the cap is applied

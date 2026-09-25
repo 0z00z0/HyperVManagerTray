@@ -1312,20 +1312,22 @@ public sealed partial class DashboardWindow : Window
     /// 6 rather than the stock 11: at 11 px these captions are already small, and shrinking the text is a
     /// worse trade than shaving padding.
     ///
-    /// The worst case is a Running VM — "Shut down" + "Pause" + "Save" + "Connect":
+    /// The worst case is a Running VM — "Shut down" + "Pause" + "Save" + "Connect", where Connect is a
+    /// split button:
     ///
-    ///   available = 320 floor - Root padding (20+20) - card padding (10+10) - card border (1+1) = 258 DIP
+    ///   available = 340 floor - Root padding (20+20) - card padding (10+10) - card border (1+1) = 278 DIP
     ///   captions at 11 px Cascadia Mono (0.586 em/char, measured from the shipped .ttf) = 161.1
-    ///   button chrome = (6 + 6 padding + 1 + 1 border) × 4 = 56;  spacing = 6 × 3 gaps = 18
-    ///   total = 235.1 DIP  → ~23 DIP of slack
+    ///   three plain buttons = (6 + 6 padding + 1 + 1 border) × 3 = 42;  spacing = 6 × 3 gaps = 18
+    ///   Connect's chevron half = a fixed 35 DIP column plus a 1 DIP separator, and no primary border
+    ///   total = 269.1 DIP  → ~9 DIP of slack
     ///
-    /// Connect's chevron half spends more than that slack. WinUI's own SplitButton template gives the
-    /// secondary half a fixed column (<c>SplitButtonSecondaryButtonSize</c>, 35 DIP) plus a 1 DIP
-    /// separator, and drops the primary half's border, so the control is ~34 DIP wider than the same
-    /// caption as a Button — 269.1 of 258 in the row above. The row therefore fits from a content width
-    /// of about 332 DIP, inside <see cref="DashboardSizing.MaxContentWidth"/>, and at the 320 floor it
-    /// keeps every caption at its natural width and overflows rather than cutting one
-    /// (<see cref="CardButtonRow"/>).
+    /// The chevron is what sets <see cref="DashboardSizing.MinContentWidth"/>: it costs ~34 DIP more than
+    /// the same caption as a Button, which the previous 320 floor had no room for. WinUI's own SplitButton
+    /// template sizes that column from <c>SplitButtonSecondaryButtonSize</c>, declared 35 DIP beside the
+    /// control and 32 in the framework's older dictionary — the row fits at either.
+    ///
+    /// A row that still cannot fit keeps every caption at its natural width and overflows rather than
+    /// cutting one (<see cref="CardButtonRow"/>).
     /// </summary>
     private const double CardButtonPaddingX = 6;
 

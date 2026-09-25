@@ -1,4 +1,4 @@
-using HyperVManagerTray.Helpers;
+﻿using HyperVManagerTray.Helpers;
 using Xunit;
 
 namespace HyperVManagerTray.Tests;
@@ -42,7 +42,7 @@ public class DashboardSizingTests
         // #31's Auto child was a ComboBox declaring MinWidth 200-220, which could demand more than the
         // row had and drive the Star column toward zero. The dashboard's Auto child is ONE IPv4
         // (VmService.ReadIps takes a single dotted, colon-free address), so it is bounded at 15 chars.
-        // At the 320 floor the sub-row is 258 DIP; the worst case still leaves the subtitle ~144 DIP —
+        // At the floor the sub-row is 278 DIP; the worst case still leaves the subtitle ~164 DIP —
         // roughly 24 characters at 10 px, i.e. truncation, never the one-character-per-line collapse.
         var worst = new SplitRow("anything", 10, "255.255.255.255", 12, 8);
         double left = DashboardSizing.AvailableForLeft(worst, DashboardSizing.MinContentWidth);
@@ -54,11 +54,13 @@ public class DashboardSizingTests
     // ── Part 1: the band ────────────────────────────────────────────────────────
 
     [Fact]
-    public void Short_content_still_opens_at_the_320_floor()
+    public void Short_content_still_opens_at_the_width_floor()
     {
-        // The popup every existing user already has: it must not shrink below what it opens at today.
+        // Short names must not shrink the popup below the floor, which is what the widest card button
+        // row needs (DashboardSizing.MinContentWidth).
         var tidy = new SplitRow("dev-01", 10, "10.0.0.2", 12, 8);
-        Assert.Equal(320, DashboardSizing.ContentWidth(DashboardSizing.RequiredContentWidth(tidy), 0));
+        Assert.Equal(DashboardSizing.MinContentWidth,
+                     DashboardSizing.ContentWidth(DashboardSizing.RequiredContentWidth(tidy), 0));
     }
 
     [Fact]
@@ -68,7 +70,7 @@ public class DashboardSizingTests
         var row   = ReportedRow();
         double cw = DashboardSizing.ContentWidth(DashboardSizing.RequiredContentWidth(row), 0);
 
-        Assert.InRange(cw, 320, 480);
+        Assert.InRange(cw, DashboardSizing.MinContentWidth, DashboardSizing.MaxContentWidth);
         Assert.False(DashboardSizing.IsLeftTruncated(row, cw));
         Assert.Null(DashboardSizing.LeftTooltip(row, cw));
 
@@ -94,7 +96,7 @@ public class DashboardSizingTests
         var row   = ReportedRow("10.0.20.108");
         double cw = DashboardSizing.ContentWidth(DashboardSizing.RequiredContentWidth(row), 0);
 
-        Assert.InRange(cw, 320, 480);
+        Assert.InRange(cw, DashboardSizing.MinContentWidth, DashboardSizing.MaxContentWidth);
         Assert.False(DashboardSizing.IsLeftTruncated(row, cw));
         Assert.Null(DashboardSizing.LeftTooltip(row, cw));
 
@@ -122,15 +124,18 @@ public class DashboardSizingTests
     [Fact]
     public void Width_never_leaves_the_band()
     {
+        var floor = DashboardSizing.MinContentWidth;
+
         var huge = new SplitRow(new string('x', 400), 10, "192.168.1.50", 12, 8);
-        Assert.Equal(480, DashboardSizing.ContentWidth(DashboardSizing.RequiredContentWidth(huge), 0));
+        Assert.Equal(DashboardSizing.MaxContentWidth,
+                     DashboardSizing.ContentWidth(DashboardSizing.RequiredContentWidth(huge), 0));
 
         var empty = new SplitRow("", 10, "", 12, 8);
-        Assert.Equal(320, DashboardSizing.ContentWidth(DashboardSizing.RequiredContentWidth(empty), 0));
+        Assert.Equal(floor, DashboardSizing.ContentWidth(DashboardSizing.RequiredContentWidth(empty), 0));
 
-        Assert.Equal(320, DashboardSizing.ContentWidth(double.NaN, 0));
-        Assert.Equal(320, DashboardSizing.RequiredContentWidth((IEnumerable<SplitRow>)null!));
-        Assert.Equal(320, DashboardSizing.RequiredContentWidth(Array.Empty<SplitRow>()));
+        Assert.Equal(floor, DashboardSizing.ContentWidth(double.NaN, 0));
+        Assert.Equal(floor, DashboardSizing.RequiredContentWidth((IEnumerable<SplitRow>)null!));
+        Assert.Equal(floor, DashboardSizing.RequiredContentWidth(Array.Empty<SplitRow>()));
     }
 
     [Fact]
