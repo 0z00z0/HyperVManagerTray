@@ -36,34 +36,49 @@ public class VmConnectFlowSourceTests
     }
 
     /// <summary>
-    /// The dashboard must not call <c>ApplySwitchAsync</c> directly. It routes through
-    /// <see cref="HyperVManagerTray.Helpers.VmConnectFlow"/>, which consumes the result; the ONE permitted
-    /// mention is the lambda handed to the flow (<c>sw => _hyperV.ApplySwitchAsync(...)</c>), whose value
-    /// is returned, not dropped.
+    /// Every <c>ApplySwitchAsync</c> call in the dashboard must hand its outcome somewhere. The value is
+    /// the whole point of the call — it says whether the VM's adapter really is on the switch — and issue
+    /// #45 was that value awaited in statement position and dropped.
     ///
-    /// <para>The check is simply that the dashboard never <c>await</c>s it. The correct wiring hands the
-    /// flow an un-awaited lambda (<c>sw => _hyperV.ApplySwitchAsync(...)</c>) and lets the flow await and
-    /// consume it, so any <c>await</c> here means the dashboard is doing the call itself again — and the
-    /// only reason to await it in code-behind is to drop the result on the floor.</para>
+    /// <para>The permitted shapes are the ones that keep the value: the call awaited into a local or
+    /// returned (the dashboard's own <c>MoveForConnectAsync</c>, which reads the outcome, asks the monitor
+    /// to renew the guest address after a move, and hands
+    /// <see cref="HyperVManagerTray.Helpers.VmConnectFlow"/> a bool), or the un-awaited lambda
+    /// <c>sw => _hyperV.ApplySwitchAsync(...)</c> whose task the flow awaits and consumes. The forbidden
+    /// shape is an <c>await</c> whose result binds to nothing, wherever on the line it sits — the bug was
+    /// <c>if (!string.IsNullOrEmpty(sw)) await _hyperV.ApplySwitchAsync(...);</c>, so position proves
+    /// nothing and only the discard does.</para>
     ///
-    /// <para><b>This test was itself wrong first, which is worth recording.</b> It originally anchored
-    /// the pattern to a statement start (<c>^\s*await</c>). The real bug is
-    /// <c>if (!string.IsNullOrEmpty(sw)) await _hyperV.ApplySwitchAsync(...);</c> — the <c>await</c> sits
-    /// mid-line after the <c>if</c>, so the regex written specifically to catch this bug did not catch
-    /// this bug. The mutation check found that; without it the test would have shipped green and useless.
-    /// Hence the blunter rule below: no await, anywhere, no cleverness about position.</para>
+    /// <para>It is a coarse instrument, and <see cref="Discards"/> is asserted against the historical
+    /// discard forms below so a detector that can no longer fire cannot pass for a guard.</para>
     /// </summary>
     [Fact]
-    public void ConnectAsync_DoesNotDiscardTheSwitchApplyResult()
+    public void Dashboard_NeverDiscardsTheSwitchApplyResult()
     {
-        var src = DashboardSource();
+        Assert.False(Discards(DashboardSource()),
+            "DashboardWindow awaits ApplySwitchAsync without keeping its result, discarding the outcome "
+          + "that says whether the VM's adapter is actually on the switch (issues #37/#45). Await it into "
+          + "a local and consume it, as MoveForConnectAsync does, so VmConnectFlow can report a failed "
+          + "bind to the user.");
 
-        var awaited = new Regex(@"await\s+_hyperV\.ApplySwitchAsync\s*\(");
-        Assert.False(awaited.IsMatch(src),
-            "DashboardWindow awaits ApplySwitchAsync as a statement, discarding the bool that says whether "
-          + "the VM's adapter is actually on the switch (issues #37/#45). Route it through VmConnectFlow, "
-          + "which consumes the result and reports a failed bind to the user.");
+        // The guard proved able to fail: both shapes the app has actually shipped are caught.
+        Assert.True(Discards("        await _hyperV.ApplySwitchAsync(vm.Ref, vm.NicId, sw);"));
+        Assert.True(Discards("        if (!string.IsNullOrEmpty(sw)) await _hyperV.ApplySwitchAsync(vm.Ref, vm.NicId, sw);"));
+        Assert.False(Discards("        var outcome = await _hyperV.ApplySwitchAsync(vm.Ref, vm.NicId, sw);"));
+        Assert.False(Discards("        return await _hyperV.ApplySwitchAsync(vm.Ref, vm.NicId, sw) != SwitchMoveOutcome.Failed;"));
     }
+
+    /// <summary>
+    /// True where the text awaits <c>ApplySwitchAsync</c> and binds the result to nothing. What precedes
+    /// the <c>await</c> on its own line decides it: an assignment, a lambda arrow, a <c>return</c>, or an
+    /// argument position keeps the value; anything else drops it.
+    /// </summary>
+    private static bool Discards(string text) =>
+        Regex.Matches(text, @"(?m)^(?<before>[^\n]*?)await\s+_hyperV\.ApplySwitchAsync\s*\(")
+             .Select(m => m.Groups["before"].Value.TrimEnd())
+             .Any(before => !(before.EndsWith('=') || before.EndsWith("=>", StringComparison.Ordinal)
+                            || before.EndsWith('(') || before.EndsWith(',')
+                            || before.EndsWith("return", StringComparison.Ordinal)));
 
     /// <summary>
     /// The positive half: the connect path is actually wired to the tested flow. Without this, the test

@@ -288,7 +288,9 @@ public class VmConnectFlowTests
         var msg = NetworkStatusUi.ConnectBindFailedMessage(Vm, Switch.Name);
 
         Assert.Contains($"'{Vm}'", msg);
-        Assert.Contains($"'{Switch}'", msg);
+        // The switch is named by its NAME, which is all the message is handed: quoting the whole
+        // SwitchRef here would pin the record's own ToString, which no user ever reads.
+        Assert.Contains($"'{Switch.Name}'", msg);
         Assert.Contains("switcher.log", msg);
         Assert.Contains("anyway", msg);
         // "virtual switch", never a bare "switch" beside "network" (issue #42's pinned vocabulary).
