@@ -369,12 +369,12 @@ additionally uses, at **test time only** (nothing ships in the app):
 
 ## Shared components
 
-Five components come from [0z0-shared](https://github.com/0z00z0/0z0-shared), the shared components
+Six components come from [0z0-shared](https://github.com/0z00z0/0z0-shared), the shared components
 library used across ZeroZero Software apps, taken as packages from the studio's GitHub Packages feed:
 
 | Package | Version | What it provides |
 |---|---|---|
-| [ZeroZero.Brand.WinUI](https://github.com/0z00z0/0z0-shared) | 0.10.0 | The **About** window (`BrandAboutWindow`), the studio mark, the typeface and the palette. Its bracket action button carries a symbol of its own and can share one width with its neighbours, and the About window holds its dismissal while another window of this app is on screen |
+| [ZeroZero.Brand.WinUI](https://github.com/0z00z0/0z0-shared) | 0.11.0 | The **About** window (`BrandAboutWindow`), the studio mark, the typeface and the palette. Its bracket action button carries a symbol of its own and can share one width with its neighbours, and the About window holds its dismissal while another window of this app is on screen |
 | [ZeroZero.Mqtt.WinUI](https://github.com/0z00z0/0z0-shared) | 0.7.3 | The MQTT module — broker connection, Home Assistant discovery and the settings panel. Delivers `ZeroZero.Config`, `ZeroZero.Mqtt` and `ZeroZero.Mqtt.Discovery` with it |
 | [ZeroZero.Lifecycle](https://github.com/0z00z0/0z0-shared) | 0.7.1 | The single-instance lock and its four outcomes, and the relaunch after a clean exit nobody asked for, limited to three in ten minutes. Wired up in `Helpers/AppLifecycle.cs` |
 | [ZeroZero.Startup](https://github.com/0z00z0/0z0-shared) | 0.8.1 | The logon task behind `Services/StartupManager.cs` — its power-safe elevated definition with no execution time limit, registration, the enabled read, deletion, and the repair at start of a task an older build or the installer registered, including one that points at an old install path |
