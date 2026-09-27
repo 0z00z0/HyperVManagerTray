@@ -115,18 +115,31 @@ public static class MqttEntityTable
     /// <summary>The two Hyper-V services' states and their start and stop (issue #114).</summary>
     public const string ServicesGroup = "services";
 
-    /// <summary>
-    /// An entity handed over from its own single-component config (<see cref="MigratingEntity"/>), and a
-    /// value topic no entity claims (<see cref="RetiredChannel"/>).
-    ///
-    /// <para><b>Both are empty, and that is a statement rather than an omission.</b> Nothing keyed on a
-    /// VM's name is retained under this app's own topic root, so there is no value topic to empty; and a
-    /// handover only means something where the device document claims the same unique id, which it does
-    /// for none of the single-component configs that survive.</para>
-    /// </summary>
-    public static IReadOnlyList<MigratingEntity> Migrating => [];
+    /// <summary>The host-network entities a pre-2.7 build also published as single-component configs, at
+    /// the same ids and components the device document uses. Handed over rather than retired: the
+    /// document claims the same unique id, so the receiver's entry is kept and the old config unloaded,
+    /// where a retirement would empty the config before the document and have the receiver delete and
+    /// recreate the entity.</summary>
+    /// <remarks>Spelled out rather than taken from the live table, because it names what one past release
+    /// published: an entity added since is at no such address, and one dropped since still has its config
+    /// to clear. The per-VM entities of that build are not here — their ids came from the VM's name and
+    /// the document claims none of them, which is a retirement (see <see cref="RetiredFor"/>).</remarks>
+    public static IReadOnlyList<MigratingEntity> Migrating =>
+    [
+        new("sensor", "network_rule"),
+        new("sensor", "network_switch"),
+        new("sensor", "network_adapter"),
+        new("sensor", "network_host_ip"),
+        new("sensor", "network_gateway"),
+        new("sensor", "network_apply_status"),
+        new("binary_sensor", "network_bridge_healthy"),
+        new("button", "network_recheck"),
+        new("button", "network_repair"),
+    ];
 
-    /// <inheritdoc cref="Migrating"/>
+    /// <summary>A value topic no entity claims. Empty, and that is a statement rather than an omission:
+    /// nothing keyed on a VM's name is retained under this app's own topic root, and nothing is retained
+    /// under the command subtree.</summary>
     public static IReadOnlyList<RetiredChannel> RetiredChannels => [];
 
     /// <summary>The per-VM single-component configs a pre-2.7 build left retained, as

@@ -989,7 +989,25 @@ public class MqttEntityTableTests
             ],
             retired.Select(r => $"{r.Component}/{r.EntityId}"));
 
-        Assert.Empty(MqttEntityTable.Migrating);
         Assert.Empty(MqttEntityTable.RetiredChannels);
     }
+
+    /// <summary>The host-network addresses handed over from single-component discovery, pinned exactly.
+    /// Each is published as a hand-over flag and then emptied, so a wrong pair clears a topic belonging
+    /// to something else, and a missing one leaves a second declaration of a live entity standing.</summary>
+    [Fact]
+    public void Migrating_NamesEveryHandedOverAddress()
+        => Assert.Equal(
+            [
+                "sensor/network_rule",
+                "sensor/network_switch",
+                "sensor/network_adapter",
+                "sensor/network_host_ip",
+                "sensor/network_gateway",
+                "sensor/network_apply_status",
+                "binary_sensor/network_bridge_healthy",
+                "button/network_recheck",
+                "button/network_repair",
+            ],
+            MqttEntityTable.Migrating.Select(m => $"{m.Component}/{m.EntityId}"));
 }
