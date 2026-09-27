@@ -33,11 +33,11 @@
        Raising one of these numbers is a deliberate step: read that component's release notes under
        docs/release-notes/<key>/ in the 0z0-shared repository first. -->
   <ItemGroup>
-    <!-- 0.10.0 gives the bracket action button a symbol of its own and a column that sets several of
-         them to one width, and holds the About window's dismissal while another window of this
-         application is on screen. Both brand assemblies release under the same number. -->
-    <PackageVersion Include="ZeroZero.Brand.Core" Version="0.10.0" />
-    <PackageVersion Include="ZeroZero.Brand.WinUI" Version="0.10.0" />
+    <!-- The bracket action button carries a symbol of its own and a column can set several of them to
+         one width, and the About window holds its dismissal while another window of this application
+         is on screen. Both brand assemblies release under the same number. -->
+    <PackageVersion Include="ZeroZero.Brand.Core" Version="0.11.0" />
+    <PackageVersion Include="ZeroZero.Brand.WinUI" Version="0.11.0" />
     <PackageVersion Include="ZeroZero.Lifecycle" Version="0.7.1" />
     <!-- 0.8.0: the logon task's seven power settings, including no execution time limit, and a repair
          that notices a task pointing at an executable under an old install path. 0.8.1 adds a
