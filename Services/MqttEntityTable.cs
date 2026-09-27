@@ -116,24 +116,77 @@ public static class MqttEntityTable
     public const string ServicesGroup = "services";
 
     /// <summary>
-    /// What an earlier implementation left retained on a broker: an entity handed over from its own
-    /// single-component config (<see cref="MigratingEntity"/>), one that no longer exists at all
-    /// (<see cref="RetiredEntity"/>), and a value topic no entity claims (<see cref="RetiredChannel"/>).
+    /// An entity handed over from its own single-component config (<see cref="MigratingEntity"/>), and a
+    /// value topic no entity claims (<see cref="RetiredChannel"/>).
     ///
-    /// <para><b>All three are empty, and that is a statement rather than an omission.</b> Every release
-    /// that publishes has done so through the one device document, and the discovery publisher keeps a
-    /// ledger of what it announced: an entity the table no longer contains — the per-VM entities whose
-    /// ids came from a VM's name, before they came from its ID — is removed from the receiver on the next
-    /// connect without being named here. A guessed key would be worse than none: the publisher empties
-    /// exactly what is named, once, and writes the fact down permanently.</para>
+    /// <para><b>Both are empty, and that is a statement rather than an omission.</b> Nothing keyed on a
+    /// VM's name is retained under this app's own topic root, so there is no value topic to empty; and a
+    /// handover only means something where the device document claims the same unique id, which it does
+    /// for none of the single-component configs that survive.</para>
     /// </summary>
     public static IReadOnlyList<MigratingEntity> Migrating => [];
 
     /// <inheritdoc cref="Migrating"/>
-    public static IReadOnlyList<RetiredEntity> Retired => [];
-
-    /// <inheritdoc cref="Migrating"/>
     public static IReadOnlyList<RetiredChannel> RetiredChannels => [];
+
+    /// <summary>The per-VM single-component configs a pre-2.7 build left retained, as
+    /// <c>(suffix, component)</c>. That build keyed a VM's entities on the VM's NAME, so its configs sit
+    /// at addresses nothing composes any more and no device document reaches: leaving a component out of
+    /// the document does not remove it, and the document never named these.</summary>
+    /// <remarks>Spelled out rather than derived from the live table, because it describes what one past
+    /// release published and so cannot drift with what this one does. The metrics entities are absent
+    /// because that build never published them.</remarks>
+    private static readonly (string Suffix, string Component)[] NameKeyedVmComponents =
+    [
+        ("", "switch"),
+        ("_running", "binary_sensor"),
+        ("_state", "sensor"),
+        ("_switch", "sensor"),
+        ("_ip", "sensor"),
+        ("_uptime", "sensor"),
+        ("_operation", "sensor"),
+        ("_power", "select"),
+        ("_switch_override", "select"),
+    ];
+
+    /// <summary>The name-derived per-VM configs to empty: one set per managed VM.</summary>
+    /// <remarks>
+    /// <para>Composed from each VM's current name rather than from a literal, so the declaration covers
+    /// any installation carrying this history instead of one machine's. A VM renamed since that build, or
+    /// dropped from the configuration, is out of reach — nothing the app still holds recovers the id it
+    /// published under.</para>
+    /// <para>An address holding nothing costs one empty publish, once, so naming a VM that never
+    /// published under its name is harmless. None of these can collide with a live entity: a live per-VM
+    /// id carries the VM ID's hex digits, which no normalised name produces.</para>
+    /// </remarks>
+    public static IReadOnlyList<RetiredEntity> RetiredFor(IEnumerable<VmRef?> vms)
+    {
+        ArgumentNullException.ThrowIfNull(vms);
+
+        var retired = new List<RetiredEntity>();
+        foreach (var vm in vms)
+        {
+            if (vm is null || string.IsNullOrWhiteSpace(vm.Name)) continue;
+
+            string slug = NameSlug(vm.Name);
+            foreach (var (suffix, component) in NameKeyedVmComponents)
+                retired.Add(new RetiredEntity(component, VmIdPrefix + slug + suffix));
+        }
+
+        return retired;
+    }
+
+    /// <summary>A VM name in the id alphabet, cut so every id composed from it stays inside
+    /// <see cref="MqttEntityId.MaxLength"/> — the budget the build being cleaned up allocated under.</summary>
+    private static string NameSlug(string name)
+    {
+        int budget = MqttEntityId.MaxLength - VmIdPrefix.Length
+                   - NameKeyedVmComponents.Max(c => c.Suffix.Length);
+        string slug = MqttEntityId.Normalise(name);
+        // A trailing underscore exposed by the cut would double against the next suffix.
+        string cut = (slug.Length <= budget ? slug : slug[..budget]).TrimEnd('_');
+        return cut.Length > 0 ? cut : MqttEntityId.Fallback;
+    }
 
     /// <summary>The head every per-VM id carries, and every suffix one ends in — the bare power
     /// switch's empty suffix included. The slug budget and the collision check are both composed from

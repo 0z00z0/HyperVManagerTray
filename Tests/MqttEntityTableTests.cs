@@ -965,16 +965,31 @@ public class MqttEntityTableTests
         => Assert.Equal("hypervmanagertray", MqttEntityTable.TopicRoot);
 
     /// <summary>
-    /// All three empty, and that is the declaration rather than an omission: no released build of this
-    /// app has ever published to a broker, so there is no installed base to carry across. The publisher
-    /// empties exactly what is named, ONCE, and writes the fact down permanently — a guessed key would
-    /// delete a topic belonging to something else and could not be taken back.
+    /// The name-derived addresses a pre-2.7 build left retained, pinned exactly. The publisher empties
+    /// what is named ONCE and writes the fact down permanently, so a wrong pair deletes a topic
+    /// belonging to something else and cannot be taken back, and a missing pair leaves a ghost entity
+    /// with nothing left to remove it. Migrating and the channel list stay empty by declaration.
     /// </summary>
     [Fact]
-    public void NothingIsDeclaredAsMigratingOrRetired()
+    public void RetiredFor_NamesEveryNameKeyedAddress()
     {
+        var retired = MqttEntityTable.RetiredFor([new VmRef("id-1", "Web Server (2)")]);
+
+        Assert.Equal(
+            [
+                "switch/vm_web_server_2",
+                "binary_sensor/vm_web_server_2_running",
+                "sensor/vm_web_server_2_state",
+                "sensor/vm_web_server_2_switch",
+                "sensor/vm_web_server_2_ip",
+                "sensor/vm_web_server_2_uptime",
+                "sensor/vm_web_server_2_operation",
+                "select/vm_web_server_2_power",
+                "select/vm_web_server_2_switch_override",
+            ],
+            retired.Select(r => $"{r.Component}/{r.EntityId}"));
+
         Assert.Empty(MqttEntityTable.Migrating);
-        Assert.Empty(MqttEntityTable.Retired);
         Assert.Empty(MqttEntityTable.RetiredChannels);
     }
 }

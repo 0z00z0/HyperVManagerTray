@@ -116,7 +116,7 @@ public sealed class MqttService : IDisposable
             Ledger            = _ledger,
             Groups            = _groups,
             Migrating         = MqttEntityTable.Migrating,
-            Retired           = MqttEntityTable.Retired,
+            Retired           = MqttEntityTable.RetiredFor(config.Current.IdentifiedVms),
             RetiredChannels   = MqttEntityTable.RetiredChannels,
             SetChannelsAsync  = (channels, ct) => _connection!.SetChannelsAsync(channels, ct),
             SetCommandTargets = targets => _connection!.SetCommandTargets(targets),
