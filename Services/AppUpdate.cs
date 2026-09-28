@@ -87,7 +87,7 @@ internal sealed class AppUpdate : IDisposable
             Shutdown = () =>
             {
                 if (_prompts.AcceptedVersion is { } target)
-                    UnattendedUpdate.Record(AppInfo.DataDir, target, DateTimeOffset.UtcNow, log);
+                    UnattendedUpdate.Record(AppInfo.DataDir, target, automatic: false, DateTimeOffset.UtcNow, log);
                 AppLifecycle.MarkDeliberateExit();
                 exitForInstaller();
             },
@@ -189,13 +189,13 @@ internal sealed class AppUpdate : IDisposable
         return InstallMoment.Now;
     }
 
-    /// <summary>The policy's exit, once its installer is running. The same handover the explicit check
-    /// leaves, so the version that starts next reports the outcome of an update nobody asked for the
-    /// way it reports one that was.</summary>
+    /// <summary>The policy's exit, once its installer is running. The handover is marked as the install
+    /// nobody asked for, which is what keeps the next start quiet about it having worked while still
+    /// letting it say so if it did not.</summary>
     private void ShutdownForPolicyInstaller()
     {
         if (_acceptedByPolicy is { } target)
-            UnattendedUpdate.Record(AppInfo.DataDir, target, DateTimeOffset.UtcNow, _log);
+            UnattendedUpdate.Record(AppInfo.DataDir, target, automatic: true, DateTimeOffset.UtcNow, _log);
         AppLifecycle.MarkDeliberateExit();
         _exitForInstaller();
     }

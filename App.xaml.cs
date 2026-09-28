@@ -392,8 +392,12 @@ public partial class App : Application
     /// <summary>
     /// States the outcome of an update the previous version started for itself. That version could
     /// not: Setup installs unattended over the files it held, so it was gone before an outcome existed.
-    /// The running version against the one the update was for is the evidence. Success and failure are
-    /// both said, because the installer's own messages were suppressed. Never throws.
+    /// The running version against the one the update was for is the evidence. Never throws.
+    ///
+    /// <para>The record is taken and cleared on every start, whatever is done with it, so an attempt is
+    /// never reported twice. The log line is written on every path. The balloon is what
+    /// <see cref="UpdateStatusUi.UnattendedOutcomeReport"/> decides: an automatic install that worked
+    /// says nothing, and a failure is said whichever path started it.</para>
     /// </summary>
     private void ReportTheOutcomeOfAnUnattendedUpdate()
     {
@@ -403,8 +407,10 @@ public partial class App : Application
             if (UnattendedUpdate.Take(AppInfo.DataDir, AppInfo.Version, log) is not { } outcome) return;
 
             log.Info($"Unattended update to v{outcome.TargetVersion}: {outcome.Verdict}, running v{outcome.RunningVersion}"
+                     + (outcome.Automatic ? ", installed automatically" : ", asked for")
                      + (outcome.Refusal is { } refusal ? $" ({refusal})" : "") + ".");
-            var report = UpdateStatusUi.UnattendedOutcomeReport(outcome);
+            if (UpdateStatusUi.UnattendedOutcomeReport(outcome) is not { } report) return;
+
             ShowBalloon($"{AppInfo.Name} — update", report.Message,
                         isError: report.IsError, suppressWhenDashboardVisible: false);
         }

@@ -31,11 +31,19 @@ public sealed class UnattendedUpdateTests : IDisposable
     /// An update that did not land is reported at the next start with Setup's reason, and only once:
     /// a record left behind would report the same failure at every start, and one that is lost says
     /// nothing at all.
+    ///
+    /// <para>Run for both paths, because only the successful automatic install is silent. A version
+    /// that failed to install is otherwise invisible — the app carries on as the old one with nothing
+    /// to explain it — so the failure has to reach a person whether anyone asked for the update or
+    /// not. Run against the whole path, record to report, so a silence introduced anywhere along it is
+    /// caught rather than only a change to the wording.</para>
     /// </summary>
-    [Fact]
-    public void AFailedAttempt_IsReportedOnceWithItsReason_ThenCleared()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AFailedAttempt_IsReportedOnceWithItsReason_ThenCleared_WhoeverStartedIt(bool automatic)
     {
-        UnattendedUpdate.Record(_dir, "2.7.14", DateTimeOffset.UtcNow, NullLogSink.Instance);
+        UnattendedUpdate.Record(_dir, "2.7.14", automatic, DateTimeOffset.UtcNow, NullLogSink.Instance);
         // What the installer script writes when it refuses.
         File.WriteAllText(Path.Combine(_dir, UnattendedUpdate.RefusalFileName), "Setup installed nothing.\r\n");
 
@@ -45,9 +53,39 @@ public sealed class UnattendedUpdateTests : IDisposable
         Assert.Equal(UpdateVerdict.DidNotComplete, outcome.Verdict);
         Assert.Equal("2.7.14", outcome.TargetVersion);
         Assert.Equal("Setup installed nothing.", outcome.Refusal);
+        Assert.Equal(automatic, outcome.Automatic);
+
+        var report = UpdateStatusUi.UnattendedOutcomeReport(outcome);
+        Assert.NotNull(report);
+        Assert.True(report.Value.IsError);
+
         Assert.Null(UnattendedUpdate.Take(_dir, "2.7.13", NullLogSink.Instance));
         Assert.False(File.Exists(Path.Combine(_dir, UnattendedUpdate.HandoverFileName)));
         Assert.False(File.Exists(Path.Combine(_dir, UnattendedUpdate.RefusalFileName)));
+    }
+
+    /// <summary>
+    /// The guard that decides which path speaks, over the whole path from the record to the report: an
+    /// install that worked and that nobody asked for says nothing, and one the person asked for
+    /// confirms itself. Keyed on what the record carries about how the install started, which is the
+    /// only thing that differs — the version, the time and the refusal are identical either way.
+    ///
+    /// <para>The record is taken and cleared in both cases, because a silent report must not leave an
+    /// attempt behind to be re-read at the next start.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(true,  false)]
+    [InlineData(false, true)]
+    public void ASuccessfulInstall_SpeaksOnlyWhereSomeoneAskedForIt(bool automatic, bool expectAReport)
+    {
+        UnattendedUpdate.Record(_dir, "2.7.14", automatic, DateTimeOffset.UtcNow, NullLogSink.Instance);
+
+        var outcome = UnattendedUpdate.Take(_dir, "2.7.14", NullLogSink.Instance);
+
+        Assert.NotNull(outcome);
+        Assert.Equal(UpdateVerdict.Installed, outcome.Verdict);
+        Assert.Equal(expectAReport, UpdateStatusUi.UnattendedOutcomeReport(outcome) is not null);
+        Assert.False(File.Exists(Path.Combine(_dir, UnattendedUpdate.HandoverFileName)));
     }
 
     /// <summary>
@@ -71,14 +109,16 @@ public sealed class UnattendedUpdateTests : IDisposable
     public void TheFailureReport_FitsInABalloon()
     {
         var longest = new UnattendedUpdate.Outcome(UpdateVerdict.DidNotComplete, "10.10.100", "10.10.99",
-                                                   new string('x', UnattendedUpdate.MaxRefusalLength));
+                                                   new string('x', UnattendedUpdate.MaxRefusalLength),
+                                                   Automatic: true);
 
         var report = UpdateStatusUi.UnattendedOutcomeReport(longest);
 
-        Assert.True(report.IsError);
-        Assert.InRange(report.Message.Length, 1, 255);
-        Assert.Contains("v10.10.100", report.Message);
-        Assert.Contains("installer-10.10.99.log", report.Message);
+        Assert.NotNull(report);
+        Assert.True(report.Value.IsError);
+        Assert.InRange(report.Value.Message.Length, 1, 255);
+        Assert.Contains("v10.10.100", report.Value.Message);
+        Assert.Contains("installer-10.10.99.log", report.Value.Message);
     }
 
     /// <summary>

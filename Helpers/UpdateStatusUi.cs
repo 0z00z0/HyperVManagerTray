@@ -98,18 +98,30 @@ internal static class UpdateStatusUi
         + $"If it passes, the update installs by itself: {AppInfo.Name} closes, updates and starts again.";
 
     /// <summary>
-    /// What the next start says about an update the previous version started for itself. Both
-    /// outcomes are stated: the installer ran with its own messages suppressed, so nothing else tells
-    /// the user either way. Kept within the 255 characters a tray balloon holds, because a longer
-    /// text is not shortened but dropped.
+    /// What the next start says about an update the previous version started for itself, or null where
+    /// it says nothing. Kept within the 255 characters a tray balloon holds, because a longer text is
+    /// not shortened but dropped.
+    ///
+    /// <para><b>An automatic install that worked is silent.</b> Nobody asked for it, so there is
+    /// nothing to confirm; the log records it either way. The decision is on
+    /// <see cref="UnattendedUpdate.Outcome.Automatic"/> — how the install was started, written down at
+    /// the moment it started — and on nothing that could also be true of an update someone asked for.
+    /// </para>
+    ///
+    /// <para><b>A failure is always said, on both paths.</b> The installer ran with its own messages
+    /// suppressed, so a version that did not install is otherwise invisible: the app simply carries on
+    /// as the old one with nothing to explain it. That is the case this method must never return null
+    /// for.</para>
     /// </summary>
-    public static UpdateReport UnattendedOutcomeReport(UnattendedUpdate.Outcome outcome)
+    public static UpdateReport? UnattendedOutcomeReport(UnattendedUpdate.Outcome outcome)
     {
         ArgumentNullException.ThrowIfNull(outcome);
 
         if (outcome.Verdict == UpdateVerdict.Installed)
-            return new UpdateReport($"The update is installed: {AppInfo.Name} is now v{outcome.RunningVersion}.",
-                                    IsError: false);
+            return outcome.Automatic
+                ? null
+                : new UpdateReport($"The update is installed: {AppInfo.Name} is now v{outcome.RunningVersion}.",
+                                   IsError: false);
 
         var reason = outcome.Refusal is { Length: > 0 } refusal ? $" {refusal}" : "";
         var log    = $@"%AppData%\{AppInfo.Id}\{AppUpdateOptions.InstallerLogFileNameFor(outcome.RunningVersion)}";
