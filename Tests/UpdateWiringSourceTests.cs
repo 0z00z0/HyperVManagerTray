@@ -13,9 +13,11 @@ namespace HyperVManagerTray.Tests;
 /// <see cref="StartupVersionLogSourceTests"/>.
 ///
 /// <para>The properties asserted are the ones a mistake in would be silent and plausible: that the
-/// silent start-up check can only ever raise a badge, that nothing schedules an unattended update,
-/// that the running version is stated rather than inferred, that the wording stays in
-/// <c>UpdateStatusUi</c>, and that no certificate thumbprint is ever written into the source.</para>
+/// silent start-up check can only ever raise a badge, that the one path which installs with nobody
+/// asked is the shared policy and that it is off until switched on, that this app's own flow never
+/// carries the prompts that answer themselves, that the running version is stated rather than
+/// inferred, that the wording stays in <c>UpdateStatusUi</c>, and that no certificate thumbprint is
+/// ever written into the source.</para>
 /// </summary>
 public class UpdateWiringSourceTests
 {
@@ -79,19 +81,42 @@ public class UpdateWiringSourceTests
     }
 
     /// <summary>
-    /// The shared component ships a check scheduler. Starting it would turn the start-up check into a
-    /// recurring one, and the manual flow it would drive downloads and runs an installer.
+    /// The automatic install lives in one place. An install nobody asked for goes through the shared
+    /// component's policy, which owns the machine-free rule and the question this app answers; a second
+    /// path built in the code-behind or the tray menu would have neither.
     /// </summary>
     [Theory]
     [InlineData("App.xaml.cs")]
-    [InlineData("Services", "AppUpdate.cs")]
     [InlineData("UI", "TrayMenu.cs")]
-    public void NothingSchedulesAnUnattendedUpdate(params string[] parts)
+    public void OnlyTheUpdateServiceDrivesAnInstallNobodyAsked(params string[] parts)
     {
         var code = CodeOf(parts);
 
+        Assert.DoesNotContain("UnattendedUpdatePolicy", code, StringComparison.Ordinal);
         Assert.DoesNotContain("UpdateScheduler", code, StringComparison.Ordinal);
         Assert.DoesNotContain("UpdateTrigger.Scheduled", code, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// This app's own flow must never carry the prompts that answer themselves. They answer "Install"
+    /// unconditionally, so a flow wired to them downloads and starts whatever release it finds with
+    /// neither the machine-free rule nor the question about the moment — both of which live in the
+    /// policy, not in the flow. The policy builds its own flow with them; this app builds the one a
+    /// person watches.
+    /// </summary>
+    [Fact]
+    public void TheApplicationsOwnFlowNeverCarriesThePromptsThatAnswerThemselves()
+    {
+        foreach (var file in ApplicationSourceFiles())
+        {
+            var code = Regex.Replace(Regex.Replace(File.ReadAllText(file), @"/\*.*?\*/", "", RegexOptions.Singleline),
+                                     @"//[^\n]*", "");
+            Assert.False(code.Contains("SilentUpdatePrompts", StringComparison.Ordinal),
+                $"'{Path.GetRelativePath(RepoRoot(), file)}' names SilentUpdatePrompts. Those prompts answer "
+              + "every question with the step that carries on, so a flow holding them installs whatever it "
+              + "finds with no machine-free rule and nothing asked. UnattendedUpdatePolicy is the only "
+              + "thing that may install without a person, and it wires them itself.");
+        }
     }
 
     /// <summary>The explicit check is the only path that installs anything, and it runs as a manual

@@ -1039,6 +1039,22 @@ public sealed class NetworkMonitor : IDisposable
 
     // ── Bridge-lost delayed actions ─────────────────────────────────────────────
 
+    /// <summary>
+    /// Whether a bridge-lost action is armed for any machine — a pause, a save or a shutdown waiting
+    /// out its delay because the bridged network went away.
+    ///
+    /// <para>Read by the automatic update, which refuses to start an installer while one is armed. The
+    /// timer is a <see cref="CancellationTokenSource"/> in memory and nothing about it survives a
+    /// restart: <see cref="Dispose"/> cancels every pending one, and
+    /// <see cref="HandleBridgeTransition"/> deliberately never arms one on the first evaluation after a
+    /// start. So a restart during the delay drops the action, and nothing acts on that machine until
+    /// the bridge is restored and lost again.</para>
+    /// </summary>
+    public bool BridgeLostActionPending
+    {
+        get { lock (_disconnectLock) return _pendingDisconnect.Count > 0; }
+    }
+
     private void ScheduleDisconnectActions()
     {
         lock (_disconnectLock)

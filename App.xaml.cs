@@ -193,7 +193,10 @@ public partial class App : Application
             _update = new AppUpdate(
                 System.Reflection.Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0),
                 _loggerFactory.CreateLogger<AppUpdate>(),
-                () => _ui.TryEnqueue(OnExit));
+                () => _ui.TryEnqueue(OnExit),
+                // Read at the moment an automatic installer is about to start, long after the monitor
+                // exists. Absent one, nothing is pending and nothing is refused.
+                () => _monitor?.BridgeLostActionPending == true);
             // Directories a download left behind on an earlier run — an installer that never started,
             // a run that ended mid-download. Off the startup path; nothing waits on the count.
             _ = Task.Run(() => _update.SweepStaleDownloads());
@@ -281,7 +284,14 @@ public partial class App : Application
             _config.ConfigReloaded += (_, e) =>
             {
                 if (e.Config.Rules.Any(r => r.IdGeneratedOnLoad)) _ = Task.Run(RunIdentityMigration);
+                // Switching automatic installing takes effect at once rather than at the next start. The
+                // call is idempotent, so the unrelated reloads that also land here change nothing.
+                _update?.SetAutomaticInstalling(e.Config.InstallUpdatesAutomatically);
             };
+
+            // The stored state, applied now that the config exists. Off is the state an absent setting
+            // means, and in it no check is scheduled at all.
+            _update.SetAutomaticInstalling(_config.Current.InstallUpdatesAutomatically);
             _ = StartAfterIdentityMigrationAsync();
 
             // Drive the tray tooltip off VmService's push channel (issue #16, conversion #2):

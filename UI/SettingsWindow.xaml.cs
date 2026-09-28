@@ -83,6 +83,10 @@ internal sealed partial class SettingsWindow : Window
 
     private ComboBox? _logLevelCombo;
 
+    /// <summary>The automatic-install switch. Rebuilt with the rest of the General section, so it always
+    /// shows the stored value.</summary>
+    private ToggleSwitch? _autoUpdateToggle;
+
     // Network rules editor (issue #23). _workingRules is the UI's authoritative copy while the window is
     // open (deep copies of config rules); edits mutate it in place and persist via _config.SaveRules, so
     // a reload-driven re-sort of _config.Current can't reorder controls mid-edit.
@@ -270,6 +274,7 @@ internal sealed partial class SettingsWindow : Window
     {
         _closed = true;
         if (_logLevelCombo is not null) _logLevelCombo.SelectionChanged -= OnLogLevelChanged;
+        if (_autoUpdateToggle is not null) _autoUpdateToggle.Toggled -= OnAutoUpdateToggled;
 
         // An in-flight broker probe outlives this window by up to its own budget, and marshalling back
         // into a torn-down XAML tree throws. Cancel is silent before Initialise.
@@ -719,7 +724,49 @@ internal sealed partial class SettingsWindow : Window
             "Minimum severity written to all of the app's log files. Debug captures diagnostic detail; None disables logging.",
             _logLevelCombo));
 
+        // Off unless switched on, and off is what an absent setting means: with it off nothing is even
+        // checked in the background, and updates arrive only through the tray's "Check for updates".
+        _autoUpdateToggle = new ToggleSwitch
+        {
+            IsOn                = _config.Current.InstallUpdatesAutomatically,
+            OnContent           = "On",
+            OffContent          = "Off",
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        _autoUpdateToggle.Toggled += OnAutoUpdateToggled;
+        panel.Children.Add(SettingRow(
+            "Install updates automatically",
+            "A new version is downloaded and installed on its own, with nothing to accept. It waits for "
+          + "a free machine: the screen locked, or ten minutes with nobody touching the keyboard or "
+          + "mouse. The app closes and starts again to install, so anything open in it goes. Virtual "
+          + "machines keep running — Hyper-V, not this app, is what holds them up. Off: nothing is "
+          + "checked in the background and updates come from the tray's Check for updates.",
+            _autoUpdateToggle));
+
         return panel;
+    }
+
+    /// <summary>
+    /// Saves the automatic-install switch. The save raises a config reload, which is where the update
+    /// component's policy is started or stopped, so the switch takes effect at once.
+    /// </summary>
+    private void OnAutoUpdateToggled(object sender, RoutedEventArgs e)
+    {
+        if (_updating || _autoUpdateToggle is null) return;
+        var enabled = _autoUpdateToggle.IsOn;
+        Task.Run(() =>
+        {
+            try { _config.UpdateInstallUpdatesAutomatically(enabled); }
+            catch (Exception ex)
+            {
+                _ui.TryEnqueue(() =>
+                {
+                    if (_closed) return;
+                    NativeMethods.Warn(
+                        $"Could not save the automatic update setting:\n\n{ex.Message}", AppInfo.Name);
+                });
+            }
+        });
     }
 
     private void OnLogLevelChanged(object sender, SelectionChangedEventArgs e)

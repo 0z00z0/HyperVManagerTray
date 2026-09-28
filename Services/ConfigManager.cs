@@ -373,6 +373,27 @@ public sealed class ConfigManager : IDisposable
         $"Failed to save log level {level}");
 
     /// <summary>
+    /// Turns "install a new release without asking" on or off. A no-op when the value is already
+    /// stored, so opening Settings and closing it rewrites nothing. The reload raises
+    /// <see cref="ConfigReloaded"/>, which is where the policy is started or stopped, so the switch
+    /// takes effect at once rather than at the next start.
+    /// </summary>
+    public void UpdateInstallUpdatesAutomatically(bool enabled) => SaveAndReload(
+        () =>
+        {
+            if (_config.InstallUpdatesAutomatically == enabled)
+            {
+                _logger.LogInformation("UpdateInstallUpdatesAutomatically: already {Enabled} — skipping.", enabled);
+                return null;
+            }
+
+            return new SaveRequest(
+                With(installUpdatesAutomatically: enabled),
+                $"Automatic update installing set to {enabled} and saved to {_configPath}");
+        },
+        $"Failed to save automatic update installing {enabled}");
+
+    /// <summary>
     /// Updates the "when the bridged network is lost" action and delay for the managed VM with
     /// <paramref name="vmId"/> (issue #18).  <paramref name="action"/> is the canonical string (null = do
     /// nothing); <paramref name="delaySeconds"/> is clamped to a sane range. Does nothing if no such VM is
@@ -752,6 +773,9 @@ public sealed class ConfigManager : IDisposable
         "settingsWindowWidth",
         "settingsWindowHeight",
         "mqtt",                // broker settings and endpoint memory (issue #75) — read by MqttService only
+        // Whether a release installs itself. Read by AppUpdate alone; the monitor neither reads it nor
+        // acts on it, so toggling it must not re-evaluate the network and move a machine's switch.
+        "installUpdatesAutomatically",
     ];
 
     /// <summary>
@@ -1004,13 +1028,20 @@ public sealed class ConfigManager : IDisposable
         List<AdapterNameOverride>? adapterNames = null,
         LogLevel? logLevel = null,
         MqttSection? mqtt = null,
-        WindowRect? settingsWindowRect = null) => new()
+        WindowRect? settingsWindowRect = null,
+        bool? installUpdatesAutomatically = null) => new()
         {
             VirtualMachines = vms          ?? _config.VirtualMachines,
             Rules           = rules        ?? _config.Rules,
             Fallback        = fallback     ?? _config.Fallback,
             AdapterNames    = adapterNames ?? _config.AdapterNames,
             LogLevel        = logLevel     ?? _config.LogLevel,
+
+            // Carried like every other field, for the reason the remarks above give: this builds the
+            // object written over config.json wholesale, so an omitted field is written back as false
+            // rather than left alone — which would switch automatic installing off on every unrelated
+            // save.
+            InstallUpdatesAutomatically = installUpdatesAutomatically ?? _config.InstallUpdatesAutomatically,
             // Carried like every other field: this method builds the object serialised over config.json
             // wholesale, so omitting the section would blank it on every unrelated write (issue #75).
             Mqtt            = mqtt         ?? _config.Mqtt,

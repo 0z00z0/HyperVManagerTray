@@ -983,6 +983,29 @@ public class ConfigManagerTests : IDisposable
     }
 
     /// <summary>
+    /// Two values that must not drift on the setting that lets a release install itself.
+    ///
+    /// <para>It is off in a config that names it nowhere, so an existing settings document is never read
+    /// as consent. And it survives every unrelated save, because <c>With</c> rebuilds the whole
+    /// document: a field it failed to carry would be written back as false, so switching the setting on
+    /// and then adding a VM would switch it off again with nothing said. Both failures are silent, and
+    /// each one changes whether the machine replaces the application without being asked.</para>
+    /// </summary>
+    [Fact]
+    public void InstallingUpdatesAutomatically_IsOffByDefault_AndSurvivesAnUnrelatedSave()
+    {
+        Assert.False(new AppConfig().InstallUpdatesAutomatically);
+
+        var path = WriteTempConfig(new AppConfig { InstallUpdatesAutomatically = true });
+        using var mgr = MakeManager(path);
+
+        mgr.UpdateLogLevel(LogLevel.Warning);
+        mgr.AddVmToConfig(new DiscoveredVm("Alpha", "Alpha", null, "NIC 1"));
+
+        Assert.True(ReadConfig(path).InstallUpdatesAutomatically);
+    }
+
+    /// <summary>
     /// Closing Settings without moving the window must not rewrite config.json — an unchanged rect is a
     /// no-op, so a Closed handler can save unconditionally without churning the file (and without
     /// waking the file watcher on every open/close cycle).
