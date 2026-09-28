@@ -14,9 +14,15 @@ public sealed record MqttEntitySpec
     /// and the name the entities are called by.</summary>
     public required IReadOnlyList<VmRef> Vms { get; init; }
 
-    /// <summary>The switches the rules identify — the options a switch-override may pick from. Read on
-    /// every announcement pass, so a rule edit reaches the receiver without the table being rebuilt.</summary>
+    /// <summary>The switches the rules identify. Whether there is one at all decides whether a
+    /// switch-override is published; the options it offers are these plus <see cref="FallbackSwitch"/>.
+    /// Read on every announcement pass, so a rule edit reaches the receiver without the table being
+    /// rebuilt.</summary>
     public required Func<IReadOnlyList<SwitchRef>> RuleSwitches { get; init; }
+
+    /// <summary>The switch the fallback binds to, or null when it names none. The alternative a
+    /// switch-override offers, since a rule's own switch is what the machine is already on.</summary>
+    public Func<SwitchRef?> FallbackSwitch { get; init; } = () => null;
 
     public required MqttStateCache State { get; init; }
 
@@ -29,12 +35,6 @@ public sealed record MqttEntitySpec
 
     /// <summary>Requests a power verb for one VM. Reached only through <see cref="MqttCommandGate"/>.</summary>
     public required Func<VmRef, VmOpKind, CancellationToken, Task> Power { get; init; }
-
-    /// <summary>Which shape the power verbs take: one button per verb when true, a single select of
-    /// them when false. A value read once at <see cref="MqttEntityTable.Build"/> rather than a delegate
-    /// read per pass, and deliberately so — the two shapes are different entities, and swapping them
-    /// has to rebuild the set so the shape being left behind is evicted rather than stranded.</summary>
-    public bool PowerButtons { get; init; }
 
     /// <summary>Forces one VM (by VM ID) onto one switch.</summary>
     public required Func<string, SwitchRef, CancellationToken, Task> OverrideSwitch { get; init; }
@@ -204,27 +204,20 @@ public static class MqttEntityTable
     /// <summary>The head every per-VM id carries, and every suffix one ends in — the bare power
     /// switch's empty suffix included. The slug budget and the collision check are both composed from
     /// these, so a suffix missing here is one nothing sizes or de-duplicates against.</summary>
-    /// <remarks><b>Both power shapes are declared, not the one in force.</b> A budget following the
-    /// active shape would be recomputed the moment <see cref="MqttEntitySpec.PowerButtons"/> is flipped,
-    /// and a VM name that fitted under one shape would throw the whole table out under the other — the
-    /// startup crash the budget exists to prevent, triggered by a setting instead of a rename. Sizing
-    /// against the union also keeps a slug the same in both shapes, so switching shape moves the power
-    /// controls and nothing else.</remarks>
     internal const string VmIdPrefix = "vm_";
 
-    /// <summary>The suffix the power select carries.</summary>
-    internal const string PowerSelectSuffix = "_power";
+    /// <summary>The stem every power button's suffix is built on.</summary>
+    internal const string PowerSuffixStem = "_power";
 
     /// <summary>The suffix one power button carries: the verb in the id alphabet.</summary>
     internal static string PowerButtonSuffix(VmOpKind kind) =>
-        PowerSelectSuffix + "_" + kind.ToString().ToLowerInvariant();
+        PowerSuffixStem + "_" + kind.ToString().ToLowerInvariant();
 
     /// <inheritdoc cref="VmIdPrefix"/>
     internal static readonly IReadOnlyList<string> VmIdSuffixes =
     [
         "", "_state", "_running", "_switch", "_ip", "_uptime", "_operation",
         "_cpu", "_memory", "_vhd", "_switch_override",
-        PowerSelectSuffix,
         // Composed from the verbs rather than spelled out, so a verb added to the gate enters the slug
         // budget and the collision check with it instead of composing an id nothing sized against.
         .. MqttCommandGate.PowerVerbs.Select(PowerButtonSuffix),
@@ -232,19 +225,18 @@ public static class MqttEntityTable
 
     /// <summary>Everything the composed table depends on, as one string. A config write that leaves it
     /// alone must not rebuild and re-announce the whole document; a write that moves it must, because
-    /// the entities it names have changed — which is what evicts the power shape being left behind.</summary>
-    public static string Signature(IEnumerable<VmRef?> vms, bool powerButtons)
+    /// the entities it names have changed.</summary>
+    public static string Signature(IEnumerable<VmRef?> vms)
     {
         ArgumentNullException.ThrowIfNull(vms);
         // The name is part of it because the entity names carry it: a rename re-announces the names and
         // leaves every id where it was.
-        return (powerButtons ? "buttons" : "select")
-             + "\n" + string.Join("\n", vms.Select(v => $"{v?.Id}\t{v?.Name}"));
+        return string.Join("\n", vms.Select(v => $"{v?.Id}\t{v?.Name}"));
     }
 
     /// <summary>Builds the whole table. Called again — through
     /// <c>DiscoveryPublisher.SetEntities</c> — whenever <see cref="Signature"/> moves: the managed VM
-    /// list, or the power shape.</summary>
+    /// list.</summary>
     public static MqttEntitySet Build(MqttEntitySpec spec)
     {
         ArgumentNullException.ThrowIfNull(spec);
@@ -421,44 +413,30 @@ public static class MqttEntityTable
         MqttCommandVerdict Command(bool start) =>
             MqttCommandGate.Service(kind, spec.ServiceState(kind), start, ct => spec.ServiceCommand(kind, start, ct));
 
-        // The same shape choice as the VMs' power verbs, from the same setting. The Host Compute Service
-        // has no stop here at all: it is stopped only from the dashboard.
-        bool offersStop = ServiceStopGuard.MayStopUnattended(kind);
-        if (spec.PowerButtons)
+        // Unavailable rather than absent while the verb does not apply: the entity keeps its whole entry
+        // and its registry record, and a start that cannot be made now reads as greyed out instead of
+        // silently swallowing a press whose refusal only reaches the log.
+        yield return new MqttButton
         {
+            EntityId = $"{stem}_start",
+            Name     = $"Start {label}",
+            Group    = ServicesGroup,
+            Icon     = "mdi:play",
+            Include  = () => MqttCommandGate.ServiceVerbAvailable(kind, spec.ServiceState(kind), start: true),
+            Press    = () => Command(start: true),
+        };
+
+        // The Host Compute Service has no stop here at all: it is stopped only from the dashboard.
+        if (ServiceStopGuard.MayStopUnattended(kind))
             yield return new MqttButton
             {
-                EntityId = $"{stem}_start",
-                Name     = $"Start {label}",
+                EntityId = $"{stem}_stop",
+                Name     = $"Stop {label}",
                 Group    = ServicesGroup,
-                Icon     = "mdi:play",
-                Press    = () => Command(start: true),
+                Icon     = "mdi:stop",
+                Include  = () => MqttCommandGate.ServiceVerbAvailable(kind, spec.ServiceState(kind), start: false),
+                Press    = () => Command(start: false),
             };
-            if (offersStop)
-                yield return new MqttButton
-                {
-                    EntityId = $"{stem}_stop",
-                    Name     = $"Stop {label}",
-                    Group    = ServicesGroup,
-                    Icon     = "mdi:stop",
-                    Press    = () => Command(start: false),
-                };
-        }
-        else
-        {
-            var options = MqttCommandGate.ServiceOptionsFor(kind);
-            yield return new MqttSelect
-            {
-                EntityId = $"{stem}_power",
-                Name     = $"{label} control",
-                Group    = ServicesGroup,
-                Icon     = "mdi:power-settings",
-                Options  = () => options,
-                // A verb is an event, not a state; the state sensor reports where the service is.
-                Read     = () => null,
-                Apply    = option => Command(start: option == MqttCommandGate.ServiceOptions[0]),
-            };
-        }
     }
 
     // ── Per VM ──────────────────────────────────────────────────────────────────
@@ -580,37 +558,23 @@ public static class MqttEntityTable
                   ct => spec.StartViaServices(vm, ct))
             : MqttCommandGate.Power(state.Vm(vmId)?.State, kind, ct => spec.Power(vm, kind, ct));
 
-        // The two power shapes, one or the other. Both reach MqttCommandGate.Power, so the state gating
-        // and the refusal wording are the same whichever is published; only the controls differ.
-        if (spec.PowerButtons)
-        {
-            foreach (var kind in MqttCommandGate.PowerVerbs)
-                yield return new MqttButton
-                {
-                    EntityId = $"vm_{slug}{PowerButtonSuffix(kind)}",
-                    Name     = $"{vmName} {PowerButtonLabel(kind)}",
-                    Group    = VmGroup,
-                    Icon     = PowerButtonIcon(kind),
-                    Press    = () => PowerVerb(kind),
-                };
-        }
-        else
-        {
-            yield return new MqttSelect
+        // One button per verb, each unavailable while the VM's state does not allow it: the gate's
+        // refusal reaches the log alone, so a button left available would swallow a press with nothing to
+        // see. Unavailable rather than absent keeps the entry and the registry record, and the command
+        // route goes with the availability, so a withheld verb cannot be reached by a hand-sent payload
+        // either. A verb whose state has not been reached yet has no entry to hold unavailable and is
+        // simply not announced until it first applies.
+        foreach (var kind in MqttCommandGate.PowerVerbs)
+            yield return new MqttButton
             {
-                EntityId = $"vm_{slug}{PowerSelectSuffix}",
-                Name     = $"{vmName} power",
+                EntityId = $"vm_{slug}{PowerButtonSuffix(kind)}",
+                Name     = $"{vmName} {PowerButtonLabel(kind)}",
                 Group    = VmGroup,
-                Icon     = "mdi:power-settings",
-                Options  = () => MqttCommandGate.PowerOptions,
-                // A verb is an event, not a state: there is no "current power verb" to report, and
-                // announcing the last one requested would read as the VM being in it.
-                Read     = () => null,
-                // The module hands over only one of Options(), each a verb's own name, so the parse
-                // cannot miss.
-                Apply    = option => PowerVerb(Enum.Parse<VmOpKind>(option)),
+                Icon     = PowerButtonIcon(kind),
+                Include  = () => MqttCommandGate.PowerAvailable(
+                    state.Vm(vmId)?.State, kind, spec.AnyServiceDown(), spec.VmmsDown()),
+                Press    = () => PowerVerb(kind),
             };
-        }
 
         yield return new MqttSelect
         {
@@ -621,23 +585,41 @@ public static class MqttEntityTable
             Icon     = "mdi:swap-horizontal",
             // The receiver rejects a select with no options, so with no rules configured the entity is
             // WITHHELD rather than dropped: it keeps its entry and its registry record and returns the
-            // moment a rule names a switch.
+            // moment a rule names a switch. Gated on the rules alone, so the fallback switch below does
+            // not offer an override on a host that has no rules to override.
             Include  = () => spec.RuleSwitches().Count > 0,
-            Options  = () => SwitchOptionList(spec.RuleSwitches()),
-            // Only a switch the options carry, by switch ID: a VM on a switch no rule names reads as no
-            // current value rather than as a choice the list does not offer. The diagnostics switch
-            // sensor still reports the actual switch.
+            Options  = () => SwitchOptionList(OverrideSwitches(spec)),
+            // Only a switch the options carry, by switch ID: a VM on a switch the list does not hold
+            // reads as no current value rather than as a choice that is not offered. The diagnostics
+            // switch sensor still reports the actual switch.
             Read     = () => state.Vm(vmId)?.SwitchId is { Length: > 0 } current
-                && SwitchOptions(spec.RuleSwitches()).FirstOrDefault(o => HostIdentity.Same(o.Key, current)) is { Value: { } label }
+                && SwitchOptions(OverrideSwitches(spec)).FirstOrDefault(o => HostIdentity.Same(o.Key, current)) is { Value: { } label }
                 ? label
                 : null,
-            // Only reached for one of Options(): the module refuses a switch no rule names before this.
-            // The option is a label, turned back into the switch it was made from — never looked up by name.
-            Apply    = option => SwitchOptions(spec.RuleSwitches()).FirstOrDefault(o => o.Value == option) is { Key: { } id }
+            // Only reached for one of Options(): the module refuses a switch the list does not hold
+            // before this. The option is a label, turned back into the switch it was made from — never
+            // looked up by name.
+            Apply    = option => SwitchOptions(OverrideSwitches(spec)).FirstOrDefault(o => o.Value == option) is { Key: { } id }
                 ? MqttCommandVerdict.Accept(ct => spec.OverrideSwitch(
-                      vmId, spec.RuleSwitches().First(s => HostIdentity.Same(s.Id, id)), ct))
-                : MqttCommandVerdict.Refuse($"'{option}' is no longer a switch a rule names."),
+                      vmId, OverrideSwitches(spec).First(s => HostIdentity.Same(s.Id, id)), ct))
+                : MqttCommandVerdict.Refuse($"'{option}' is no longer a switch this host offers."),
         };
+    }
+
+    /// <summary>The switches a switch override may pick from: the ones the rules identify, then the
+    /// fallback switch. Distinct by switch identifier, so a fallback that is also a rule's switch appears
+    /// once and in the rules' own order.</summary>
+    /// <remarks>The fallback is what a rule switches away from, so without it the list holds only what the
+    /// machine is already on and offers no alternative at all. Read on every announcement pass, so a
+    /// configuration edit reaches the options with no rebuild.</remarks>
+    private static IReadOnlyList<SwitchRef> OverrideSwitches(MqttEntitySpec spec)
+    {
+        var rules = spec.RuleSwitches();
+        return spec.FallbackSwitch() is { } fallback
+            && fallback.Id.Length > 0
+            && !rules.Any(s => HostIdentity.Same(s.Id, fallback.Id))
+                ? [.. rules, fallback]
+                : rules;
     }
 
     /// <summary>

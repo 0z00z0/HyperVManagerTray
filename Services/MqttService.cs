@@ -222,6 +222,7 @@ public sealed class MqttService : IDisposable
     {
         _state.SetVms(statuses);
         SignalPublish();
+        SignalAnnounce();
     }
 
     private void OnVmOperation(VmOperationProgress progress)
@@ -231,12 +232,22 @@ public sealed class MqttService : IDisposable
     }
 
     /// <summary>A Hyper-V service moved (issue #114): its state sensor, and what the VM controls offer.</summary>
-    private void OnServiceState(HyperVServiceKind kind, HyperVServiceState state) => SignalPublish();
+    private void OnServiceState(HyperVServiceKind kind, HyperVServiceState state)
+    {
+        SignalPublish();
+        SignalAnnounce();
+    }
 
     /// <summary>The state cache has moved. Through the gate rather than straight at the connection: these
     /// events start arriving before the socket does, and a signal made then is fifty failed publishes for
     /// values the connect republishes anyway (see <see cref="MqttPublishGate"/>).</summary>
     private void SignalPublish() => _publish.Signal(_connection?.IsConnected ?? false);
+
+    /// <summary>Re-reads what the entities say about themselves and re-announces if it moved. What the
+    /// power buttons' availability needs: a state change decides which verbs apply, and that is carried by
+    /// the document rather than by a value topic, so <see cref="SignalPublish"/> alone would leave every
+    /// button as it was. A pass whose document is unchanged sends nothing.</summary>
+    private void SignalAnnounce() => _publisher.Republish();
 
     private void OnConfigReloaded(object? sender, ConfigReloadedEventArgs e)
     {
@@ -390,6 +401,9 @@ public sealed class MqttService : IDisposable
             Vms                  = config.IdentifiedVms,
             // Read per announcement pass, so a rule edit reaches the options with no rebuild.
             RuleSwitches         = () => [.. _config.Current.RuleSwitches],
+            FallbackSwitch       = () => _config.Current.Fallback is { SwitchId.Length: > 0 } f
+                ? new SwitchRef(f.SwitchId, f.SwitchName)
+                : null,
             State                = _state,
             VmIp                 = _vm.GetCachedVmIp,
             ReCheckNetwork       = _reCheckNetwork,
@@ -402,9 +416,6 @@ public sealed class MqttService : IDisposable
                 return Task.CompletedTask;
             },
             OverrideSwitch       = (vmId, sw, _) => _monitor.ManualOverrideAsync(vmId, sw),
-            // Read once here, not per pass: the two shapes are different entities, so a flip has to
-            // reach SetEntities for the shape being left behind to be evicted.
-            PowerButtons         = config.Mqtt.PowerButtons,
             ServiceState         = _services.Monitor.State,
             // Returns once requested; the start, or the saves and the stop, run on and write their
             // outcome to vm-power.log and mqtt.log.
@@ -460,14 +471,6 @@ public sealed class MqttService : IDisposable
         catch (Exception ex) { _log.LogError(ex, "MQTT: starting '{Vm}' ({Id}) through the services failed", vm.Shown, vm.Id); }
     }
 
-    /// <summary>Whether each VM's power verbs are published as one button per verb rather than as one
-    /// select of them. Setting it writes config.json, whose reload rebuilds the entity table — see
-    /// <see cref="OnConfigReloaded"/>, which is what evicts the shape being switched away from.</summary>
-    public bool PowerButtons => _store.PowerButtons;
-
-    /// <inheritdoc cref="PowerButtons"/>
-    public void SetPowerButtons(bool on) => _store.SetPowerButtons(on);
-
     /// <summary>Applying is idempotent, so a settings write that changed nothing the connection reads
     /// leaves the projection identical and never bounces the socket.</summary>
     private void Apply() => _connection?.Apply(_store.Read().Connect());
@@ -488,7 +491,7 @@ public sealed class MqttService : IDisposable
     /// is linked into the test assembly — a rule that decides whether the document is re-announced is
     /// not one to leave in this file, which nothing tests.</summary>
     private static string TableSignature(AppConfig config) =>
-        MqttEntityTable.Signature(config.IdentifiedVms, config.Mqtt.PowerButtons);
+        MqttEntityTable.Signature(config.IdentifiedVms);
 
     // ── Lifecycle ───────────────────────────────────────────────────────────────
 
