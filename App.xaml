@@ -8,49 +8,74 @@
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+                <!-- The studio palette and typeface. Indexed in this app's own resource index through
+                     the package's .pri, so the URI resolves without the file appearing in the output
+                     folder. Brings BrandFontFamily and the ten Brand…Colour / Brand…Brush keys. -->
+                <ResourceDictionary Source="ms-appx:///ZeroZero.Brand.WinUI/Themes/BrandResources.xaml"/>
             </ResourceDictionary.MergedDictionaries>
 
-            <!-- The one colour the shared MQTT panel needs a per-theme value for. The other four read
-                 stock WinUI colours that are already theme-aware, so only the accent has to vary here:
-                 a single accent shade is illegible against the opposite ground. Same shades the module
-                 picks for itself. The BRUSHES that consume this live below, as immediate children of
-                 Application.Resources — see the comment there. -->
+            <!-- Per-theme colours. The BRUSHES that consume them live below, as immediate children of
+                 Application.Resources — see the comment there.
+
+                 MqttAccentColour: the one colour the shared MQTT panel needs a per-theme value for. The
+                 other four read stock WinUI colours that are already theme-aware, so only the accent has
+                 to vary here: a single accent shade is illegible against the opposite ground. Same
+                 shades the module picks for itself.
+
+                 The three Product… colours carry this application's own colour: the brand palette's
+                 steel blue. The brand dictionary holds identical identity values on both themes, but
+                 this window's surfaces do not — a light ground needs a darker shade of the same hue for
+                 anything drawn on it to stay readable. Each light value is the same hue at a lower
+                 Oklab lightness, chosen so every element clears 4.5:1 as text and 3:1 as a boundary.
+                 High contrast takes the user's own colours instead, as the brand dictionary does. -->
             <ResourceDictionary.ThemeDictionaries>
                 <ResourceDictionary x:Key="Default">
                     <StaticResource x:Key="MqttAccentColour" ResourceKey="SystemAccentColorLight2"/>
+                    <!-- The brand palette's steel blue itself; BrandPaletteSourceTests pins it. -->
+                    <Color x:Key="ProductHeadingColour">#7fa8b8</Color>
+                    <Color x:Key="ProductDescriptionColour">#9ab6c2</Color>
+                    <Color x:Key="ProductOutlineColour">#4e7584</Color>
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="Light">
                     <StaticResource x:Key="MqttAccentColour" ResourceKey="SystemAccentColorDark2"/>
+                    <Color x:Key="ProductHeadingColour">#1c4f60</Color>
+                    <Color x:Key="ProductDescriptionColour">#3a6170</Color>
+                    <Color x:Key="ProductOutlineColour">#567e8d</Color>
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="HighContrast">
                     <StaticResource x:Key="MqttAccentColour" ResourceKey="SystemColorHighlightColor"/>
+                    <StaticResource x:Key="ProductHeadingColour" ResourceKey="SystemColorWindowTextColor"/>
+                    <StaticResource x:Key="ProductDescriptionColour" ResourceKey="SystemColorWindowTextColor"/>
+                    <StaticResource x:Key="ProductOutlineColour" ResourceKey="SystemColorWindowTextColor"/>
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
 
             <!-- ─────────────────────────────────────────────────────────────────────────────
                  Brand typeface: Cascadia Mono (issue #44), matching the sibling app's treatment.
 
-                 The .ttf is NOT bundled here: the ZeroZero.Brand.WinUI ProjectReference ships it as
-                 Content into this app's output under Assets\Fonts\ (the same file BrandAboutWindow
-                 already references), so ms-appx:///Assets/Fonts/… resolves for this unpackaged app
-                 with no per-app asset copy. Verified present in bin\…\win-x64\Assets\Fonts\.
+                 The .ttf is NOT bundled here: it ships inside the ZeroZero.Brand.WinUI package and
+                 lands under that assembly's own folder, ZeroZero.Brand.WinUI\Assets\Fonts\, which is
+                 where the package's own markup addresses it and the only path a package reference
+                 produces. The output root holds no Assets\Fonts\ at all, and a font URI that resolves
+                 to nothing raises nothing: XAML falls back to whatever face the machine happens to
+                 have installed, so the window looks right where Cascadia Mono is installed and wrong
+                 where it is not. BrandPaletteSourceTests holds these three URIs to the path the
+                 package carries.
 
                  Per 0z0-design/design-language.md: Cascadia Mono is the studio's UI/body/heading
                  face — monospace throughout, not just for code, and a deliberate brand choice.
 
-                 FALLBACK: the URI names a font FILE that ships beside the exe, so this does not
-                 depend on Cascadia Mono being installed on the target machine. The family name
-                 after '#' is the in-file family, not a system lookup. Should the file ever go
-                 missing, XAML silently falls back to the default UI font — degraded, never blank. -->
-            <FontFamily x:Key="BrandFont">ms-appx:///Assets/Fonts/CascadiaMono.ttf#Cascadia Mono</FontFamily>
+                 The family name after '#' is the in-file family, not a system lookup, so a machine
+                 without Cascadia Mono installed still gets the brand face. -->
+            <FontFamily x:Key="BrandFont">ms-appx:///ZeroZero.Brand.WinUI/Assets/Fonts/CascadiaMono.ttf#Cascadia Mono</FontFamily>
 
             <!-- Templated-control content resolves these two theme resources rather than the implicit
                  TextBlock style below, so without them ComboBox items, Button captions, ToggleSwitch
                  On/Off, NumberBox and TextBox text would all stay in the default sans while bare
                  TextBlocks switched — the split the sibling app hit. A FontFamily resource cannot take
                  another resource as its value, hence the repeated literal URI. -->
-            <FontFamily x:Key="ContentControlThemeFontFamily">ms-appx:///Assets/Fonts/CascadiaMono.ttf#Cascadia Mono</FontFamily>
-            <FontFamily x:Key="ControlContentThemeFontFamily">ms-appx:///Assets/Fonts/CascadiaMono.ttf#Cascadia Mono</FontFamily>
+            <FontFamily x:Key="ContentControlThemeFontFamily">ms-appx:///ZeroZero.Brand.WinUI/Assets/Fonts/CascadiaMono.ttf#Cascadia Mono</FontFamily>
+            <FontFamily x:Key="ControlContentThemeFontFamily">ms-appx:///ZeroZero.Brand.WinUI/Assets/Fonts/CascadiaMono.ttf#Cascadia Mono</FontFamily>
 
             <!-- Density trim (the sibling app's v1.5.2 lesson, applied up-front rather than as a
                  follow-up). Cascadia Mono is a fixed-advance face at ~0.586 em/char — measurably wider
@@ -102,14 +127,36 @@
                  with, named as colours rather than brushes because a brush cannot take another brush
                  as its value. The theme variation lives in the colour each one resolves, which is what
                  keeps the keys at the one level the panel's lookup reads. -->
-            <SolidColorBrush x:Key="MqttPanelHeadingBrush"        Color="{ThemeResource TextFillColorPrimary}"/>
+            <SolidColorBrush x:Key="MqttPanelHeadingBrush"        Color="{ThemeResource ProductHeadingColour}"/>
             <SolidColorBrush x:Key="MqttPanelBodyBrush"           Color="{ThemeResource TextFillColorPrimary}"/>
-            <SolidColorBrush x:Key="MqttPanelSecondaryBrush"      Color="{ThemeResource TextFillColorSecondary}"/>
+            <SolidColorBrush x:Key="MqttPanelSecondaryBrush"      Color="{ThemeResource ProductDescriptionColour}"/>
             <SolidColorBrush x:Key="MqttPanelAccentBrush"         Color="{ThemeResource MqttAccentColour}"/>
             <SolidColorBrush x:Key="MqttPanelCardBackgroundBrush" Color="{ThemeResource CardBackgroundFillColorDefault}"/>
             <!-- The only route to the panel's typeface: every element it styles carries an explicit
                  style, so the implicit TextBlock style above never reaches inside it. -->
             <StaticResource x:Key="MqttPanelFontFamily" ResourceKey="BrandFont"/>
+
+            <!-- ─────────────────────────────────────────────────────────────────────────────
+                 This application's own colour, in the two roles the windows read it in: the section
+                 headings and the tint the description lines are drawn in. Same placement rule as the
+                 MQTT keys above — a brush cannot take another brush as its value, so the theme
+                 variation lives in the colour each one resolves.
+
+                 Measured against the surfaces these land on (WCAG 2.x, sRGB compositing): headings
+                 7.0:1 on the dark ground and 6.4:1 on the light one; descriptions 7.4:1 on a dark card
+                 and 5.0:1 on the lightest light ground. -->
+            <SolidColorBrush x:Key="ProductHeadingBrush"     Color="{ThemeResource ProductHeadingColour}"/>
+            <SolidColorBrush x:Key="ProductDescriptionBrush" Color="{ThemeResource ProductDescriptionColour}"/>
+
+            <!-- The card outline, overriding the stock key every card builder in both windows already
+                 reads. PLACEMENT IS LOAD-BEARING for the same reason as the MQTT keys: a theme
+                 dictionary entry is never reached for a stock WinUI key, so this has to be an
+                 immediate child of Application.Resources. The stock stroke measures 1.02:1 against a
+                 dark card and 1.13:1 against a light one — an outline that is in the layout and
+                 invisible. The product tone measures 3.2:1 and 4.0:1 in the same places.
+
+                 This also reaches the shared About card, which draws its own frame with this key. -->
+            <SolidColorBrush x:Key="CardStrokeColorDefaultBrush" Color="{ThemeResource ProductOutlineColour}"/>
 
             <tb:TaskbarIcon
                 x:Key="TrayIcon"

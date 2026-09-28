@@ -2,10 +2,13 @@
 <Window
     x:Class="HyperVManagerTray.UI.SettingsWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ui="using:HyperVManagerTray.UI">
 
+    <!-- Mica Alt with its active tint on the product colour; grey when the window has no input. See
+         ProductMicaBackdrop. -->
     <Window.SystemBackdrop>
-        <MicaBackdrop Kind="BaseAlt" />
+        <ui:ProductMicaBackdrop />
     </Window.SystemBackdrop>
 
     <!-- Issue #23: the flat single-scroll card list became an in-box NavigationView with left-nav
