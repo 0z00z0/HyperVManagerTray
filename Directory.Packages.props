@@ -47,9 +47,13 @@
     <!-- 0.7.2 closes the disposal race on the connection's reconcile gate and the discovery
          publisher's announcement gate: a settings change applied after teardown, or a reconnect
          still in flight at exit, could each end the process. Never go below it. 0.7.3 keeps an
-         unreachable broker from filling mqtt.log: one line when the link goes, one when it returns. -->
-    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.7.3" />
-    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.7.3" />
+         unreachable broker from filling mqtt.log: one line when the link goes, one when it returns.
+         0.8.0 adds a certificate-trust row to the settings panel the host embeds, so that row appears
+         in this application's MQTT page without being asked for. 0.8.1 appends a note to the Broker
+         section's collapsed summary when the trust mode is "accept any certificate"; this application
+         does not use that mode, so the summary line reads as before. -->
+    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.8.1" />
+    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.8.1" />
     <!-- 0.9.0 adds TransientWindows, the count of this application's own short-lived windows.
          UI\DashboardWindow.xaml.cs asks it before dismissing itself on lost focus, so the dashboard
          stays put when the update window opens in front of it. 0.9.1 adds WindowFit, the arithmetic
@@ -71,10 +75,12 @@
          0.12.0 adds how long the machine has gone untouched, and a decision of when a check runs and
          when an installer may start with nobody asked. Both are additive and reached only by calling
          them; nothing here calls either, so the update flow behaves exactly as on 0.11.0 and this
-         application's own Helpers\UnattendedUpdate.cs stays the one that decides. -->
-    <PackageVersion Include="ZeroZero.Update" Version="0.12.0" />
-    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.12.0" />
-    <PackageVersion Include="ZeroZero.Update.WinUI" Version="0.12.0" />
+         application's own Helpers\UnattendedUpdate.cs stays the one that decides. Nothing through 0.12.2
+         is wired: the whole of it is reached only by calling it, and taking any of it is a later
+         decision. -->
+    <PackageVersion Include="ZeroZero.Update" Version="0.12.2" />
+    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.12.2" />
+    <PackageVersion Include="ZeroZero.Update.WinUI" Version="0.12.2" />
   </ItemGroup>
 
   <!-- Test project only. -->

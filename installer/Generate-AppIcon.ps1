@@ -15,11 +15,9 @@
 
 .DESCRIPTION
     The 0z0-guideline PRODUCT icon set (issue #26). Per 0z0-design/logo/GUIDE.md the studio [Ø]
-    mark must NOT appear on an app's own icon. So this icon is a flat, no-gradient, geometric route
-    fork on a plate in this application's own product colour (issue #146): the brand palette's steel
-    blue, darkened on its own hue so the white glyph clears 4.5:1 on it (measured 4.97:1) and the
-    plate itself clears 3:1 against both a dark and a light taskbar (3.28:1 and 4.48:1). The palette
-    value itself is too light for either: 2.56:1 under the glyph and 2.31:1 on a light taskbar.
+    mark must NOT appear on an app's own icon, and the icon uses the app's OWN muted palette — not
+    ChargeKeeper's SteelBlue/Sage/Terracotta. So this icon is a flat, no-gradient, geometric route
+    fork drawn in HyperVManagerTray's own tray blue (#3B7EC4).
 
     The glyph geometry is the SAME 16-unit layout Helpers\IconGenerator.cs paints for the live
     tray icons (v6), drawn by installer\RouteGlyph.ps1, so the app icon and the tray glyphs read as
@@ -36,9 +34,8 @@ $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 . (Join-Path $PSScriptRoot "RouteGlyph.ps1")
 
-# ── Product palette. The plate carries the product colour; $cBlue is a tray STATE colour and is a
-#    different decision, so the two are no longer the same value (see IconGenerator.cs) ──
-$cPlate = [System.Drawing.Color]::FromArgb(255, 0x4A, 0x76, 0x86)   # product steel-blue plate
+# ── Product palette (HyperVManagerTray's own muted tray tones — see IconGenerator.cs) ──
+$cPlate = [System.Drawing.Color]::FromArgb(255, 0x3B, 0x7E, 0xC4)   # muted steel-blue plate
 $cGlyph = [System.Drawing.Color]::FromArgb(255, 0xFF, 0xFF, 0xFF)   # white glyph on the plate
 $cBlue  = [System.Drawing.Color]::FromArgb(255, 0x3B, 0x7E, 0xC4)   # flat blue glyph (tray Fallback)
 

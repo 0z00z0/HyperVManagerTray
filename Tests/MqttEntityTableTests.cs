@@ -22,16 +22,19 @@ public class MqttEntityTableTests
         public readonly MqttStateCache State = new();
         /// <summary>The rule switches, by name; each one's switch ID is <see cref="SwitchIdOf"/> of its name.</summary>
         public List<string> Switches = [];
+        /// <summary>The fallback's switch by name, or null when it names none.</summary>
+        public string? Fallback;
         public readonly Dictionary<string, string> Ips = new(StringComparer.OrdinalIgnoreCase);
         public int ReChecks;
         public int Repairs;
         public readonly List<(string Vm, VmOpKind Kind)> Power = [];
         /// <summary>Each override as the VM ID and the switch ID it was bound by.</summary>
         public readonly List<(string Vm, string Switch)> Overrides = [];
+        /// <summary>Each Hyper-V service's state; unset reads as not read yet.</summary>
+        public readonly Dictionary<HyperVServiceKind, HyperVServiceState> Services = [];
+        /// <summary>Each service command as the service and whether it was a start.</summary>
+        public readonly List<(HyperVServiceKind Kind, bool Start)> ServiceCommands = [];
 
-        /// <summary>Names no power shape, deliberately: a spec that says nothing gets the type's own
-        /// default, which is what an installation that never chose one publishes. Tests wanting the
-        /// other shape say so with <c>with { PowerButtons = true }</c>.</summary>
         /// <param name="vms">Each string is one VM's ID and its name at once, which keeps the ids these
         /// tests read short; the tests about the ID itself pass a <see cref="VmRef"/>.</param>
         public MqttEntitySpec Spec(params string[] vms) => Build([.. vms.Select(v => new VmRef(v, v))]);
@@ -42,12 +45,19 @@ public class MqttEntityTableTests
         {
             Vms                 = vms,
             RuleSwitches        = () => [.. Switches.Select(n => new SwitchRef(SwitchIdOf(n), n))],
+            FallbackSwitch      = () => Fallback is { } name ? new SwitchRef(SwitchIdOf(name), name) : null,
             State               = State,
             VmIp                = id => Ips.GetValueOrDefault(id),
             ReCheckNetwork      = _ => { ReChecks++; return Task.CompletedTask; },
             RepairHostNetworking = _ => { Repairs++; return Task.CompletedTask; },
             Power               = (vm, kind, _) => { Power.Add((vm.Id, kind)); return Task.CompletedTask; },
             OverrideSwitch      = (vm, sw, _) => { Overrides.Add((vm, sw.Id)); return Task.CompletedTask; },
+            ServiceState        = kind => Services.GetValueOrDefault(kind, HyperVServiceState.Unknown),
+            ServiceCommand      = (kind, start, _) =>
+            {
+                ServiceCommands.Add((kind, start));
+                return Task.CompletedTask;
+            },
         };
 
         /// <summary>The stand-in switch ID of a rule switch the spy names.</summary>
@@ -84,22 +94,14 @@ public class MqttEntityTableTests
         return entity;
     }
 
-    /// <summary>A set built in the button shape.</summary>
-    private static MqttEntitySet Buttons(Spy spy, params string[] vmNames) =>
-        MqttEntityTable.Build(spy.Spec(vmNames) with { PowerButtons = true });
-
-    /// <summary>A set built in whichever shape is named.</summary>
-    private static MqttEntitySet Shaped(bool powerButtons, params string[] vmNames) =>
-        MqttEntityTable.Build(new Spy().Spec(vmNames) with { PowerButtons = powerButtons });
-
     /// <summary>One VM's power-button ids, in the order the gate declares the verbs.</summary>
     private static IReadOnlyList<string> PowerButtonIds(string slug) =>
         [.. MqttCommandGate.PowerVerbs.Select(kind => $"vm_{slug}{MqttEntityTable.PowerButtonSuffix(kind)}")];
 
-    /// <summary>Every suffix the per-VM ids of one shape carry, for a VM whose slug is known.</summary>
-    private static IReadOnlyList<string> EmittedSuffixes(bool powerButtons)
+    /// <summary>Every suffix the per-VM ids carry, for a VM whose slug is known.</summary>
+    private static IReadOnlyList<string> EmittedSuffixes()
     {
-        var set = Shaped(powerButtons, "Dev");
+        var set = MqttEntityTable.Build(new Spy().Spec("Dev"));
         return
         [
             .. set.All
@@ -123,39 +125,12 @@ public class MqttEntityTableTests
             set.All.Select(e => e.EntityId).Where(id => id.StartsWith("network_", StringComparison.Ordinal)));
     }
 
-    /// <summary>Twelve per VM, and the id of each is the state topic AND the command topic — so this is
+    /// <summary>Sixteen per VM, and the id of each is the state topic AND the command topic — so this is
     /// the list a receiver's registry records. A change here re-registers every entity of every VM.</summary>
     [Fact]
-    public void Build_ProducesTwelveEntitiesPerVm()
+    public void Build_ProducesSixteenEntitiesPerVm()
     {
         var set = MqttEntityTable.Build(new Spy().Spec("Dev"));
-
-        Assert.Equal(
-            ["vm_dev_state", "vm_dev_running", "vm_dev_switch", "vm_dev_ip", "vm_dev_uptime",
-             "vm_dev_operation", "vm_dev_cpu", "vm_dev_memory", "vm_dev_vhd",
-             "vm_dev", "vm_dev_power", "vm_dev_switch_override"],
-            set.All.Where(e => e.EntityId.StartsWith("vm_", StringComparison.Ordinal))
-                   .Select(e => e.EntityId));
-    }
-
-    /// <summary>The select is what a spec that says nothing about the shape gets, and what an existing
-    /// installation therefore keeps. The buttons are opt-in.</summary>
-    [Fact]
-    public void ThePowerSelectIsTheDefaultShape()
-    {
-        var set = MqttEntityTable.Build(new Spy().Spec("Dev"));
-
-        Assert.IsType<MqttSelect>(Get(set, "vm_dev_power"));
-        Assert.All(PowerButtonIds("dev"), id => Assert.Null(set.Find(id)));
-    }
-
-    /// <summary>Sixteen per VM in the button shape: the same twelve minus the select, plus one button per
-    /// verb. The ids are the command topics a receiver registers, so this list is the published surface
-    /// the option switches to.</summary>
-    [Fact]
-    public void Build_ProducesSixteenEntitiesPerVm_WhenPowerButtonsAreOn()
-    {
-        var set = Buttons(new Spy(), "Dev");
 
         Assert.Equal(
             ["vm_dev_state", "vm_dev_running", "vm_dev_switch", "vm_dev_ip", "vm_dev_uptime",
@@ -167,6 +142,18 @@ public class MqttEntityTableTests
             set.All.Where(e => e.EntityId.StartsWith("vm_", StringComparison.Ordinal))
                    .Select(e => e.EntityId));
     }
+
+    /// <summary>Each service carries a state sensor and the buttons its verbs take. The Host Compute
+    /// Service has no stop at all — it is stopped only from the dashboard — so the two services publish
+    /// different sets, which is why this asserts the whole list.</summary>
+    [Fact]
+    public void Build_ProducesTheServiceEntities()
+        => Assert.Equal(
+            ["service_vmms_state", "service_vmms_start", "service_vmms_stop",
+             "service_vmcompute_state", "service_vmcompute_start"],
+            MqttEntityTable.Build(new Spy().Spec()).All
+                .Select(e => e.EntityId)
+                .Where(id => id.StartsWith("service_", StringComparison.Ordinal)));
 
     // Stand-in VM IDs, GUID-shaped as Hyper-V assigns them. A and B share their first 29 hex digits —
     // everything the slug budget keeps — and differ after it.
@@ -218,30 +205,14 @@ public class MqttEntityTableTests
         Assert.Equal("Dev renamed state", Get(after, $"vm_{SlugA}_state").Name);
     }
 
-    /// <summary>
-    /// The budget is cut from both shapes at once, so the same VM reaches the same slug under either. If
-    /// it followed the active shape instead, flipping the setting would move every one of that VM's
-    /// entities to a new id.
-    /// </summary>
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void ASlugIsTheSameUnderEitherPowerShape(bool powerButtons)
-    {
-        var set = MqttEntityTable.Build(new Spy().Spec(Guest(GuidA, "Dev")) with { PowerButtons = powerButtons });
-
-        Assert.All(set.All, e => Assert.True(e.EntityId.Length <= MqttEntityId.MaxLength, e.EntityId));
-        Assert.NotNull(set.Find($"vm_{SlugA}"));
-        Assert.NotNull(set.Find($"vm_{SlugA}_switch_override"));
-    }
-
     /// <summary>The longest power-button id, pinned. It is shorter than the switch override's, so it
     /// does not set the budget — but nothing else fixes it in place.</summary>
     [Fact]
     public void ThePowerButtonIdsFitAVmId()
     {
-        var set = MqttEntityTable.Build(new Spy().Spec(Guest(GuidA, "Dev")) with { PowerButtons = true });
+        var set = MqttEntityTable.Build(new Spy().Spec(Guest(GuidA, "Dev")));
 
+        Assert.All(set.All, e => Assert.True(e.EntityId.Length <= MqttEntityId.MaxLength, e.EntityId));
         Assert.NotNull(set.Find($"vm_{SlugA}_power_shutdown"));
         Assert.All(PowerButtonIds(SlugA), id => Assert.NotNull(set.Find(id)));
     }
@@ -268,46 +239,28 @@ public class MqttEntityTableTests
         Assert.DoesNotContain(set.All, e => e.EntityId.StartsWith(MqttEntityTable.VmIdPrefix, StringComparison.Ordinal));
     }
 
-    /// <summary>The slug budget and the collision check are both composed from the declared suffix list,
-    /// so an entity carrying a suffix missing from it would be sized and de-duplicated against an id
-    /// nothing publishes. Asserted for EACH shape, because only one shape's power suffixes are emitted
-    /// at a time.</summary>
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void EveryPerVmIdIsTheSlugPlusADeclaredSuffix(bool powerButtons)
-        => Assert.All(
-            EmittedSuffixes(powerButtons),
-            suffix => Assert.Contains(suffix, MqttEntityTable.VmIdSuffixes));
-
     /// <summary>
-    /// The declared list is the UNION of both power shapes, not whichever is in force. The budget is cut
-    /// from the longest suffix in it, so a list following the active shape would be recomputed the moment
-    /// the setting is flipped — and a VM name that fitted under one shape would throw the whole table out
-    /// under the other, at startup, outside the publisher's guard.
+    /// The slug budget and the collision check are both composed from the declared suffix list, so an
+    /// entity carrying a suffix missing from it would be sized and de-duplicated against an id nothing
+    /// publishes, and a suffix declared for nothing would shrink every slug for an id never published.
     ///
-    /// <para>Equality both ways: nothing emitted is missing from the list, and nothing in the list goes
-    /// unemitted by both shapes — a suffix declared for nothing would shrink every slug for an id that
-    /// is never published.</para>
+    /// <para>Equality both ways, which is what makes it fail in either direction.</para>
     /// </summary>
     [Fact]
-    public void TheDeclaredSuffixesAreExactlyTheUnionOfBothPowerShapes()
+    public void TheDeclaredSuffixesAreExactlyWhatIsEmitted()
         => Assert.Equal(
             MqttEntityTable.VmIdSuffixes.Order(StringComparer.Ordinal),
-            EmittedSuffixes(false).Concat(EmittedSuffixes(true))
-                                  .Distinct(StringComparer.Ordinal)
-                                  .Order(StringComparer.Ordinal));
+            EmittedSuffixes().Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
 
-    /// <summary>Each shape's own power suffixes are declared — spelled out, so a rename of either shape's
-    /// id stem is caught here rather than only where the union happens to still balance.</summary>
+    /// <summary>The power buttons' suffixes, spelled out. A rename of the stem they are composed from
+    /// passes the equality above, because both of its sides are composed from that stem and move
+    /// together — so these literals are what pins the published ids, which a receiver keys its registry
+    /// entries on.</summary>
     [Fact]
-    public void BothPowerShapesDeclareTheirSuffixes()
-    {
-        Assert.Contains("_power", MqttEntityTable.VmIdSuffixes);
-        Assert.All(
+    public void ThePowerButtonSuffixesAreDeclared()
+        => Assert.All(
             ["_power_start", "_power_shutdown", "_power_pause", "_power_save", "_power_resume"],
             suffix => Assert.Contains(suffix, MqttEntityTable.VmIdSuffixes));
-    }
 
     /// <summary>A VM keeps its ids whatever its place in the list: they come from its own VM ID, so an
     /// entity whose id moved between runs — a different entity to a receiver — cannot come from a
@@ -470,20 +423,6 @@ public class MqttEntityTableTests
         Assert.Equal(MqttPayload.On,    Get(set, "vm_dev").ReadState());
     }
 
-    /// <summary>A verb is an event, not a state. Announcing the last one requested would read as the VM
-    /// being IN it — a select showing "Shutdown" over a VM that is running.</summary>
-    [Fact]
-    public void ThePowerSelectReportsNoCurrentVerb()
-    {
-        var spy = new Spy();
-        var set = MqttEntityTable.Build(spy.Spec("Dev"));
-        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Running" }]);
-
-        Send(set.Find("vm_dev_power")!, "Shutdown").Run!(CancellationToken.None).Wait();
-
-        Assert.Equal(MqttPayload.None, Get(set, "vm_dev_power").ReadState());
-    }
-
     /// <summary>These payloads are protocol values, not display text. Under a comma-decimal locale an
     /// unpinned format writes "1177,4", which a receiver in another locale reads as a thousands
     /// separator — or not at all.</summary>
@@ -565,63 +504,14 @@ public class MqttEntityTableTests
         Assert.Empty(spy.Power);
     }
 
-    [Fact]
-    public void ThePowerSelectRequestsTheNamedVerbForTheNamedVm()
-    {
-        var spy = new Spy();
-        var set = MqttEntityTable.Build(spy.Spec("Dev", "Build"));
-        spy.State.SetVms([new VmStatus { Id = "Build", Name = "Build", State = "Running" }]);
-
-        var verdict = Send(Get(set, "vm_build_power"), "Pause");
-        Assert.True(verdict.IsAccepted);
-        verdict.Run!(CancellationToken.None).Wait();
-
-        Assert.Equal(("Build", VmOpKind.Pause), Assert.Single(spy.Power));
-    }
-
-    [Fact]
-    public void ThePowerSelectRefusesAVerbTheStateDoesNotAllow()
-    {
-        var spy = new Spy();
-        var set = MqttEntityTable.Build(spy.Spec("Dev"));
-        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Running" }]);
-
-        var verdict = Send(Get(set, "vm_dev_power"), "Start");
-
-        Assert.Equal(MqttCommandOutcome.Refused, verdict.Outcome);
-        Assert.Equal("'Start' is not available while the VM is Running.", verdict.Detail);
-        Assert.Empty(spy.Power);
-    }
-
-    /// <summary>A payload the select never offered requests nothing: the module refuses it before the
-    /// table's handler runs.</summary>
-    [Fact]
-    public void ThePowerSelectRefusesAPayloadItNeverOffered()
-    {
-        var spy = new Spy();
-        var set = MqttEntityTable.Build(spy.Spec("Dev"));
-        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Off" }]);
-
-        var verdict = Send(Get(set, "vm_dev_power"), "Reboot");
-
-        Assert.Equal(MqttCommandOutcome.NotAnOption, verdict.Outcome);
-        Assert.Empty(spy.Power);
-    }
-
-    [Fact]
-    public void ThePowerSelectOffersTheGatesOwnVerbs()
-        => Assert.Equal(
-            MqttCommandGate.PowerOptions,
-            ((MqttSelect)Get(MqttEntityTable.Build(new Spy().Spec("Dev")), "vm_dev_power")).Options());
-
-    // ── The power buttons (the opt-in shape) ────────────────────────────────────
+    // ── The power buttons ───────────────────────────────────────────────────────
 
     /// <summary>One button per verb the gate declares, and nothing else under that stem: a verb without a
     /// button cannot be requested at all, and a button without a verb presses nothing.</summary>
     [Fact]
     public void ThereIsOnePowerButtonPerVerbTheGateDeclares()
     {
-        var set = Buttons(new Spy(), "Dev");
+        var set = MqttEntityTable.Build(new Spy().Spec("Dev"));
 
         Assert.Equal(
             MqttCommandGate.PowerVerbs.Count,
@@ -639,16 +529,16 @@ public class MqttEntityTableTests
     [InlineData("vm_dev_power_save",     "Dev save")]
     [InlineData("vm_dev_power_resume",   "Dev resume")]
     public void APowerButtonIsNamedForItsVerbInTheAppsOwnWords(string entityId, string expected)
-        => Assert.Equal(expected, Get(Buttons(new Spy(), "Dev"), entityId).Name);
+        => Assert.Equal(expected, Get(MqttEntityTable.Build(new Spy().Spec("Dev")), entityId).Name);
 
     /// <summary>A button has nothing to report between presses and declares no state channel, so it
-    /// publishes nothing — which is the whole difference from the select, and the reason the option
-    /// exists. The VM's actual power state is carried by vm_dev_state and vm_dev_running regardless.</summary>
+    /// publishes nothing. The VM's actual power state is carried by vm_dev_state and vm_dev_running,
+    /// which is where a person reads it.</summary>
     [Fact]
     public void ThePowerButtonsDeclareNoStateAtAll()
     {
         var spy = new Spy();
-        var set = Buttons(spy, "Dev");
+        var set = MqttEntityTable.Build(spy.Spec("Dev"));
         spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Running" }]);
 
         Assert.All(PowerButtonIds("dev"), id =>
@@ -670,7 +560,7 @@ public class MqttEntityTableTests
     public void APowerButtonRequestsItsOwnVerbForItsOwnVm(string state, VmOpKind kind)
     {
         var spy = new Spy();
-        var set = Buttons(spy, "Dev", "Build");
+        var set = MqttEntityTable.Build(spy.Spec("Dev", "Build"));
         spy.State.SetVms([new VmStatus { Id = "Build", Name = "Build", State = state }]);
 
         string id = $"vm_build{MqttEntityTable.PowerButtonSuffix(kind)}";
@@ -681,13 +571,13 @@ public class MqttEntityTableTests
         Assert.Equal(("Build", kind), Assert.Single(spy.Power));
     }
 
-    /// <summary>The gate is the select's, unchanged, so the refusal is word for word what the select
-    /// gives — and refused still means not attempted.</summary>
+    /// <summary>The refusal is the backstop behind the availability: a button that reached the broker
+    /// before the state moved, or a payload sent by hand, is refused rather than attempted.</summary>
     [Fact]
     public void APowerButtonRefusesAVerbTheStateDoesNotAllow()
     {
         var spy = new Spy();
-        var set = Buttons(spy, "Dev");
+        var set = MqttEntityTable.Build(spy.Spec("Dev"));
         spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Running" }]);
 
         var verdict = Send(Get(set, "vm_dev_power_start"), MqttButton.DefaultPress);
@@ -711,7 +601,7 @@ public class MqttEntityTableTests
     public void ThePowerButtonsAcceptExactlyTheVerbsTheStateAllows(string state, VmOpKind[] allowed)
     {
         var spy = new Spy();
-        var set = Buttons(spy, "Dev");
+        var set = MqttEntityTable.Build(spy.Spec("Dev"));
         spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = state }]);
 
         var accepted = MqttCommandGate.PowerVerbs
@@ -723,72 +613,143 @@ public class MqttEntityTableTests
         Assert.Equal(allowed, accepted);
     }
 
-    // ── Switching between the two shapes ────────────────────────────────────────
-
     /// <summary>
-    /// The shape being switched away from leaves the set ENTIRELY — not withheld. The distinction is what
-    /// the publisher acts on: an entity the table no longer contains is announced as removed and its
-    /// retained state topic emptied, whereas a withheld one keeps its whole entry and reads as
-    /// permanently unavailable. Withholding the old shape would leave a dead control on the device page
-    /// for ever.
+    /// Which buttons are published in each state, which is what decides whether the receiver shows the
+    /// control or greys it out. The same table as the row above, asserted against the availability rather
+    /// than against the verdict: a refusal reaches the log alone, so availability is the only part of it a
+    /// person sees.
+    ///
+    /// <para>Hard-coded rather than read back out of <see cref="VmStateUi.AllowedVerbs"/>, which would
+    /// pass against any table at all.</para>
     /// </summary>
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void SwitchingShape_DropsTheOtherShapeRatherThanWithholdingIt(bool powerButtons)
+    [InlineData("Running",  new[] { VmOpKind.Shutdown, VmOpKind.Pause, VmOpKind.Save })]
+    [InlineData("Paused",   new[] { VmOpKind.Save, VmOpKind.Resume })]
+    [InlineData("Saved",    new[] { VmOpKind.Start })]
+    [InlineData("Off",      new[] { VmOpKind.Start })]
+    [InlineData("Starting", new VmOpKind[0])]
+    [InlineData("Unknown",  new VmOpKind[0])]
+    public void ThePowerButtonsArePublishedForExactlyTheVerbsTheStateAllows(string state, VmOpKind[] allowed)
     {
-        var set = Shaped(powerButtons, "Dev");
+        var spy = new Spy();
+        var set = MqttEntityTable.Build(spy.Spec("Dev"));
+        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = state }]);
 
-        var gone = powerButtons ? (string[])["vm_dev_power"] : [.. PowerButtonIds("dev")];
+        var published = MqttCommandGate.PowerVerbs
+            .Where(kind => Get(set, $"vm_dev{MqttEntityTable.PowerButtonSuffix(kind)}").IsPublished(null) == true)
+            .ToList();
 
-        Assert.All(gone, id => Assert.Null(set.Find(id)));
-        // Not merely unpublished: withheld entities are still in the set, and these must not be.
-        Assert.All(gone, id => Assert.DoesNotContain(id, set.Withheld(null).Select(e => e.EntityId)));
-        Assert.All(gone, id => Assert.DoesNotContain(id, set.All.Select(e => e.EntityId)));
+        Assert.Equal(allowed, published);
     }
 
-    /// <summary>Everything except the power controls survives the switch untouched, so flipping the
-    /// option costs a receiver nothing beyond the controls it replaces.</summary>
+    /// <summary>A verb that is not valid is WITHHELD, not dropped: it keeps its entry and its registry
+    /// record, and returns the moment the state allows it. Dropping it would delete and recreate the
+    /// entity on every state change.</summary>
     [Fact]
-    public void SwitchingShape_LeavesEveryOtherEntityWhereItWas()
+    public void AnUnavailablePowerButtonIsWithheldRatherThanDropped()
     {
-        var selects = MqttEntityTable.Build(new Spy().Spec("Dev"));
-        var buttons = Buttons(new Spy(), "Dev");
+        var spy = new Spy();
+        var set = MqttEntityTable.Build(spy.Spec("Dev"));
+        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Off" }]);
 
-        static IEnumerable<string> NonPower(MqttEntitySet set) =>
-            set.All.Select(e => e.EntityId)
-                   .Where(id => !id.StartsWith("vm_dev_power", StringComparison.Ordinal))
-                   // The services' controls follow the same setting (issue #114).
-                   .Where(id => !id.StartsWith("service_", StringComparison.Ordinal) || id.EndsWith("_state", StringComparison.Ordinal));
+        var withheld = set.Withheld(null).Select(e => e.EntityId).ToList();
 
-        Assert.Equal(NonPower(selects), NonPower(buttons));
+        Assert.Contains("vm_dev_power_pause", withheld);
+        Assert.DoesNotContain("vm_dev_power_start", withheld);
+        Assert.NotNull(set.Find("vm_dev_power_pause"));   // still declared, just not announced
     }
 
-    /// <summary>The signature is what decides whether the document is rebuilt and re-announced. A shape
-    /// change has to move it — otherwise the flip is saved, nothing is re-announced, and the old shape
-    /// stands on the broker until something unrelated changes the VM list.</summary>
+    /// <summary>While a Hyper-V service is down only a start is offered, and it starts the service first
+    /// (issue #114) — so the availability follows that branch too rather than the plain state table, which
+    /// would grey out the one verb that works.</summary>
+    [Fact]
+    public void WhileAServiceIsDownOnlyTheStartAndResumeButtonsArePublished()
+    {
+        var spy = new Spy();
+        var set = MqttEntityTable.Build(spy.Spec("Dev") with
+        {
+            AnyServiceDown = () => true,
+            VmmsDown       = () => true,
+        });
+        spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Running" }]);
+
+        Assert.Equal(
+            new[] { VmOpKind.Start, VmOpKind.Resume },
+            MqttCommandGate.PowerVerbs
+                .Where(kind => Get(set, $"vm_dev{MqttEntityTable.PowerButtonSuffix(kind)}").IsPublished(null) == true));
+    }
+
+    // ── The service buttons (issue #114) ────────────────────────────────────────
+
+    /// <summary>A service's start is offered only while it is stopped and its stop only while it is
+    /// running, so the button a person sees is the one that can be pressed. Not read yet offers neither.</summary>
+    [Theory]
+    [InlineData(HyperVServiceState.Unknown, false, false)]
+    [InlineData(HyperVServiceState.Stopped, true,  false)]
+    [InlineData(HyperVServiceState.Running, false, true)]
+    [InlineData(HyperVServiceState.Starting, false, false)]
+    public void AServiceButtonIsPublishedOnlyWhileItsVerbApplies(
+        HyperVServiceState state, bool startShown, bool stopShown)
+    {
+        var spy = new Spy();
+        spy.Services[HyperVServiceKind.VirtualMachineManagement] = state;
+        var set = MqttEntityTable.Build(spy.Spec());
+
+        Assert.Equal(startShown, Get(set, "service_vmms_start").IsPublished(null));
+        Assert.Equal(stopShown,  Get(set, "service_vmms_stop").IsPublished(null));
+    }
+
+    /// <summary>The Host Compute Service has no stop button at all — it is stopped only from the
+    /// dashboard — so its stop is absent rather than merely unavailable.</summary>
+    [Fact]
+    public void TheHostComputeServiceHasNoStopButton()
+    {
+        var spy = new Spy();
+        spy.Services[HyperVServiceKind.HostCompute] = HyperVServiceState.Running;
+
+        Assert.Null(MqttEntityTable.Build(spy.Spec()).Find("service_vmcompute_stop"));
+    }
+
+    /// <summary>A press reaches the service command it names. Refused rather than attempted when the
+    /// state does not allow it, which is the backstop behind the availability above.</summary>
+    [Fact]
+    public void AServiceButtonRunsItsOwnVerbAndRefusesTheOther()
+    {
+        var spy = new Spy();
+        spy.Services[HyperVServiceKind.VirtualMachineManagement] = HyperVServiceState.Running;
+        var set = MqttEntityTable.Build(spy.Spec());
+
+        Press(Get(set, "service_vmms_stop"));
+        Assert.Equal((HyperVServiceKind.VirtualMachineManagement, false), Assert.Single(spy.ServiceCommands));
+
+        var verdict = Send(Get(set, "service_vmms_start"), MqttButton.DefaultPress);
+        Assert.Equal(MqttCommandOutcome.Refused, verdict.Outcome);
+        Assert.Single(spy.ServiceCommands);
+    }
+
+    // ── Switching between the two shapes ────────────────────────────────────────
+
+    // ── The table signature ─────────────────────────────────────────────────────
+
+    /// <summary>The signature is what decides whether the document is rebuilt and re-announced, so a
+    /// change to what the table names has to move it and a config write that left the table alone must
+    /// not.</summary>
     private static readonly VmRef Dev   = new(GuidA, "Dev");
     private static readonly VmRef Build = new(GuidC, "Build");
 
     [Fact]
-    public void Signature_MovesWhenThePowerShapeChanges()
-        => Assert.NotEqual(
-            MqttEntityTable.Signature([Dev, Build], powerButtons: false),
-            MqttEntityTable.Signature([Dev, Build], powerButtons: true));
-
-    [Fact]
     public void Signature_MovesWhenTheVmListChanges()
         => Assert.NotEqual(
-            MqttEntityTable.Signature([Dev], powerButtons: false),
-            MqttEntityTable.Signature([Dev, Build], powerButtons: false));
+            MqttEntityTable.Signature([Dev]),
+            MqttEntityTable.Signature([Dev, Build]));
 
     /// <summary>A rename moves no id but does move the entities' names, which only a re-announcement
     /// carries to the receiver.</summary>
     [Fact]
     public void Signature_MovesWhenAVmIsRenamed()
         => Assert.NotEqual(
-            MqttEntityTable.Signature([Dev], powerButtons: false),
-            MqttEntityTable.Signature([Dev with { Name = "Dev renamed" }], powerButtons: false));
+            MqttEntityTable.Signature([Dev]),
+            MqttEntityTable.Signature([Dev with { Name = "Dev renamed" }]));
 
     /// <summary>…and stands still otherwise, including for a hand-edited <c>"name": null</c>: a config
     /// write that left the table alone must not re-announce the whole document.</summary>
@@ -796,11 +757,11 @@ public class MqttEntityTableTests
     public void Signature_StandsStillWhenNothingTheTableReadsMoved()
     {
         Assert.Equal(
-            MqttEntityTable.Signature([Dev, Build], powerButtons: true),
-            MqttEntityTable.Signature([new VmRef(GuidA, "Dev"), new VmRef(GuidC, "Build")], powerButtons: true));
+            MqttEntityTable.Signature([Dev, Build]),
+            MqttEntityTable.Signature([new VmRef(GuidA, "Dev"), new VmRef(GuidC, "Build")]));
         Assert.Equal(
-            MqttEntityTable.Signature([new VmRef(GuidA, null!), Build], powerButtons: false),
-            MqttEntityTable.Signature([new VmRef(GuidA, ""), Build], powerButtons: false));
+            MqttEntityTable.Signature([new VmRef(GuidA, null!), Build]),
+            MqttEntityTable.Signature([new VmRef(GuidA, ""), Build]));
     }
 
     // ── The switch override ─────────────────────────────────────────────────────
@@ -832,6 +793,74 @@ public class MqttEntityTableTests
 
         Assert.True(entity.IsPublished(null));
         Assert.Equal(["Bridged", "Default Switch"], entity.Options());
+    }
+
+    /// <summary>The fallback switch is an option too. Without it the list holds only what the rules bind —
+    /// which on a host with one rule is the switch the machine is already on, so there is nothing to
+    /// override to. It comes after the rules' own switches.</summary>
+    [Fact]
+    public void TheSwitchOverrideOffersTheFallbackSwitchBesideTheRules()
+    {
+        var spy = new Spy();
+        spy.Switches = ["Bridged"];
+        spy.Fallback = "Default Switch";
+
+        var entity = (MqttSelect)Get(MqttEntityTable.Build(spy.Spec("Dev")), "vm_dev_switch_override");
+
+        Assert.Equal(["Bridged", "Default Switch"], entity.Options());
+    }
+
+    /// <summary>A fallback that names a switch a rule already binds appears once: the options are a
+    /// select's values, so a repeated one would be two ways to ask for the same switch. By identifier, not
+    /// by name — two switches may share a name.</summary>
+    [Fact]
+    public void TheSwitchOverrideOffersAFallbackThatIsAlsoARuleSwitchOnlyOnce()
+    {
+        var spy = new Spy();
+        spy.Switches = ["Bridged"];
+        spy.Fallback = "Bridged";
+
+        var entity = (MqttSelect)Get(MqttEntityTable.Build(spy.Spec("Dev")), "vm_dev_switch_override");
+
+        Assert.Equal(["Bridged"], entity.Options());
+    }
+
+    /// <summary>The fallback alone does not publish the override: the entity exists to move a machine off
+    /// what a rule bound it to, so a host with no rules has nothing to override and the entity stays
+    /// withheld.</summary>
+    [Fact]
+    public void TheFallbackSwitchAloneDoesNotPublishTheSwitchOverride()
+    {
+        var spy = new Spy();
+        spy.Fallback = "Default Switch";
+
+        var entity = Get(MqttEntityTable.Build(spy.Spec("Dev")), "vm_dev_switch_override");
+
+        Assert.False(entity.IsPublished(null));
+    }
+
+    /// <summary>A machine on the fallback switch reads as being on it, and the value it reads back is
+    /// accepted — so the option list and the reading cannot disagree.</summary>
+    [Fact]
+    public void TheSwitchOverrideBindsAndReadsTheFallbackSwitch()
+    {
+        var spy = new Spy();
+        spy.Switches = ["Bridged"];
+        spy.Fallback = "Default Switch";
+        var set = MqttEntityTable.Build(spy.Spec("Dev"));
+        var entity = Get(set, "vm_dev_switch_override");
+
+        spy.State.SetVms([new VmStatus
+        {
+            Id = "Dev", Name = "Dev", State = "Off", SwitchId = Spy.SwitchIdOf("Default Switch"),
+        }]);
+        Assert.Equal("Default Switch", entity.ReadState());
+
+        var verdict = Send(entity, entity.ReadState()!);
+        Assert.True(verdict.IsAccepted);
+        verdict.Run!(CancellationToken.None).Wait();
+
+        Assert.Equal(("Dev", Spy.SwitchIdOf("Default Switch")), Assert.Single(spy.Overrides));
     }
 
     [Fact]
@@ -902,8 +931,10 @@ public class MqttEntityTableTests
     [InlineData("vm_dev_state",           MqttEntityTable.VmGroup)]
     [InlineData("vm_dev_running",         MqttEntityTable.VmGroup)]
     [InlineData("vm_dev",                 MqttEntityTable.VmGroup)]
-    [InlineData("vm_dev_power",           MqttEntityTable.VmGroup)]
     [InlineData("vm_dev_switch_override", MqttEntityTable.VmGroup)]
+    [InlineData("service_vmms_state",     MqttEntityTable.ServicesGroup)]
+    [InlineData("service_vmms_start",     MqttEntityTable.ServicesGroup)]
+    [InlineData("service_vmms_stop",      MqttEntityTable.ServicesGroup)]
     [InlineData("vm_dev_switch",          MqttEntityTable.DiagnosticsGroup)]
     [InlineData("vm_dev_ip",              MqttEntityTable.DiagnosticsGroup)]
     [InlineData("vm_dev_uptime",          MqttEntityTable.DiagnosticsGroup)]
@@ -914,12 +945,12 @@ public class MqttEntityTableTests
     public void EveryEntityCarriesItsDeclaredGroup(string entityId, string group)
         => Assert.Equal(group, Get(MqttEntityTable.Build(new Spy().Spec("Dev")), entityId).Group);
 
-    /// <summary>The buttons file under the same group the select did, so switching shape does not move a
-    /// power control out from under the toggle that switches it off.</summary>
+    /// <summary>Every power button files under the machines' own group, so none of them sits outside the
+    /// toggle that switches the machine controls off.</summary>
     [Fact]
     public void EveryPowerButtonCarriesTheVmGroup()
     {
-        var set = Buttons(new Spy(), "Dev");
+        var set = MqttEntityTable.Build(new Spy().Spec("Dev"));
 
         Assert.All(PowerButtonIds("dev"),
                    id => Assert.Equal(MqttEntityTable.VmGroup, Get(set, id).Group));
@@ -927,13 +958,11 @@ public class MqttEntityTableTests
 
     /// <summary>Every entity belongs to a group the app DECLARED. An unknown key reads as "always on" at
     /// the receiver, so the settings panel would offer no way to switch it off.</summary>
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void EveryEntityBelongsToADeclaredGroup(bool powerButtons)
+    [Fact]
+    public void EveryEntityBelongsToADeclaredGroup()
     {
         var declared = MqttEntityTable.Groups.Select(g => g.Key).ToHashSet(StringComparer.Ordinal);
-        var set = Shaped(powerButtons, "Dev");
+        var set = MqttEntityTable.Build(new Spy().Spec("Dev"));
 
         Assert.All(set.All, e => Assert.Contains(e.Group!, declared));
     }

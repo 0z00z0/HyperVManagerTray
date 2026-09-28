@@ -7,9 +7,9 @@ using Windows.UI;
 namespace HyperVManagerTray.Helpers;
 
 /// <summary>
-/// Window-chrome branding for this app's one titled window (issues #36 and #146): gives it the product
-/// icon in the title bar / taskbar / Alt-Tab, and paints the standard title bar to match the backdrop
-/// behind it in both of the backdrop's states, so the bar and the client area read as one surface.
+/// Window-chrome branding for this app's one titled window (issue #36): gives it the product icon in
+/// the title bar / taskbar / Alt-Tab, and — on the dark theme — paints the standard title bar the same
+/// colour as the <c>MicaBackdrop Kind="BaseAlt"</c> backdrop behind it, so the two stop clashing.
 /// The colour choices themselves live in <see cref="TitleBarPalette"/>; this file is only the WinUI glue.
 ///
 /// <para>Only touches the icon and the title-bar colours — never the presenter or the border — so it is
@@ -66,26 +66,24 @@ internal static class TitleBarTheme
     }
 
     /// <summary>
-    /// Paints the title bar to match the backdrop, in both themes and in both of the backdrop's states:
-    /// the active tone while the window has input, the flat grey while it does not.
+    /// Paints the title bar to match the Mica BaseAlt backdrop on the dark theme; leaves the system
+    /// default alone otherwise (see <see cref="TitleBarPalette.ForTheme"/> for why light is a no-op).
     /// Gated on <see cref="AppWindowTitleBar.IsCustomizationSupported"/>.
     /// </summary>
     private static void ApplyColors(AppWindow appWindow, ElementTheme theme)
     {
         try
         {
+            if (TitleBarPalette.ForTheme(IsDark(theme)) is not { } palette) return;
             if (!AppWindowTitleBar.IsCustomizationSupported()) return;
-
-            var palette = TitleBarPalette.ForTheme(IsDark(theme));
 
             var tb = appWindow.TitleBar;
             var bg    = ToColor(palette.Background);
-            var bgOff = ToColor(palette.InactiveBackground);
             var fg    = ToColor(palette.Foreground);
             var hover = ToColor(palette.ButtonHover);
 
             tb.BackgroundColor         = bg;
-            tb.InactiveBackgroundColor = bgOff;
+            tb.InactiveBackgroundColor = bg;
             tb.ForegroundColor         = fg;
             tb.InactiveForegroundColor = fg;
 
@@ -93,7 +91,7 @@ internal static class TitleBarTheme
             // caption area, so leaving these transparent renders a light strip behind the min/max/close
             // buttons that defeats the point of theming the bar at all.
             tb.ButtonBackgroundColor         = bg;
-            tb.ButtonInactiveBackgroundColor = bgOff;
+            tb.ButtonInactiveBackgroundColor = bg;
             tb.ButtonForegroundColor         = fg;
             tb.ButtonHoverForegroundColor    = fg;
             tb.ButtonHoverBackgroundColor    = hover;

@@ -148,11 +148,13 @@ public class MqttCommandGateTests
 
     // ── The announced power verbs ───────────────────────────────────────────────
 
-    /// <summary>The options are the verb names, in the declared order: the receiver renders them in it,
-    /// and the power select parses an option back to its verb by that name.</summary>
+    /// <summary>The verbs in the declared order: one button each is published in it, and the receiver
+    /// renders them in it.</summary>
     [Fact]
-    public void PowerOptions_AreTheVerbNamesInTheDeclaredOrder()
-        => Assert.Equal(["Start", "Shutdown", "Pause", "Save", "Resume"], MqttCommandGate.PowerOptions);
+    public void PowerVerbs_AreInTheDeclaredOrder()
+        => Assert.Equal(
+            ["Start", "Shutdown", "Pause", "Save", "Resume"],
+            MqttCommandGate.PowerVerbs.Select(v => v.ToString()));
 
     [Fact]
     public void PowerVerbs_CoverEveryVerbTheStateTableCanOffer()

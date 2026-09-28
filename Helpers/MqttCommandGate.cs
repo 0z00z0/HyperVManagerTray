@@ -10,17 +10,25 @@ namespace HyperVManagerTray.Helpers;
 ///
 /// <para>The state refusals are the application's own sentences, carried verbatim to
 /// <see cref="MqttConnectionSetup.CommandRefused"/>: only this app knows why a verb it understands is one
-/// the VM's state does not allow. A value outside a select's options never reaches this gate; the module
-/// refuses it first, in its own words.</para>
+/// the VM's state does not allow. A refusal reaches the log alone, so a verb that is not valid is also
+/// declared unavailable — see <see cref="PowerAvailable"/> and <see cref="ServiceVerbAvailable"/>, which
+/// the buttons' <c>Include</c> reads — and the refusal is the backstop rather than the only answer.</para>
 /// </summary>
 public static class MqttCommandGate
 {
-    /// <summary>The power verbs announced as select options, in the order the receiver shows them.</summary>
+    /// <summary>The power verbs one button each is published for, in the order the receiver shows them.</summary>
     public static readonly IReadOnlyList<VmOpKind> PowerVerbs =
         [VmOpKind.Start, VmOpKind.Shutdown, VmOpKind.Pause, VmOpKind.Save, VmOpKind.Resume];
 
-    /// <summary>The option strings for the per-VM power select.</summary>
-    public static IReadOnlyList<string> PowerOptions => [.. PowerVerbs.Select(v => v.ToString())];
+    /// <summary>Whether <paramref name="kind"/> is offered for this VM right now — what a power button's
+    /// availability reads, so a button is greyed out exactly when pressing it would be refused.</summary>
+    /// <remarks>Composed from the same two expressions the verdicts below are, rather than restating
+    /// them: an availability that disagreed with the gate would grey out a verb that works, or offer one
+    /// that cannot.</remarks>
+    public static bool PowerAvailable(string? state, VmOpKind kind, bool anyServiceDown, bool vmmsDown) =>
+        anyServiceDown
+            ? StartableWhileServicesDown(state, vmmsDown, kind)
+            : VmStateUi.AllowedVerbs(state).Contains(kind);
 
     /// <summary>Whether <paramref name="kind"/> may be requested for a VM currently in
     /// <paramref name="state"/>, and what to run when it may.</summary>
@@ -46,23 +54,26 @@ public static class MqttCommandGate
     /// cannot be read; with only the Host Compute Service down, one that is off, saved or paused.
     /// </summary>
     public static MqttCommandVerdict PowerWhileServicesDown(
-        string? state, bool vmmsDown, VmOpKind kind, Func<CancellationToken, Task> startViaServices)
-    {
-        bool startable = vmmsDown
-            || VmStateUi.ClassifyShape(state) is VmStateUi.Shape.Off or VmStateUi.Shape.Saved or VmStateUi.Shape.Paused;
-        return (kind is VmOpKind.Start or VmOpKind.Resume) && startable
+        string? state, bool vmmsDown, VmOpKind kind, Func<CancellationToken, Task> startViaServices) =>
+        StartableWhileServicesDown(state, vmmsDown, kind)
             ? MqttCommandVerdict.Accept(startViaServices)
             : MqttCommandVerdict.Refuse(
                 $"'{kind}' is not available while a Hyper-V service is stopped. Start is, and starts the service first.");
-    }
 
-    /// <summary>The verbs a Hyper-V service takes, as select options and button suffixes.</summary>
-    public static readonly IReadOnlyList<string> ServiceOptions = ["Start", "Stop"];
+    /// <summary>Whether a VM verb is one the services-down path takes: with vmms down any VM may be
+    /// started, since its state cannot be read; with only the Host Compute Service down, one that is off,
+    /// saved or paused.</summary>
+    private static bool StartableWhileServicesDown(string? state, bool vmmsDown, VmOpKind kind) =>
+        (kind is VmOpKind.Start or VmOpKind.Resume)
+        && (vmmsDown
+            || VmStateUi.ClassifyShape(state) is VmStateUi.Shape.Off or VmStateUi.Shape.Saved or VmStateUi.Shape.Paused);
 
-    /// <summary>The verbs <paramref name="kind"/> offers over MQTT: the Host Compute Service has no stop,
-    /// because it is stopped only from the dashboard.</summary>
-    public static IReadOnlyList<string> ServiceOptionsFor(HyperVServiceKind kind) =>
-        ServiceStopGuard.MayStopUnattended(kind) ? ServiceOptions : [ServiceOptions[0]];
+    /// <summary>Whether a service verb is offered right now — what a service button's availability reads.
+    /// The same condition <see cref="Service"/> accepts on, so the button is greyed out exactly when
+    /// pressing it would be refused.</summary>
+    public static bool ServiceVerbAvailable(HyperVServiceKind kind, HyperVServiceState state, bool start) =>
+        (start || ServiceStopGuard.MayStopUnattended(kind))
+        && state == (start ? HyperVServiceState.Stopped : HyperVServiceState.Running);
 
     /// <summary>
     /// Whether a service start or stop may be requested now (issue #114): a start only from stopped, a
@@ -76,8 +87,8 @@ public static class MqttCommandGate
         if (!start && !ServiceStopGuard.MayStopUnattended(kind))
             return MqttCommandVerdict.Refuse(ServiceStopGuard.UnattendedStopRefusedMessage(kind));
 
-        var needed = start ? HyperVServiceState.Stopped : HyperVServiceState.Running;
-        return state == needed
+        // Through the predicate, so the button's availability and this refusal cannot disagree.
+        return ServiceVerbAvailable(kind, state, start)
             ? MqttCommandVerdict.Accept(run)
             : MqttCommandVerdict.Refuse(
                 $"'{(start ? "Start" : "Stop")}' is not available while the service is "
