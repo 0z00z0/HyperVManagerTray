@@ -1005,7 +1005,6 @@ internal sealed partial class SettingsWindow : Window
         panel.Children.Add(new TextBlock
         {
             Text = "Rules", FontSize = 13, FontWeight = FontWeights.SemiBold, Margin = new Thickness(2, 6, 0, 0),
-            Foreground = Brush("ProductHeadingBrush"),
         });
 
         _rulesListPanel = new StackPanel { Spacing = 10 };
@@ -1068,7 +1067,6 @@ internal sealed partial class SettingsWindow : Window
         panel.Children.Add(new TextBlock
         {
             Text = "Fallback", FontSize = 13, FontWeight = FontWeights.SemiBold, Margin = new Thickness(2, 12, 0, 0),
-            Foreground = Brush("ProductHeadingBrush"),
         });
 
         var fb = _config.Current.Fallback;
@@ -1092,7 +1090,6 @@ internal sealed partial class SettingsWindow : Window
         panel.Children.Add(new TextBlock
         {
             Text = "Override", FontSize = 13, FontWeight = FontWeights.SemiBold, Margin = new Thickness(2, 12, 0, 0),
-            Foreground = Brush("ProductHeadingBrush"),
         });
         panel.Children.Add(BuildOverrideRow());
 
@@ -2039,22 +2036,16 @@ internal sealed partial class SettingsWindow : Window
             Text       = title,
             FontSize   = 20,
             FontWeight = FontWeights.SemiBold,
-            Foreground = Brush("ProductHeadingBrush"),
             Margin     = new Thickness(0, 0, 0, 4),
         });
         return panel;
     }
 
-    /// <summary>
-    /// A description line under a heading or beside a control. The tint carries the product colour
-    /// rather than fading neutral text: opacity composites against whatever happens to be behind the
-    /// line, which on a card over Mica is not the surface the fade was judged against.
-    /// </summary>
     private static TextBlock Description(string text) => new()
     {
         Text         = text,
         FontSize     = 12,
-        Foreground   = Brush("ProductDescriptionBrush"),
+        Opacity      = 0.75,
         TextWrapping = TextWrapping.Wrap,
         Margin       = new Thickness(2, 0, 0, 2),
     };
@@ -2098,7 +2089,7 @@ internal sealed partial class SettingsWindow : Window
             {
                 Text         = description,
                 FontSize     = 11,
-                Foreground   = Brush("ProductDescriptionBrush"),
+                Opacity      = 0.7,
                 TextWrapping = TextWrapping.Wrap,
             });
 
