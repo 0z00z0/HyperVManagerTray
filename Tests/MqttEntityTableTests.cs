@@ -252,16 +252,15 @@ public class MqttEntityTableTests
             MqttEntityTable.VmIdSuffixes.Order(StringComparer.Ordinal),
             EmittedSuffixes().Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
 
-    /// <summary>Each shape's own power suffixes are declared — spelled out, so a rename of either shape's
-    /// id stem is caught here rather than only where the union happens to still balance.</summary>
+    /// <summary>The power buttons' suffixes, spelled out. A rename of the stem they are composed from
+    /// passes the equality above, because both of its sides are composed from that stem and move
+    /// together — so these literals are what pins the published ids, which a receiver keys its registry
+    /// entries on.</summary>
     [Fact]
-    public void BothPowerShapesDeclareTheirSuffixes()
-    {
-        Assert.Contains("_power", MqttEntityTable.VmIdSuffixes);
-        Assert.All(
+    public void ThePowerButtonSuffixesAreDeclared()
+        => Assert.All(
             ["_power_start", "_power_shutdown", "_power_pause", "_power_save", "_power_resume"],
             suffix => Assert.Contains(suffix, MqttEntityTable.VmIdSuffixes));
-    }
 
     /// <summary>A VM keeps its ids whatever its place in the list: they come from its own VM ID, so an
     /// entity whose id moved between runs — a different entity to a receiver — cannot come from a
