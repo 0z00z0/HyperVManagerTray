@@ -67,10 +67,14 @@
          0.10.0 paces the download's progress for a surface and ends a completed download with its
          true byte count. 0.11.0 draws every step of an update as one window in the studio's style,
          which is what ZeroZero.Update.WinUI carries; ZeroZero.Update.Win32 keeps the flow, the
-         interface and the wording and arrives with it. -->
-    <PackageVersion Include="ZeroZero.Update" Version="0.11.0" />
-    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.11.0" />
-    <PackageVersion Include="ZeroZero.Update.WinUI" Version="0.11.0" />
+         interface and the wording and arrives with it.
+         0.12.0 adds how long the machine has gone untouched, and a decision of when a check runs and
+         when an installer may start with nobody asked. Both are additive and reached only by calling
+         them; nothing here calls either, so the update flow behaves exactly as on 0.11.0 and this
+         application's own Helpers\UnattendedUpdate.cs stays the one that decides. -->
+    <PackageVersion Include="ZeroZero.Update" Version="0.12.0" />
+    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.12.0" />
+    <PackageVersion Include="ZeroZero.Update.WinUI" Version="0.12.0" />
   </ItemGroup>
 
   <!-- Test project only. -->
