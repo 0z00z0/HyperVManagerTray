@@ -51,9 +51,15 @@
          0.8.0 adds a certificate-trust row to the settings panel the host embeds, so that row appears
          in this application's MQTT page without being asked for. 0.8.1 appends a note to the Broker
          section's collapsed summary when the trust mode is "accept any certificate"; this application
-         does not use that mode, so the summary line reads as before. -->
-    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.8.1" />
-    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.8.1" />
+         does not use that mode, so the summary line reads as before.
+         0.9.0 builds the settings panel's setup from the live connection, so the activity feed, the
+         connection state and the publish-now call are read from it rather than passed by hand;
+         Services\MqttService.cs hands the connection over and no longer writes those three. The
+         remembered endpoint is still stated here, because this application's copy is the persisted one
+         in config.json rather than the connection's. 0.9.0 also stops Apply opening a second test
+         connection when the newest test passed on the same values. -->
+    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.9.0" />
+    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.9.0" />
     <!-- 0.9.0 adds TransientWindows, the count of this application's own short-lived windows.
          UI\DashboardWindow.xaml.cs asks it before dismissing itself on lost focus, so the dashboard
          stays put when the update window opens in front of it. 0.9.1 adds WindowFit, the arithmetic
@@ -73,14 +79,16 @@
          which is what ZeroZero.Update.WinUI carries; ZeroZero.Update.Win32 keeps the flow, the
          interface and the wording and arrives with it.
          0.12.0 adds how long the machine has gone untouched, and a decision of when a check runs and
-         when an installer may start with nobody asked. Both are additive and reached only by calling
-         them; nothing here calls either, so the update flow behaves exactly as on 0.11.0 and this
-         application's own Helpers\UnattendedUpdate.cs stays the one that decides. Nothing through 0.12.2
-         is wired: the whole of it is reached only by calling it, and taking any of it is a later
-         decision. -->
-    <PackageVersion Include="ZeroZero.Update" Version="0.12.2" />
-    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.12.2" />
-    <PackageVersion Include="ZeroZero.Update.WinUI" Version="0.12.2" />
+         when an installer may start with nobody asked. That decision is wired: UnattendedUpdatePolicy
+         drives the check, the download and the launch behind the "Install updates automatically"
+         setting, which is off unless switched on. The ten-minute machine-free rule belongs to the
+         component and cannot be loosened; this application only refuses a single moment, through
+         MayInstallNow. 0.12.1 adds a cadence that checks once and 0.12.2 reports every tick; neither
+         is set here, so the defaults apply — a check a day on a ten-minute retry tick. 0.12.3 carries
+         no code change at all. -->
+    <PackageVersion Include="ZeroZero.Update" Version="0.12.3" />
+    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.12.3" />
+    <PackageVersion Include="ZeroZero.Update.WinUI" Version="0.12.3" />
   </ItemGroup>
 
   <!-- Test project only. -->

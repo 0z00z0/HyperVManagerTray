@@ -46,15 +46,29 @@ internal static class UnattendedUpdate
 
         /// <summary>Round-trip UTC. Kept for reading the file by hand.</summary>
         public string StartedUtc { get; init; } = "";
+
+        /// <summary>
+        /// Whether nobody asked for this update — the automatic install, rather than the tray's
+        /// "Check for updates". The one thing that tells the two paths apart, and it is written down
+        /// because nothing else here can: the version, the time and the refusal are identical either
+        /// way, and the process that could have said which is the one Setup had to close.
+        /// </summary>
+        /// <remarks>False in a record an older version wrote, which is correct: automatic installing
+        /// did not exist, so every such record came from someone pressing the menu item.</remarks>
+        public bool Automatic { get; init; }
     }
 
     /// <summary>What the next start reports about one attempt.</summary>
-    internal sealed record Outcome(UpdateVerdict Verdict, string TargetVersion, string RunningVersion, string? Refusal);
+    internal sealed record Outcome(
+        UpdateVerdict Verdict, string TargetVersion, string RunningVersion, string? Refusal, bool Automatic);
 
     /// <summary>Records the attempt. Called once Setup is running and before this process exits: Setup
     /// waits for that exit before it installs anything, so the record is always on disk first. Never
     /// throws — a record that cannot be written must not stop the update.</summary>
-    internal static void Record(string dataDir, string targetVersion, DateTimeOffset now, ILogSink log)
+    /// <param name="automatic">True where nobody asked — the automatic install. Stated by the caller
+    /// rather than guessed at here: it is the caller that knows which path it is on, and neither the
+    /// timing of the write nor whether a window was open can tell the two apart.</param>
+    internal static void Record(string dataDir, string targetVersion, bool automatic, DateTimeOffset now, ILogSink log)
     {
         try
         {
@@ -65,6 +79,7 @@ internal static class UnattendedUpdate
             {
                 TargetVersion = targetVersion,
                 StartedUtc    = now.ToUniversalTime().ToString("O", System.Globalization.CultureInfo.InvariantCulture),
+                Automatic     = automatic,
             }));
         }
         catch (Exception ex)
@@ -113,7 +128,7 @@ internal static class UnattendedUpdate
             return null;
         }
 
-        return new Outcome(verdict, handover!.TargetVersion, runningVersion, refusal);
+        return new Outcome(verdict, handover!.TargetVersion, runningVersion, refusal, handover.Automatic);
     }
 
     /// <summary>

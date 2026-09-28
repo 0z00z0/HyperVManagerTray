@@ -98,6 +98,19 @@ public sealed class AppConfig
     public LogLevel LogLevel { get; set; } = LogLevel.Debug;
 
     /// <summary>
+    /// Whether a new release installs itself, with nobody accepting anything. False unless switched
+    /// on, and an absent property reads as false, so an existing settings document keeps the
+    /// behaviour it has: a check at start that only badges the tray, and an install only from the
+    /// tray's "Check for updates".
+    ///
+    /// <para>On, the shared update component checks once a day and installs what it finds — but only
+    /// while the screen is locked or the machine has gone ten minutes untouched. That rule is the
+    /// component's and cannot be loosened from here; the one thing this app may do is refuse a
+    /// single moment, which <c>Services/AppUpdate.cs</c> does while a bridge-lost action is armed.</para>
+    /// </summary>
+    public bool InstallUpdatesAutomatically { get; set; }
+
+    /// <summary>
     /// MQTT publishing (issue #75). Never null in a loaded config: <c>ConfigManager.Load</c> replaces a
     /// missing section, or one hand-edited to <c>"mqtt": null</c>, with inert defaults — so every
     /// consumer can read it without a null check and a config written before the section existed still

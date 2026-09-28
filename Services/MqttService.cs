@@ -162,7 +162,8 @@ public sealed class MqttService : IDisposable
         Apply();
     }
 
-    /// <summary>What the connection is doing, as a status line says it.</summary>
+    /// <summary>What the connection is doing. Read by the metrics reconcile, which switches the metrics
+    /// group by whether the link is up.</summary>
     public MqttConnectionState State => _connection?.State ?? MqttConnectionState.Disabled;
 
     /// <summary>The settings store, for the settings panel to commit through.</summary>
@@ -176,19 +177,25 @@ public sealed class MqttService : IDisposable
     /// <remarks>Every callback is raised on the UI thread. None of them blocks it: the applies are
     /// fire-and-forget, the metrics reconcile takes one uncontended lock, and the publish is awaited by
     /// the panel rather than by us.</remarks>
-    public MqttPanelSetup CreatePanelSetup() => new()
+    /// <remarks>Built from the connection, so the activity feed, the connection state and the
+    /// publish-now call are the module's to read: every one was a line here that only passed on what the
+    /// connection already knew. The connection exists for the whole life of this service — it is
+    /// assigned in the constructor and never cleared — and the Settings window draws no MQTT page at all
+    /// where this service is absent, so there is always one to hand over.</remarks>
+    public MqttPanelSetup CreatePanelSetup() => new(_connection!)
     {
         Settings        = _store,
         Groups          = _groups,
         TopicRoot       = MqttEntityTable.TopicRoot,
-        Activity        = _connection!.Activity,
-        ConnectionState = () => State,
+
+        // Stated rather than left to the connection, which remembers its own endpoint in memory. This
+        // application's memory is the persisted one in config.json, so the store is the authority and
+        // the panel must read that.
         RecallEndpoint  = _store.RecallEndpoint,
         // Must be the expression the connection itself falls back to, or the placeholder promises a name
         // that is never published.
         DefaultDeviceName = $"{AppInfo.Name} ({Environment.MachineName})",
 
-        PublishNow        = () => _connection?.PublishNowAsync() ?? Task.FromResult(false),
         ConnectionChanged = OnSettingsChanged,
         PublishSetChanged = OnPanelPublishSetChanged,
         CommandLabel      = id => _publisher.Entities.NameOf(id),
