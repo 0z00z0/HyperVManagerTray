@@ -457,7 +457,7 @@ public class MqttConfigStoreTests : IDisposable
                      s => s.Port = 8883,
                      s => s.TransportMode = MqttTransportMode.WebSocket,
                      s => s.EncryptionMode = MqttEncryptionMode.On,
-                     s => s.CertificateTrust = MqttCertificateTrust.ForThumbprint("AA BB CC"),
+                     s => s.CertificateTrust = MqttCertificateTrust.AcceptAny,
                      s => s.Username = "hvmt",
                      s => s.Password = "secret",
                      s => s.DeviceId = "hvmt-host",

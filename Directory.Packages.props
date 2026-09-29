@@ -49,17 +49,23 @@
          still in flight at exit, could each end the process. Never go below it. 0.7.3 keeps an
          unreachable broker from filling mqtt.log: one line when the link goes, one when it returns.
          0.8.0 adds a certificate-trust row to the settings panel the host embeds, so that row appears
-         in this application's MQTT page without being asked for. 0.8.1 appends a note to the Broker
-         section's collapsed summary when the trust mode is "accept any certificate"; this application
-         does not use that mode, so the summary line reads as before.
+         in this application's MQTT page without being asked for.
          0.9.0 builds the settings panel's setup from the live connection, so the activity feed, the
          connection state and the publish-now call are read from it rather than passed by hand;
          Services\MqttService.cs hands the connection over and no longer writes those three. The
          remembered endpoint is still stated here, because this application's copy is the persisted one
          in config.json rather than the connection's. 0.9.0 also stops Apply opening a second test
-         connection when the newest test passed on the same values. -->
-    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.9.0" />
-    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.9.0" />
+         connection when the newest test passed on the same values.
+         0.10.0 is a breaking minor. Certificate trust is two modes, the platform's own trust and
+         accept any certificate; the thumbprint and certificate modes are gone, with the trust row's
+         pinned-value box and the members that served them. This application stores the platform's own
+         trust, so the persisted value reads unchanged and the Broker section's collapsed summary
+         carries no accept-any note. 0.10.0 also stops a connection that failed after its certificate
+         was accepted being reported as an untrusted certificate: the failure now carries the
+         exception's own type and message. Wording in mqtt.log for a failed connection changes with
+         it. ZeroZero.Mqtt arrives transitively at 0.10.0 as the third messaging assembly. -->
+    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.10.0" />
+    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.10.0" />
     <!-- 0.9.0 adds TransientWindows, the count of this application's own short-lived windows.
          UI\DashboardWindow.xaml.cs asks it before dismissing itself on lost focus, so the dashboard
          stays put when the update window opens in front of it. 0.9.1 adds WindowFit, the arithmetic
@@ -85,10 +91,15 @@
          component and cannot be loosened; this application only refuses a single moment, through
          MayInstallNow. 0.12.1 adds a cadence that checks once and 0.12.2 reports every tick; neither
          is set here, so the defaults apply — a check a day on a ten-minute retry tick. 0.12.3 carries
-         no code change at all. -->
-    <PackageVersion Include="ZeroZero.Update" Version="0.12.3" />
-    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.12.3" />
-    <PackageVersion Include="ZeroZero.Update.WinUI" Version="0.12.3" />
+         no code change at all.
+         0.13.0 adds a question before a download, a shared check object and a way to discard a
+         prepared installer; none of the three is set here, so all three behave as their absent
+         defaults say. The one behaviour that does change without being asked for: while a release is
+         held, the policy keeps checking on its cadence, and a strictly newer release takes the held
+         one's place — a verified installer only once its replacement has verified too. -->
+    <PackageVersion Include="ZeroZero.Update" Version="0.13.0" />
+    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.13.0" />
+    <PackageVersion Include="ZeroZero.Update.WinUI" Version="0.13.0" />
   </ItemGroup>
 
   <!-- Test project only. -->
