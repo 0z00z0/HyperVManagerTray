@@ -1442,8 +1442,8 @@ internal sealed partial class SettingsWindow : Window
         {
             Text = "When this rule becomes active. A start runs before any VM starts. A stop saves every "
                  + "running VM on the host first, and is skipped while Auto-start VMs is on. The Host "
-                 + "Compute Service is stopped only from the dashboard, because stopping it also stops "
-                 + "WSL 2, Windows Sandbox and Docker.",
+                 + "Compute Service is stopped only from the dashboard. "
+                 + ServiceStopGuard.HostComputeSideEffects,
             FontSize     = 12,
             Opacity      = 0.7,
             TextWrapping = TextWrapping.Wrap,
@@ -2010,7 +2010,7 @@ internal sealed partial class SettingsWindow : Window
     ];
 
     /// <summary>The Host Compute Service offers no stop: it is stopped only from the dashboard, where the
-    /// person stopping it is told it takes WSL 2, Windows Sandbox and Docker with it.</summary>
+    /// person stopping it is told what it takes with it (<see cref="ServiceStopGuard.HostComputeSideEffects"/>).</summary>
     private static readonly IReadOnlyList<(string Label, RuleServiceAction? Value)> HostComputeActionOptions =
     [
         ("Leave alone", null),

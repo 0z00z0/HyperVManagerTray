@@ -95,8 +95,9 @@ public sealed class NetworkRule : ISwitchTarget
 
     /// <summary>
     /// What happens to the Hyper-V Host Compute Service when this rule becomes active: null leaves it alone,
-    /// and Start starts it. Never Stop — that service is stopped only from the dashboard, because stopping
-    /// it also stops WSL 2, Windows Sandbox and Docker. <c>ConfigManager.Load</c> reads a stored Stop as null.
+    /// and Start starts it. Never Stop — that service is stopped only from the dashboard, because of what
+    /// stopping it takes with it (<c>ServiceStopGuard.HostComputeSideEffects</c>). <c>ConfigManager.Load</c>
+    /// reads a stored Stop as null.
     /// </summary>
     public RuleServiceAction? HostComputeService { get; set; }
 

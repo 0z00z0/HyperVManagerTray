@@ -36,14 +36,14 @@
     <!-- The bracket action button carries a symbol of its own and a column can set several of them to
          one width, and the About window holds its dismissal while another window of this application
          is on screen. Both brand assemblies release under the same number. -->
-    <PackageVersion Include="ZeroZero.Brand.Core" Version="0.11.0" />
-    <PackageVersion Include="ZeroZero.Brand.WinUI" Version="0.11.0" />
+    <PackageVersion Include="ZeroZero.Brand.Core" Version="0.11.1" />
+    <PackageVersion Include="ZeroZero.Brand.WinUI" Version="0.11.1" />
     <PackageVersion Include="ZeroZero.Lifecycle" Version="0.7.1" />
     <!-- 0.8.0: the logon task's seven power settings, including no execution time limit, and a repair
          that notices a task pointing at an executable under an old install path. 0.8.1 adds a
          watchdog task that restarts an application the scheduler finds gone; it is additive and this
          application registers no such task, so the logon task behaves exactly as on 0.8.0. -->
-    <PackageVersion Include="ZeroZero.Startup" Version="0.8.1" />
+    <PackageVersion Include="ZeroZero.Startup" Version="0.8.2" />
     <!-- 0.7.2 closes the disposal race on the connection's reconcile gate and the discovery
          publisher's announcement gate: a settings change applied after teardown, or a reconnect
          still in flight at exit, could each end the process. Never go below it. 0.7.3 keeps an
@@ -63,9 +63,12 @@
          carries no accept-any note. 0.10.0 also stops a connection that failed after its certificate
          was accepted being reported as an untrusted certificate: the failure now carries the
          exception's own type and message. Wording in mqtt.log for a failed connection changes with
-         it. ZeroZero.Mqtt arrives transitively at 0.10.0 as the third messaging assembly. -->
-    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.10.0" />
-    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.10.0" />
+         it. ZeroZero.Mqtt arrives transitively at 0.11.0 as the third messaging assembly.
+         0.11.0 is a breaking minor that removes six unused public members, among them
+         MqttEntitySet.Withheld; Resolve answers the same question, and only the test project
+         called it. -->
+    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.11.0" />
+    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.11.0" />
     <!-- 0.9.0 adds TransientWindows, the count of this application's own short-lived windows.
          UI\DashboardWindow.xaml.cs asks it before dismissing itself on lost focus, so the dashboard
          stays put when the update window opens in front of it. 0.9.1 adds WindowFit, the arithmetic
@@ -97,9 +100,9 @@
          defaults say. The one behaviour that does change without being asked for: while a release is
          held, the policy keeps checking on its cadence, and a strictly newer release takes the held
          one's place — a verified installer only once its replacement has verified too. -->
-    <PackageVersion Include="ZeroZero.Update" Version="0.13.0" />
-    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.13.0" />
-    <PackageVersion Include="ZeroZero.Update.WinUI" Version="0.13.0" />
+    <PackageVersion Include="ZeroZero.Update" Version="0.13.1" />
+    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.13.1" />
+    <PackageVersion Include="ZeroZero.Update.WinUI" Version="0.13.1" />
   </ItemGroup>
 
   <!-- Test project only. -->
