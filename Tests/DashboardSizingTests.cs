@@ -1,4 +1,5 @@
 ﻿using HyperVManagerTray.Helpers;
+using HyperVManagerTray.Models;
 using Xunit;
 
 namespace HyperVManagerTray.Tests;
@@ -42,8 +43,8 @@ public class DashboardSizingTests
         // #31's Auto child was a ComboBox declaring MinWidth 200-220, which could demand more than the
         // row had and drive the Star column toward zero. The dashboard's Auto child is ONE IPv4
         // (VmService.ReadIps takes a single dotted, colon-free address), so it is bounded at 15 chars.
-        // At the floor the sub-row is 278 DIP; the worst case still leaves the subtitle ~164 DIP —
-        // roughly 24 characters at 10 px, i.e. truncation, never the one-character-per-line collapse.
+        // At the floor the sub-row is 301 DIP; the worst case still leaves the subtitle ~186 DIP —
+        // roughly 31 characters at 10 px, i.e. truncation, never the one-character-per-line collapse.
         var worst = new SplitRow("anything", 10, "255.255.255.255", 12, 8);
         double left = DashboardSizing.AvailableForLeft(worst, DashboardSizing.MinContentWidth);
 
@@ -119,6 +120,22 @@ public class DashboardSizingTests
         // Guards the diagnosis, not just the fix: if this ever stops truncating at 320, the change
         // above is solving a problem that no longer exists and the band's floor should be revisited.
         Assert.True(DashboardSizing.IsLeftTruncated(ReportedRow(), 320));
+    }
+
+    [Fact]
+    public void The_floor_holds_the_widest_service_row_in_full()
+    {
+        // A service row is label | state | button with 8 DIP between columns (DashboardWindow.BuildServiceRows),
+        // and is not part of the split-row set that grows the band, so only the floor keeps its label whole.
+        // The state column's widest text is the in-flight "Stopping…"; the button is 52 DIP.
+        int longest = HyperVServiceNames.All.Max(k => HyperVServiceNames.DisplayName(k).Length);
+        double needed = DashboardSizing.CardChromeWidth
+                      + longest * 12 * DashboardSizing.MonoAdvanceEm
+                      + 8 + DashboardSizing.TextWidth("Stopping…", 12) + 8 + 52
+                      + DashboardSizing.FitSlack;
+
+        Assert.True(DashboardSizing.MinContentWidth >= needed,
+            $"the longest service label needs {needed:F1} DIP of content width but the floor is {DashboardSizing.MinContentWidth}.");
     }
 
     [Fact]
