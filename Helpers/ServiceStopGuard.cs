@@ -85,7 +85,8 @@ public static class ServiceStopGuard
 
     /// <summary>What stopping the Host Compute Service takes with it. Part of every prompt for it.</summary>
     public const string HostComputeSideEffects =
-        "Stopping it also stops WSL 2, Windows Sandbox and Docker, and anything running in them.";
+        "Stopping it also stops WSL 2, Windows Sandbox and Docker, and anything running in them. "
+        + "Virtual machines stop with it and cannot run until it is started again.";
 
     /// <summary>The confirmation for a stop with nothing running.</summary>
     public static string ConfirmStopPrompt(HyperVServiceKind kind) =>
