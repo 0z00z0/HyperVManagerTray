@@ -1468,7 +1468,10 @@ public sealed partial class DashboardWindow : Window
         VmOpKind.Pause    => "Freezes the machine in host memory; its memory stays in use and nothing is saved to disk. "
                            + "Resume continues from there.",
         VmOpKind.Save     => "Writes the machine's state to disk and stops it. Start restores it from that saved state.",
-        VmOpKind.Resume   => "Continues the paused machine from where it froze.",
+        // A host critical-pause and a user pause both map to "Paused" (WmiVmMapper.MapState) and take the
+        // same request, so the text says the cause is not examined rather than implying it is.
+        VmOpKind.Resume   => "Continues the paused machine from where it froze. A pause the host itself caused is "
+                           + "resumed the same way, without examining why.",
         _                 => kind.ToString(),
     };
 
