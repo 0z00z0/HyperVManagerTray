@@ -1463,15 +1463,10 @@ public sealed partial class DashboardWindow : Window
     private static string PowerVerbHint(VmOpKind kind) => kind switch
     {
         VmOpKind.Start    => "Boots a machine that is off, or restores a saved one from its saved state.",
-        VmOpKind.Shutdown => "Asks the guest operating system to shut down normally. Needs the guest's integration "
-                           + "services to answer; nothing is forced, so a guest that declines or hangs keeps running.",
-        VmOpKind.Pause    => "Freezes the machine in host memory; its memory stays in use and nothing is saved to disk. "
-                           + "Resume continues from there.",
-        VmOpKind.Save     => "Writes the machine's state to disk and stops it. Start restores it from that saved state.",
-        // A host critical-pause and a user pause both map to "Paused" (WmiVmMapper.MapState) and take the
-        // same request, so the text says the cause is not examined rather than implying it is.
-        VmOpKind.Resume   => "Continues the paused machine from where it froze. A pause the host itself caused is "
-                           + "resumed the same way, without examining why.",
+        VmOpKind.Shutdown => "Asks the guest operating system to shut down normally.",
+        VmOpKind.Pause    => "Freezes the machine in host memory; nothing is saved to disk.",
+        VmOpKind.Save     => "Writes the machine's state to disk and stops it.",
+        VmOpKind.Resume   => "Continues the paused machine from where it froze.",
         _                 => kind.ToString(),
     };
 
@@ -1479,10 +1474,10 @@ public sealed partial class DashboardWindow : Window
         $"Starts the machine, then opens its console as Connect does, once it is running or {StartAndConnectTimeout.TotalSeconds:0} s have passed.";
 
     private const string ConnectHint =
-        "Opens the machine's console. First puts its network adapter on the virtual switch the network rules last chose, if one was chosen.";
+        "Opens the machine's console, first putting its network adapter on the virtual switch the network rules last chose.";
 
     private const string ConnectChevronHint =
-        "Menu with Connection settings (display size, saved credentials, local resources), opened instead of the console. Does not move the network adapter.";
+        "Opens a menu with Connection settings (display size, saved credentials, local resources).";
 
     /// <summary>The template button called <paramref name="name"/> inside <paramref name="root"/>, or null.</summary>
     private static Button? FindTemplateButton(DependencyObject root, string name)
