@@ -1342,32 +1342,42 @@ public sealed partial class DashboardWindow : Window
         // raises the optimistic "Requesting …" overlay before returning, then reports live
         // progress/failure via VmService.OperationProgress. No await, no reload — the card updates
         // itself from that event and from the state watcher.
-        void PowerBtn(string text, VmOpKind kind) => panel.Children.Add(new Button
+        void PowerBtn(string text, VmOpKind kind)
         {
-            Content             = text,
-            FontSize            = 11,
-            Padding             = new Thickness(CardButtonPaddingX, 3, CardButtonPaddingX, 3),
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            Command  = new RelayCommand(() =>
+            var button = new Button
             {
-                UiActivityLog.Logger.LogInformation("Dashboard: {Command} '{Vm}' ({Id})", text, vm.Name, vm.Id);
-                _vm.BeginPowerAction(vm.Ref, kind, VmOpOrigin.Dashboard);
-            }),
-        });
+                Content             = text,
+                FontSize            = 11,
+                Padding             = new Thickness(CardButtonPaddingX, 3, CardButtonPaddingX, 3),
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                Command  = new RelayCommand(() =>
+                {
+                    UiActivityLog.Logger.LogInformation("Dashboard: {Command} '{Vm}' ({Id})", text, vm.Name, vm.Id);
+                    _vm.BeginPowerAction(vm.Ref, kind, VmOpOrigin.Dashboard);
+                }),
+            };
+            ToolTipService.SetToolTip(button, PowerVerbHint(kind));
+            panel.Children.Add(button);
+        }
 
         // The actions that bring a service or a machine up before opening a console need an awaited Task.
-        void TaskBtn(string text, Func<Task> action) => panel.Children.Add(new Button
+        void TaskBtn(string text, string hint, Func<Task> action)
         {
-            Content             = text,
-            FontSize            = 11,
-            Padding             = new Thickness(CardButtonPaddingX, 3, CardButtonPaddingX, 3),
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            Command  = new RelayCommand(() =>
+            var button = new Button
             {
-                UiActivityLog.Logger.LogInformation("Dashboard: {Command} '{Vm}' ({Id})", text, vm.Name, vm.Id);
-                _ = action();
-            }),
-        });
+                Content             = text,
+                FontSize            = 11,
+                Padding             = new Thickness(CardButtonPaddingX, 3, CardButtonPaddingX, 3),
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                Command  = new RelayCommand(() =>
+                {
+                    UiActivityLog.Logger.LogInformation("Dashboard: {Command} '{Vm}' ({Id})", text, vm.Name, vm.Id);
+                    _ = action();
+                }),
+            };
+            ToolTipService.SetToolTip(button, hint);
+            panel.Children.Add(button);
+        }
 
         // Connect carries a second action, so it is a SplitButton: the main half opens the console exactly
         // as the plain button did, and the chevron offers Hyper-V's own connection settings dialog for the
@@ -1402,6 +1412,21 @@ public sealed partial class DashboardWindow : Window
             });
             connect.Flyout = menu;
 
+            // The two halves are template buttons, so each takes its own hover text once the template is
+            // built. Should a template ever lack them, the whole control carries both texts instead.
+            connect.Loaded += (_, _) =>
+            {
+                var main    = FindTemplateButton(connect, "PrimaryButton");
+                var chevron = FindTemplateButton(connect, "SecondaryButton");
+                if (main is null || chevron is null)
+                {
+                    ToolTipService.SetToolTip(connect, $"{ConnectHint} Arrow: {ConnectChevronHint}");
+                    return;
+                }
+                ToolTipService.SetToolTip(main, ConnectHint);
+                ToolTipService.SetToolTip(chevron, ConnectChevronHint);
+            };
+
             panel.Children.Add(connect);
         }
 
@@ -1412,7 +1437,8 @@ public sealed partial class DashboardWindow : Window
         {
             var shape = VmStateUi.ClassifyShape(s?.State);
             if (VmmsDown || shape is VmStateUi.Shape.Off or VmStateUi.Shape.Saved or VmStateUi.Shape.Paused)
-                TaskBtn("Start", () => StartViaServicesAsync(vm.Ref));
+                TaskBtn("Start", "Starts the stopped Hyper-V services first, then the machine.",
+                        () => StartViaServicesAsync(vm.Ref));
             return panel;
         }
 
@@ -1426,10 +1452,45 @@ public sealed partial class DashboardWindow : Window
         foreach (var kind in allowed)
             PowerBtn(PowerVerbLabel(kind), kind);
         if (allowed.Contains(VmOpKind.Start))
-            TaskBtn("Start & Connect", () => StartAndConnectAsync(vm));
+            TaskBtn("Start & Connect", StartAndConnectHint, () => StartAndConnectAsync(vm));
         if (VmStateUi.CanConnect(s?.State))
             ConnectSplitBtn();
         return panel;
+    }
+
+    /// <summary>Hover text for a power verb: what the request does to the machine. Start and Resume send
+    /// the same request, so each text is about the state the button is offered in.</summary>
+    private static string PowerVerbHint(VmOpKind kind) => kind switch
+    {
+        VmOpKind.Start    => "Boots a machine that is off, or restores a saved one from its saved state.",
+        VmOpKind.Shutdown => "Asks the guest operating system to shut down normally. Needs the guest's integration "
+                           + "services to answer; nothing is forced, so a guest that declines or hangs keeps running.",
+        VmOpKind.Pause    => "Freezes the machine in host memory; its memory stays in use and nothing is saved to disk. "
+                           + "Resume continues from there.",
+        VmOpKind.Save     => "Writes the machine's state to disk and stops it. Start restores it from that saved state.",
+        VmOpKind.Resume   => "Continues the paused machine from where it froze.",
+        _                 => kind.ToString(),
+    };
+
+    private static string StartAndConnectHint =>
+        $"Starts the machine, then opens its console as Connect does, once it is running or {StartAndConnectTimeout.TotalSeconds:0} s have passed.";
+
+    private const string ConnectHint =
+        "Opens the machine's console. First puts its network adapter on the virtual switch the network rules last chose, if one was chosen.";
+
+    private const string ConnectChevronHint =
+        "Menu with Connection settings (display size, saved credentials, local resources), opened instead of the console. Does not move the network adapter.";
+
+    /// <summary>The template button called <paramref name="name"/> inside <paramref name="root"/>, or null.</summary>
+    private static Button? FindTemplateButton(DependencyObject root, string name)
+    {
+        for (int i = 0, n = VisualTreeHelper.GetChildrenCount(root); i < n; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is Button b && b.Name == name) return b;
+            if (FindTemplateButton(child, name) is { } found) return found;
+        }
+        return null;
     }
 
     /// <summary>Button caption for a power verb on the dashboard card (the tray menu uses "&amp;&amp;"-escaped
