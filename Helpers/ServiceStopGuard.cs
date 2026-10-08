@@ -32,8 +32,8 @@ public static class ServiceStopGuard
 
     /// <summary>
     /// Whether a stop of <paramref name="kind"/> may come from a source with nobody to ask — a network rule
-    /// or an MQTT command. False for the Host Compute Service: stopping it also stops WSL 2, Windows Sandbox
-    /// and Docker, so it is stopped only from the dashboard, after the person has been told so.
+    /// or an MQTT command. False for the Host Compute Service: its stop has the consequences in
+    /// <see cref="HostComputeSideEffects"/>, so it is stopped only from the dashboard, after the person has been told so.
     /// </summary>
     public static bool MayStopUnattended(HyperVServiceKind kind) => kind != HyperVServiceKind.HostCompute;
 
@@ -85,7 +85,8 @@ public static class ServiceStopGuard
 
     /// <summary>What stopping the Host Compute Service takes with it. Part of every prompt for it.</summary>
     public const string HostComputeSideEffects =
-        "Stopping it also stops WSL 2, Windows Sandbox and Docker, and anything running in them.";
+        "Stopping it also stops WSL 2, Windows Sandbox and Docker, and anything running in them. "
+        + "Virtual machines stop with it and cannot run until it is started again.";
 
     /// <summary>The confirmation for a stop with nothing running.</summary>
     public static string ConfirmStopPrompt(HyperVServiceKind kind) =>

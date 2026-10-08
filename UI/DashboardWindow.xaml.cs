@@ -1315,7 +1315,7 @@ public sealed partial class DashboardWindow : Window
     /// The worst case is a Running VM — "Shut down" + "Pause" + "Save" + "Connect", where Connect is a
     /// split button:
     ///
-    ///   available = 340 floor - Root padding (20+20) - card padding (10+10) - card border (1+1) = 278 DIP
+    ///   available at a 340 content width - Root padding (20+20) - card padding (10+10) - card border (1+1) = 278 DIP
     ///   captions at 11 px Cascadia Mono (0.586 em/char, measured from the shipped .ttf) = 161.1
     ///   three plain buttons = (6 + 6 padding + 1 + 1 border) × 3 = 42;  spacing = 6 × 3 gaps = 18
     ///   Connect's chevron half = a fixed 35 DIP column plus a 1 DIP separator, and no primary border

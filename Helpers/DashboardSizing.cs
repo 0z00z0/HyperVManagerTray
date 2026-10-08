@@ -25,7 +25,7 @@ public readonly record struct SplitRow(
 /// inside a card that shrank with the window: Auto could demand more than the row had, Star was
 /// starved toward zero, and the WRAPPING description degenerated into one character per line. Here
 /// the Auto child is a single IPv4 (<c>VmService.ReadIps</c> selects one dotted, colon-free address),
-/// so it is bounded at 15 characters ≈ 106 DIP of a 278 DIP row — Star always keeps ≥ 164 DIP and
+/// so it is bounded at 15 characters ≈ 106 DIP of a 301 DIP row — Star always keeps ≥ 186 DIP and
 /// cannot starve. The Star text is also NoWrap, so it truncates rather than collapsing. The sub-row
 /// truncates for an ordinary reason: the popup's width was a hard-pinned constant (320) and the value
 /// is simply longer than the budget. #31's fix (stack the control beneath the text) would be actively
@@ -75,8 +75,14 @@ public static class DashboardSizing
     /// <c>DashboardWindow.CardButtonPaddingX</c>), which with <see cref="CardChromeWidth"/> is ~331 DIP of
     /// content width; the floor sits above that rather than on it, for the same reason
     /// <see cref="FitSlack"/> exists — a dead-even fit renders short anyway.</para>
+    ///
+    /// <para>The widest service row is wider still, and sets the figure: label "WSL, Docker and Sandbox"
+    /// (23 chars at 12 px = 161.7 DIP) + 8 column gap + "Stopping…" (9 chars at 12 px = 63.3) + 8 column
+    /// gap + the 52 DIP button = 293 DIP, plus <see cref="CardChromeWidth"/> and <see cref="FitSlack"/> = 363.
+    /// Those rows are not in the split-row set that grows the band, so only this floor covers them; a longer
+    /// <c>HyperVServiceNames.DisplayName</c> needs this figure raised by 7.03 DIP per extra character.</para>
     /// </summary>
-    public const double MinContentWidth = 340;
+    public const double MinContentWidth = 363;
 
     /// <summary>
     /// Cap for the popup's content width (DIP), chosen by Espen in issue #57. Past this the popup
@@ -109,7 +115,7 @@ public static class DashboardSizing
     /// <summary>
     /// Horizontal chrome between the popup's content width and a card row's usable width:
     /// <c>Root</c>'s Padding (20+20) + the card Border's Padding (10+10) and BorderThickness (1+1).
-    /// At the <see cref="MinContentWidth"/> floor this leaves 278 DIP, which the widest (non-wrapping)
+    /// At the <see cref="MinContentWidth"/> floor this leaves 301 DIP, which the widest (non-wrapping)
     /// card button row measures ~269 against.
     /// </summary>
     public const double CardChromeWidth = 62;

@@ -652,7 +652,7 @@ public class MqttEntityTableTests
         var set = MqttEntityTable.Build(spy.Spec("Dev"));
         spy.State.SetVms([new VmStatus { Id = "Dev", Name = "Dev", State = "Off" }]);
 
-        var withheld = set.Withheld(null).Select(e => e.EntityId).ToList();
+        var withheld = set.Resolve(null, null).Withheld.Select(e => e.EntityId).ToList();
 
         Assert.Contains("vm_dev_power_pause", withheld);
         Assert.DoesNotContain("vm_dev_power_start", withheld);
@@ -777,7 +777,7 @@ public class MqttEntityTableTests
 
         Assert.False(entity.IsPublished(null));
         Assert.Contains(entity, set.All);                       // still in the set…
-        Assert.Contains(entity, set.Withheld(null));            // …and reported as withheld, not gone
+        Assert.Contains(entity, set.Resolve(null, null).Withheld);   // …and reported as withheld, not gone
     }
 
     /// <summary>The options are read on every announcement pass, so a rule edit reaches the receiver
@@ -976,7 +976,7 @@ public class MqttEntityTableTests
         var set = MqttEntityTable.Build(new Spy().Spec("Dev"));
         var off = Snapshot((MqttEntityTable.MetricsGroup, false));
 
-        var withheld = set.Withheld(off).Select(e => e.EntityId).ToList();
+        var withheld = set.Resolve(off, null).Withheld.Select(e => e.EntityId).ToList();
 
         Assert.Contains("vm_dev_cpu", withheld);
         Assert.Contains("vm_dev_memory", withheld);
