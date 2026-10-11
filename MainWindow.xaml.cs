@@ -8,6 +8,6 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        AppWindow.IsShownInSwitchers = false;
+        ZeroZero.Controls.WinUI.SwitcherVisibility.TrySet(AppWindow, false);
     }
 }

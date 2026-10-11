@@ -324,7 +324,7 @@ internal sealed partial class SettingsWindow : Window
 
     private void ConfigureChrome()
     {
-        AppWindow.IsShownInSwitchers = true;
+        ZeroZero.Controls.WinUI.SwitcherVisibility.TrySet(AppWindow, true);
 
         var presenter = OverlappedPresenter.Create();
         presenter.SetBorderAndTitleBar(hasBorder: true, hasTitleBar: true);

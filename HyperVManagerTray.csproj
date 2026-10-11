@@ -98,6 +98,13 @@
          brand and update components anyway; the reference is direct because this application calls
          into it, and a call into a package nothing references is one restore away from breaking. -->
     <PackageReference Include="ZeroZero.Win32" />
+    <!-- The wait for the taskbar and the bounded retry behind the tray icon's creation at sign-in. -->
+    <PackageReference Include="ZeroZero.Tray.WinUI" />
+    <!-- The crash handlers, which end a process whose start failed so the relaunch can try again. -->
+    <PackageReference Include="ZeroZero.Diagnostics" />
+    <!-- SwitcherVisibility, called by every window of this app; it also arrives through the brand
+         component. -->
+    <PackageReference Include="ZeroZero.Controls.WinUI" />
   </ItemGroup>
 
   <!-- The publisher certificate, as the pin an installer's signature is checked against. Embedded

@@ -174,7 +174,7 @@ public sealed partial class RenameAdapterWindow : Window
 
     private void ConfigureChrome()
     {
-        AppWindow.IsShownInSwitchers = false;
+        ZeroZero.Controls.WinUI.SwitcherVisibility.TrySet(AppWindow, false);
 
         var presenter = OverlappedPresenter.Create();
         presenter.SetBorderAndTitleBar(hasBorder: true, hasTitleBar: false);

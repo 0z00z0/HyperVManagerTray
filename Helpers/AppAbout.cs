@@ -54,6 +54,9 @@ internal static class AppAbout
             new ExternalLibrary("ZeroZero.Startup", "ZeroZero Software", "The logon task that starts the app with Windows, and its repair", "MIT", "https://github.com/0z00z0/0z0-shared"),
             new ExternalLibrary("ZeroZero.Update.WinUI", "ZeroZero Software", "Update check and its window, and the download verified by checksum and signature before it runs", "MIT", "https://github.com/0z00z0/0z0-shared"),
             new ExternalLibrary("ZeroZero.Win32", "ZeroZero Software", "Counts this app's short-lived windows, so the dashboard stays open under the update window", "MIT", "https://github.com/0z00z0/0z0-shared"),
+            new ExternalLibrary("ZeroZero.Tray.WinUI", "ZeroZero Software", "Waits for the taskbar at sign-in and retries the tray icon until the shell accepts it", "MIT", "https://github.com/0z00z0/0z0-shared"),
+            new ExternalLibrary("ZeroZero.Diagnostics", "ZeroZero Software", "Crash handlers that end a failed start so the app is started again", "MIT", "https://github.com/0z00z0/0z0-shared"),
+            new ExternalLibrary("ZeroZero.Controls.WinUI", "ZeroZero Software", "Hides a window from Alt+Tab without failing before the taskbar exists", "MIT", "https://github.com/0z00z0/0z0-shared"),
         ],
     };
 }

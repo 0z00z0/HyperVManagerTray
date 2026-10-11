@@ -246,7 +246,7 @@ public sealed partial class DashboardWindow : Window
 
     private void ConfigureWindowChrome()
     {
-        AppWindow.IsShownInSwitchers = false;
+        ZeroZero.Controls.WinUI.SwitcherVisibility.TrySet(AppWindow, false);
         var presenter = OverlappedPresenter.Create();
         presenter.SetBorderAndTitleBar(hasBorder: true, hasTitleBar: false);
         presenter.IsResizable   = false;

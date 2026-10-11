@@ -6,7 +6,10 @@ using Microsoft.UI.Xaml;
 using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Services;
 using HyperVManagerTray.UI;
+using ZeroZero.Diagnostics;
 using ZeroZero.Lifecycle;
+using ZeroZero.Primitives;
+using ZeroZero.Tray.WinUI;
 
 namespace HyperVManagerTray;
 
@@ -31,6 +34,7 @@ public partial class App : Application
     private AppUpdate?      _update;    // the silent start-up check and the explicit download-and-run one
 
     private DispatcherQueue  _ui = null!;
+    private CrashHandlers?   _crash;
     private TaskbarIcon?     _trayIcon;
     private DashboardWindow? _dashboard;
     private TrayMenu?        _menu;
@@ -79,10 +83,9 @@ public partial class App : Application
         // moment there is somewhere to write it. Cheap and ungated: one DateTime read, once per process.
         var onLaunchedAt = DateTime.Now;
 
-        // Handlers FIRST, before anything that can throw: a WinUI tray app that throws on the
+        // The UI arm FIRST, before anything that can throw: a WinUI tray app that throws on the
         // dispatcher thread otherwise dies silently (stowed exception in CoreMessagingXP.dll) with
-        // nothing in the log. Registering first also lets a UI-thread startup exception be marked
-        // Handled — the process survives instead of dying and tripping the self-heal relaunch.
+        // nothing in the log.
         RegisterGlobalExceptionHandlers();
 
         // Single-instance next — before any window or tray icon, and before the relaunch hook is
@@ -107,6 +110,9 @@ public partial class App : Application
         // third instance, which is refused in turn, until the relaunch limiter stops it.
         AppLifecycle.Arm();
 
+        // After the arm, so a start that fails from here on ends in a relaunch.
+        RegisterCrashHandlers();
+
         // Opt native Win32 elements (tray context menu, etc.) into system dark mode.
         // Must run before any UI is created so the menu HWND inherits the setting.
         NativeMethods.EnableDarkModeForNativeUi();
@@ -118,7 +124,6 @@ public partial class App : Application
             await Task.Delay(TimeSpan.FromSeconds(5));
 
         _ui = DispatcherQueue.GetForCurrentThread();
-        _ = new MainWindow();   // never shown; keeps a XAML window around (OnExplicitShutdown owns the real keep-alive)
 
         try
         {
@@ -252,7 +257,10 @@ public partial class App : Application
             _monitor = new NetworkMonitor(_config, _hyperV, _vm, _serviceControl,
                                           _loggerFactory.CreateLogger<NetworkMonitor>(), powerLog);
 
-            InitTrayIcon();
+            await InitTrayIconAsync();
+
+            // No window before the tray icon exists: a window's setup can throw while there is no taskbar.
+            _ = new MainWindow();   // never shown; keeps a XAML window around (OnExplicitShutdown owns the real keep-alive)
 
             // Config feedback needs the tray icon, so it lands here rather than at the load itself.
             AnnounceConfigState(createdDefaultConfig, configMigration);
@@ -336,18 +344,14 @@ public partial class App : Application
             // Pre-create and prime the dashboard so its first real open has no white flash:
             // the Mica window's initial (white) composition frame happens now, off-screen.
             CreateDashboard(prime: true);
+
+            _crash!.MarkStartupComplete();
         }
         catch (Exception ex)
         {
-            // The whole exception, stack trace included, went into this dialog and told a person
-            // nothing they could act on. It belongs in crash.log, which the sentence points at.
-            LogCrash("Startup failed", ex);
-            NativeMethods.Error(
-                $"{AppInfo.Name} could not start, so it has closed.\n\n"
-              + "Starting it again is worth one attempt; if it closes the same way, what went wrong "
-              + $"is written to crash.log in %AppData%\\{AppInfo.Id}.",
-                AppInfo.Name);
-            ExitIntentionally();   // startup failed — relaunching would just fail again
+            // Logs to crash.log and ends the process unmarked, so the relaunch tries again within its
+            // limit. No message box: it would hold the single-instance lock until somebody clicked it.
+            _crash!.Report("Startup failed", ex);
         }
     }
 
@@ -439,34 +443,33 @@ public partial class App : Application
         }
     }
 
-    /// <summary>Exits after telling <see cref="AppLifecycle"/> this teardown is deliberate, so it doesn't relaunch.</summary>
-    private void ExitIntentionally()
-    {
-        AppLifecycle.MarkDeliberateExit();
-        Exit();
-    }
-
     // ── Global crash logging ────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Wires the three process-wide exception sinks so a crash is never silent.
-    /// UI/XAML-thread exceptions are logged and marked handled (the tray survives);
-    /// background and unobserved-task exceptions are logged before the runtime acts.
-    /// </summary>
+    /// <summary>The UI/XAML-thread arm: ends a failed start, and after startup keeps the tray alive.</summary>
     private void RegisterGlobalExceptionHandlers()
     {
-        // UI/XAML dispatcher thread — keep the tray alive instead of a silent stowed-exception crash.
         UnhandledException += (_, e) =>
         {
-            LogCrash("UI/XAML UnhandledException", e.Exception);
+            if (_crash is { } crash) crash.Report("UI/XAML UnhandledException", e.Exception);
+            else LogCrash("UI/XAML UnhandledException", e.Exception);
             e.Handled = true;
         };
+    }
 
-        // Background / finalizer threads — can't stop termination, but log and notify the user.
+    /// <summary>The background-thread and unobserved-task arms, and the dialog for a fatal fault.</summary>
+    private void RegisterCrashHandlers()
+    {
+        _crash = CrashHandlers.Register(new CrashHandlerOptions
+        {
+            Sink = new CrashSink(this),
+            // The app's own state only: marking the exit deliberate would stop the relaunch.
+            OnStartupFailure = RemoveTrayIcon,
+        });
+
+        // After the handlers, so the crash line is written before the dialog waits for a click.
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
             var ex = e.ExceptionObject as Exception;
-            LogCrash("AppDomain UnhandledException (fatal)", ex);
             // An exception carrying no message used to leave this dialog saying "Unknown error", which
             // reads as a fault in the report rather than in what it is reporting.
             var said = string.IsNullOrWhiteSpace(ex?.Message)
@@ -478,13 +481,6 @@ public partial class App : Application
                 $"The full report is written to crash.log in %AppData%\\{AppInfo.Id}.",
                 AppInfo.Name);
         };
-
-        // Faulted Tasks whose exception was never awaited/observed.
-        TaskScheduler.UnobservedTaskException += (_, e) =>
-        {
-            LogCrash("UnobservedTaskException", e.Exception);
-            e.SetObserved();
-        };
     }
 
     /// <summary>Appends a full exception dump to crash.log (and the normal log if available). Never throws.</summary>
@@ -495,9 +491,22 @@ public partial class App : Application
         AppInfo.AppendCrashLogLine("CRASH", $"{source}: {ex}{Environment.NewLine}");
     }
 
+    private sealed class CrashSink(App app) : ILogSink
+    {
+        public void Info(string message) => AppInfo.AppendCrashLogLine("CRASH", message);
+        public void Error(string source, Exception? ex) => app.LogCrash(source, ex);
+    }
+
+    // A refused or orphaned icon would otherwise stay in the notification area until hovered.
+    private void RemoveTrayIcon()
+    {
+        _trayIcon?.Dispose();
+        _trayIcon = null;
+    }
+
     // ── Tray icon ───────────────────────────────────────────────────────────────
 
-    private void InitTrayIcon()
+    private async Task InitTrayIconAsync()
     {
         _trayIcon = (TaskbarIcon)Resources["TrayIcon"];
         // At this line the first evaluation has not even been scheduled (_monitor.Start() is a few lines
@@ -530,7 +539,14 @@ public partial class App : Application
 
         // Explicit false: the default arms EcoQoS and IDLE_PRIORITY_CLASS across the whole process and
         // never undoes them, which starves the message pump — and so the tray — under host load.
-        _trayIcon.ForceCreate(enablesEfficiencyMode: false);
+        var started = await TrayStartup.StartAsync(
+            () => _trayIcon!.ForceCreate(enablesEfficiencyMode: false), RemoveTrayIcon);
+        if (!started.IsCreated)
+        {
+            AppInfo.AppendCrashLogLine("TRAY",
+                $"Tray icon not created: {started.Outcome}, {started.Attempts} attempts in {started.Elapsed.TotalSeconds:0.0} s.");
+            _crash!.Report("tray", started.LastError);   // ends the process
+        }
 
         // Issue #54 milestone. ForceCreate() has returned, so Shell_NotifyIcon(NIM_ADD) was accepted —
         // "created", deliberately not "visible": when the shell paints it (or whether it folds it into
