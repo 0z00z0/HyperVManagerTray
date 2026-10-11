@@ -84,7 +84,7 @@ public static class MqttEntityTable
     /// <summary>Each VM's state and its power, on/off and switch-override controls.</summary>
     public const string VmGroup = "vm";
 
-    /// <summary>Each VM's switch, IP, uptime and last operation, plus the host's IP and gateway.</summary>
+    /// <summary>Each VM's virtual switch, IP, uptime and last operation, plus the host's IP and gateway.</summary>
     public const string DiagnosticsGroup = "diagnostics";
 
     /// <summary>CPU, memory and VHD. Off by default: they only flow while
@@ -100,7 +100,7 @@ public static class MqttEntityTable
         new PublishGroup(VmGroup, "Virtual machines",
             Info: "Each managed VM's state, an on/off switch, its power verbs, and a switch override."),
         new PublishGroup(DiagnosticsGroup, "Diagnostics",
-            Info: "Host IP and gateway, and each VM's switch, guest IP, uptime and last operation."),
+            Info: "Host IP and gateway, and each VM's virtual switch, guest IP, uptime and last operation."),
         new PublishGroup(MetricsGroup, "VM metrics",
             Description: "Off by default: these need a 2.5-second Hyper-V query loop the app "
                        + "otherwise never runs.",
@@ -216,7 +216,7 @@ public static class MqttEntityTable
     /// <inheritdoc cref="VmIdPrefix"/>
     internal static readonly IReadOnlyList<string> VmIdSuffixes =
     [
-        "", "_state", "_running", "_switch", "_ip", "_uptime", "_operation",
+        "", "_state", "_switch", "_ip", "_uptime", "_operation",
         "_cpu", "_memory", "_vhd", "_switch_override",
         // Composed from the verbs rather than spelled out, so a verb added to the gate enters the slug
         // budget and the collision check with it instead of composing an id nothing sized against.
@@ -355,19 +355,10 @@ public static class MqttEntityTable
         yield return new MqttSensor
         {
             EntityId = "network_apply_status",
-            Name     = "Apply status",
+            Name     = "Network status",
             Group    = NetworkGroup,
             Icon     = "mdi:check-network",
-            Read     = () => state.Network is { } r ? r.ApplyStatus.ToString() : null,
-        };
-        yield return new MqttBinarySensor
-        {
-            EntityId    = "network_bridge_healthy",
-            Name        = "Bridge healthy",
-            Group       = NetworkGroup,
-            DeviceClass = "connectivity",
-            // Inverted: IsFailure answers "is something wrong", and connectivity's ON means "fine".
-            Read        = () => state.Network is { } r ? !NetworkStatusUi.IsFailure(r.ApplyStatus) : null,
+            Read     = () => state.Network is { } r ? NetworkStatusText(r.ApplyStatus) : null,
         };
         yield return new MqttButton
         {
@@ -455,18 +446,10 @@ public static class MqttEntityTable
             Icon     = "mdi:server",
             Read     = () => Text(state.Vm(vmId)?.State),
         };
-        yield return new MqttBinarySensor
-        {
-            EntityId    = $"vm_{slug}_running",
-            Name        = $"{vmName} running",
-            Group       = VmGroup,
-            DeviceClass = "running",
-            Read        = () => state.Vm(vmId)?.IsRunning,
-        };
         yield return new MqttSensor
         {
             EntityId = $"vm_{slug}_switch",
-            Name     = $"{vmName} switch",
+            Name     = $"{vmName} virtual switch",
             Group    = DiagnosticsGroup,
             Category = MqttEntityCategory.Diagnostic,
             Icon     = "mdi:switch",
@@ -656,4 +639,13 @@ public static class MqttEntityTable
     /// <summary>Null publishes the literal <c>None</c>, so a missing reading clears the entity — an
     /// empty payload is ignored by the receiver and the stale value would stand.</summary>
     private static string? Text(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
+
+    // Plain words for the published state: the enum names are code, and an automation compares these.
+    private static string NetworkStatusText(NetworkStatusUi.SwitchApplyStatus status) => status switch
+    {
+        NetworkStatusUi.SwitchApplyStatus.Applied         => "Applied",
+        NetworkStatusUi.SwitchApplyStatus.BindFailed      => "Switch binding failed",
+        NetworkStatusUi.SwitchApplyStatus.VmConnectFailed => "Machine connection failed",
+        _                                                 => "Not checked",
+    };
 }

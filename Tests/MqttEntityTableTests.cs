@@ -121,19 +121,19 @@ public class MqttEntityTableTests
 
         Assert.Equal(
             ["network_rule", "network_switch", "network_adapter", "network_host_ip", "network_gateway",
-             "network_apply_status", "network_bridge_healthy", "network_recheck", "network_repair"],
+             "network_apply_status", "network_recheck", "network_repair"],
             set.All.Select(e => e.EntityId).Where(id => id.StartsWith("network_", StringComparison.Ordinal)));
     }
 
-    /// <summary>Sixteen per VM, and the id of each is the state topic AND the command topic — so this is
+    /// <summary>Fifteen per VM, and the id of each is the state topic AND the command topic — so this is
     /// the list a receiver's registry records. A change here re-registers every entity of every VM.</summary>
     [Fact]
-    public void Build_ProducesSixteenEntitiesPerVm()
+    public void Build_ProducesFifteenEntitiesPerVm()
     {
         var set = MqttEntityTable.Build(new Spy().Spec("Dev"));
 
         Assert.Equal(
-            ["vm_dev_state", "vm_dev_running", "vm_dev_switch", "vm_dev_ip", "vm_dev_uptime",
+            ["vm_dev_state", "vm_dev_switch", "vm_dev_ip", "vm_dev_uptime",
              "vm_dev_operation", "vm_dev_cpu", "vm_dev_memory", "vm_dev_vhd",
              "vm_dev",
              "vm_dev_power_start", "vm_dev_power_shutdown", "vm_dev_power_pause",
@@ -384,22 +384,30 @@ public class MqttEntityTableTests
         Assert.Equal("Applied",  Get(set, "network_apply_status").ReadState());
     }
 
-    /// <summary>"Bridge healthy" is a connectivity binary sensor, whose ON means "fine" — while the
-    /// status it reads answers the opposite question. Reading it straight through publishes a confident
-    /// green over a failed bind, which is the #37 defect in a second surface.</summary>
+    /// <summary>The published words are what an automation compares, so each outcome keeps its own
+    /// plain-language word and an unchecked result never reads as a success.</summary>
     [Theory]
-    [InlineData(NetworkStatusUi.SwitchApplyStatus.Applied,         MqttPayload.On)]
-    [InlineData(NetworkStatusUi.SwitchApplyStatus.NotEvaluated,    MqttPayload.On)]
-    [InlineData(NetworkStatusUi.SwitchApplyStatus.BindFailed,      MqttPayload.Off)]
-    [InlineData(NetworkStatusUi.SwitchApplyStatus.VmConnectFailed, MqttPayload.Off)]
-    public void BridgeHealthy_IsTheInverseOfAFailedApply(
+    [InlineData(NetworkStatusUi.SwitchApplyStatus.Applied,         "Applied")]
+    [InlineData(NetworkStatusUi.SwitchApplyStatus.NotEvaluated,    "Not checked")]
+    [InlineData(NetworkStatusUi.SwitchApplyStatus.BindFailed,      "Switch binding failed")]
+    [InlineData(NetworkStatusUi.SwitchApplyStatus.VmConnectFailed, "Machine connection failed")]
+    public void NetworkStatus_PublishesAPlainWordPerOutcome(
         NetworkStatusUi.SwitchApplyStatus status, string expected)
     {
         var spy = new Spy();
         var set = MqttEntityTable.Build(spy.Spec());
         spy.State.SetNetwork(new MatchResult("office", "Office", "SW-BRIDGED", "Bridged", []) { ApplyStatus = status });
 
-        Assert.Equal(expected, Get(set, "network_bridge_healthy").ReadState());
+        Assert.Equal(expected, Get(set, "network_apply_status").ReadState());
+    }
+
+    [Fact]
+    public void TheRenamedEntitiesCarryTheirNewShownNames()
+    {
+        var set = MqttEntityTable.Build(new Spy().Spec("Dev"));
+
+        Assert.Equal("Network status",   Get(set, "network_apply_status").Name);
+        Assert.Equal("Dev virtual switch", Get(set, "vm_dev_switch").Name);
     }
 
     [Fact]
@@ -415,7 +423,6 @@ public class MqttEntityTableTests
         spy.State.SetOperation(new VmOperationProgress("Dev", VmOpKind.Start, VmOpPhase.Succeeded, null, null));
 
         Assert.Equal("Running",         Get(set, "vm_dev_state").ReadState());
-        Assert.Equal(MqttPayload.On,    Get(set, "vm_dev_running").ReadState());
         Assert.Equal("Bridged",         Get(set, "vm_dev_switch").ReadState());
         Assert.Equal("10.0.0.42",       Get(set, "vm_dev_ip").ReadState());
         Assert.Equal("3h 14m",          Get(set, "vm_dev_uptime").ReadState());
@@ -532,7 +539,7 @@ public class MqttEntityTableTests
         => Assert.Equal(expected, Get(MqttEntityTable.Build(new Spy().Spec("Dev")), entityId).Name);
 
     /// <summary>A button has nothing to report between presses and declares no state channel, so it
-    /// publishes nothing. The VM's actual power state is carried by vm_dev_state and vm_dev_running,
+    /// publishes nothing. The VM's actual power state is carried by vm_dev_state and the vm_dev switch,
     /// which is where a person reads it.</summary>
     [Fact]
     public void ThePowerButtonsDeclareNoStateAtAll()
@@ -923,13 +930,11 @@ public class MqttEntityTableTests
     [InlineData("network_switch",         MqttEntityTable.NetworkGroup)]
     [InlineData("network_adapter",        MqttEntityTable.NetworkGroup)]
     [InlineData("network_apply_status",   MqttEntityTable.NetworkGroup)]
-    [InlineData("network_bridge_healthy", MqttEntityTable.NetworkGroup)]
     [InlineData("network_recheck",        MqttEntityTable.NetworkGroup)]
     [InlineData("network_repair",         MqttEntityTable.NetworkGroup)]
     [InlineData("network_host_ip",        MqttEntityTable.DiagnosticsGroup)]
     [InlineData("network_gateway",        MqttEntityTable.DiagnosticsGroup)]
     [InlineData("vm_dev_state",           MqttEntityTable.VmGroup)]
-    [InlineData("vm_dev_running",         MqttEntityTable.VmGroup)]
     [InlineData("vm_dev",                 MqttEntityTable.VmGroup)]
     [InlineData("vm_dev_switch_override", MqttEntityTable.VmGroup)]
     [InlineData("service_vmms_state",     MqttEntityTable.ServicesGroup)]
