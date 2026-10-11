@@ -71,9 +71,11 @@
          it. ZeroZero.Mqtt arrives transitively at 0.11.0 as the third messaging assembly.
          0.11.0 is a breaking minor that removes six unused public members, among them
          MqttEntitySet.Withheld; Resolve answers the same question, and only the test project
-         called it. -->
-    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.11.0" />
-    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.11.0" />
+         called it.
+         0.12.0 adds MqttEntity.Description, which Services\MqttEntityTable.cs sets on every entity;
+         it refuses a Description beside a json_attributes key in Extra, and this application sets none. -->
+    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.12.0" />
+    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.12.0" />
     <!-- 0.11.0 waits for the taskbar and retries the icon for a host with its own TaskbarIcon. -->
     <PackageVersion Include="ZeroZero.Tray.WinUI" Version="0.11.0" />
     <!-- 0.9.0 adds TransientWindows, the count of this application's own short-lived windows.

@@ -155,6 +155,19 @@ public class MqttEntityTableTests
                 .Select(e => e.EntityId)
                 .Where(id => id.StartsWith("service_", StringComparison.Ordinal)));
 
+    /// <summary>Every entity carries the text Home Assistant shows as its description attribute; one left
+    /// without it publishes no attribute at all. One machine covers every per-machine entity.</summary>
+    [Fact]
+    public void EveryEntityCarriesAShortDescription()
+    {
+        var faulty = MqttEntityTable.Build(new Spy().Spec("Dev")).All
+            .Where(e => string.IsNullOrWhiteSpace(e.Description) || e.Description.Length > 300)
+            .Select(e => e.EntityId)
+            .ToArray();
+
+        Assert.True(faulty.Length == 0, $"Description missing or over 300 characters: {string.Join(", ", faulty)}.");
+    }
+
     // Stand-in VM IDs, GUID-shaped as Hyper-V assigns them. A and B share their first 29 hex digits —
     // everything the slug budget keeps — and differ after it.
     private const string GuidA = "3F2A9C1B-0D4E-4F60-8718-293A4B5C6D7E";

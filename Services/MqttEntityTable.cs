@@ -316,6 +316,7 @@ public static class MqttEntityTable
             Name     = "Active rule",
             Group    = NetworkGroup,
             Icon     = "mdi:lan",
+            Description = "The network rule in force for the network this computer is on, or the fallback when no rule matches.",
             Read     = () => Text(state.Network?.RuleName),
         };
         yield return new MqttSensor
@@ -324,6 +325,7 @@ public static class MqttEntityTable
             Name     = "Virtual switch",
             Group    = NetworkGroup,
             Icon     = "mdi:switch",
+            Description = "The virtual switch the active rule connects the machines to.",
             Read     = () => Text(state.Network is { } r ? (string.IsNullOrWhiteSpace(r.SwitchName) ? r.SwitchId : r.SwitchName) : null),
         };
         yield return new MqttSensor
@@ -332,6 +334,7 @@ public static class MqttEntityTable
             Name     = "Host adapter",
             Group    = NetworkGroup,
             Icon     = "mdi:ethernet",
+            Description = "The physical network adapter the virtual switch reaches the network through; a dash when none was found.",
             Read     = () => Text(state.Network?.HostAdapterName),
         };
         yield return new MqttSensor
@@ -341,6 +344,7 @@ public static class MqttEntityTable
             Group    = DiagnosticsGroup,
             Category = MqttEntityCategory.Diagnostic,
             Icon     = "mdi:ip-network",
+            Description = "This computer's own network address on the adapter the virtual switch uses.",
             Read     = () => Text(state.Network?.HostIp),
         };
         yield return new MqttSensor
@@ -350,6 +354,7 @@ public static class MqttEntityTable
             Group    = DiagnosticsGroup,
             Category = MqttEntityCategory.Diagnostic,
             Icon     = "mdi:router-network",
+            Description = "The router this computer reaches other networks through.",
             Read     = () => Text(state.Network?.Gateway),
         };
         yield return new MqttSensor
@@ -358,6 +363,12 @@ public static class MqttEntityTable
             Name     = "Network status",
             Group    = NetworkGroup,
             Icon     = "mdi:check-network",
+            // One line per state; each ends in a full stop so it still reads where line breaks are dropped.
+            Description = "Whether the active rule took effect.\n"
+                        + "Applied: the switch and machines are connected as the rule asks.\n"
+                        + "Not checked: the latest check gave no outcome.\n"
+                        + "Switch binding failed: the switch could not use the network adapter.\n"
+                        + "Machine connection failed: a machine could not join the switch.",
             Read     = () => state.Network is { } r ? NetworkStatusText(r.ApplyStatus) : null,
         };
         yield return new MqttButton
@@ -366,6 +377,7 @@ public static class MqttEntityTable
             Name     = "Re-check network",
             Group    = NetworkGroup,
             Icon     = "mdi:refresh",
+            Description = "Checks the network again and applies the matching rule; this computer's own connection may drop briefly.",
             Press    = () => MqttCommandVerdict.Accept(spec.ReCheckNetwork),
         };
         yield return new MqttButton
@@ -374,6 +386,7 @@ public static class MqttEntityTable
             Name     = "Repair host networking",
             Group    = NetworkGroup,
             Icon     = "mdi:wrench",
+            Description = "Restores this computer's own connection when the machines are online but the computer is not; the connection may drop briefly.",
             Press    = () => MqttCommandVerdict.Accept(spec.RepairHostNetworking),
         };
     }
@@ -395,6 +408,9 @@ public static class MqttEntityTable
             Name     = label,
             Group    = ServicesGroup,
             Icon     = "mdi:cog-outline",
+            Description = kind == HyperVServiceKind.VirtualMachineManagement
+                ? "Whether the Hyper-V service that runs every virtual machine is running; while it is stopped, machine states cannot be read and starting a machine starts the service first."
+                : "Whether the Hyper-V service that Windows Subsystem for Linux, Docker and Windows Sandbox depend on is running; starting a machine starts it first when it is stopped.",
             // Not read yet is no reading, not a state called "Unknown".
             Read     = () => spec.ServiceState(kind) is var s && s != HyperVServiceState.Unknown
                 ? HyperVServiceNames.StateText(s)
@@ -413,6 +429,9 @@ public static class MqttEntityTable
             Name     = $"Start {label}",
             Group    = ServicesGroup,
             Icon     = "mdi:play",
+            Description = kind == HyperVServiceKind.VirtualMachineManagement
+                ? "Starts the service that runs the virtual machines; available only while it is stopped."
+                : "Starts the service Windows Subsystem for Linux, Docker and Windows Sandbox depend on; available only while it is stopped, and it can be stopped only on this computer.",
             Include  = () => MqttCommandGate.ServiceVerbAvailable(kind, spec.ServiceState(kind), start: true),
             Press    = () => Command(start: true),
         };
@@ -425,6 +444,7 @@ public static class MqttEntityTable
                 Name     = $"Stop {label}",
                 Group    = ServicesGroup,
                 Icon     = "mdi:stop",
+                Description = "Saves every running machine and then stops the service that runs them; available only while it is running.",
                 Include  = () => MqttCommandGate.ServiceVerbAvailable(kind, spec.ServiceState(kind), start: false),
                 Press    = () => Command(start: false),
             };
@@ -444,6 +464,7 @@ public static class MqttEntityTable
             Name     = $"{vmName} state",
             Group    = VmGroup,
             Icon     = "mdi:server",
+            Description = "What the machine is doing: Running, Off, Saved (stopped with its memory kept on disk), Paused (halted in memory), or a step between them such as Starting or Saving.",
             Read     = () => Text(state.Vm(vmId)?.State),
         };
         yield return new MqttSensor
@@ -453,6 +474,7 @@ public static class MqttEntityTable
             Group    = DiagnosticsGroup,
             Category = MqttEntityCategory.Diagnostic,
             Icon     = "mdi:switch",
+            Description = "The virtual switch the machine's network adapter is connected to.",
             Read     = () => Text(state.Vm(vmId)?.Switch),
         };
         yield return new MqttSensor
@@ -462,6 +484,7 @@ public static class MqttEntityTable
             Group    = DiagnosticsGroup,
             Category = MqttEntityCategory.Diagnostic,
             Icon     = "mdi:ip-network",
+            Description = "The network address the machine reports; unknown until it reports one.",
             Read     = () => Text(spec.VmIp(vmId)),
         };
         yield return new MqttSensor
@@ -471,6 +494,7 @@ public static class MqttEntityTable
             Group    = DiagnosticsGroup,
             Category = MqttEntityCategory.Diagnostic,
             Icon     = "mdi:timer-outline",
+            Description = "How long the machine has been running, in days, hours and minutes; unknown while it is not running.",
             Read     = () => Text(UptimeFormatter.Format(state.Vm(vmId))),
         };
         yield return new MqttSensor
@@ -480,6 +504,7 @@ public static class MqttEntityTable
             Group    = DiagnosticsGroup,
             Category = MqttEntityCategory.Diagnostic,
             Icon     = "mdi:history",
+            Description = "The machine's latest start, shut-down, pause, save or resume request and how far it got: requested, running, succeeded or failed.",
             Read     = () => Text(state.Operation(vmId)),
         };
 
@@ -495,6 +520,7 @@ public static class MqttEntityTable
             StateClass = MqttStateClass.Measurement,
             Unit       = "%",
             Icon       = "mdi:cpu-64-bit",
+            Description = "How busy the machine's processors are, in per cent.",
             Read       = () => state.Vm(vmId) is { } s ? MqttPayload.Number(s.Cpu) : null,
         };
         yield return new MqttSensor
@@ -506,6 +532,7 @@ public static class MqttEntityTable
             DeviceClass = "data_size",
             StateClass  = MqttStateClass.Measurement,
             Unit        = "MiB",
+            Description = "The memory currently assigned to the machine.",
             Read        = () => state.Vm(vmId) is { } s ? MqttPayload.Number(Math.Round(s.MemAssignedMb, 1)) : null,
         };
         yield return new MqttSensor
@@ -517,6 +544,7 @@ public static class MqttEntityTable
             DeviceClass = "data_size",
             StateClass  = MqttStateClass.Measurement,
             Unit        = "GiB",
+            Description = "The space the machine's virtual disk files take on this computer.",
             Read        = () => state.Vm(vmId) is { } s ? MqttPayload.Number(Math.Round(s.VhdGb, 2)) : null,
         };
 
@@ -526,6 +554,7 @@ public static class MqttEntityTable
             Name     = vmName,
             Group    = VmGroup,
             Icon     = "mdi:power",
+            Description = "On while the machine is running; switching on starts or resumes it, and switching off shuts it down.",
             Read     = () => state.Vm(vmId)?.IsRunning,
             Apply    = on => spec.AnyServiceDown()
                 ? MqttCommandGate.PowerWhileServicesDown(state.Vm(vmId)?.State, spec.VmmsDown(),
@@ -554,6 +583,7 @@ public static class MqttEntityTable
                 Name     = $"{vmName} {PowerButtonLabel(kind)}",
                 Group    = VmGroup,
                 Icon     = PowerButtonIcon(kind),
+                Description = PowerButtonDescription(kind),
                 Include  = () => MqttCommandGate.PowerAvailable(
                     state.Vm(vmId)?.State, kind, spec.AnyServiceDown(), spec.VmmsDown()),
                 Press    = () => PowerVerb(kind),
@@ -566,6 +596,7 @@ public static class MqttEntityTable
             Group    = VmGroup,
             Category = MqttEntityCategory.Config,
             Icon     = "mdi:swap-horizontal",
+            Description = "Moves the machine to the chosen virtual switch now, overriding the rules until the network or the rules change; unknown when the machine is on a switch not in the list.",
             // The receiver rejects a select with no options, so with no rules configured the entity is
             // WITHHELD rather than dropped: it keeps its entry and its registry record and returns the
             // moment a rule names a switch. Gated on the rules alone, so the fallback switch below does
@@ -634,6 +665,18 @@ public static class MqttEntityTable
         VmOpKind.Save     => "mdi:content-save",
         VmOpKind.Resume   => "mdi:play-circle",
         _                 => "mdi:power-settings",
+    };
+
+    /// <summary>What one power button does, shared by every machine. Null for a verb not written here,
+    /// which the description guard in the tests catches.</summary>
+    private static string? PowerButtonDescription(VmOpKind kind) => kind switch
+    {
+        VmOpKind.Start    => "Starts the machine from off or saved, and starts any stopped Hyper-V service first.",
+        VmOpKind.Shutdown => "Asks the machine's operating system to shut down; available while it is running.",
+        VmOpKind.Pause    => "Halts the running machine in memory without shutting it down.",
+        VmOpKind.Save     => "Stores the machine's memory on disk and stops it, so the next start continues where it left off; available while it is running or paused.",
+        VmOpKind.Resume   => "Continues a paused machine where it was halted.",
+        _                 => null,
     };
 
     /// <summary>Null publishes the literal <c>None</c>, so a missing reading clears the entity — an
