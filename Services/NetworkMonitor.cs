@@ -456,7 +456,7 @@ public sealed class NetworkMonitor : IDisposable
                 bool ok = outcome == OverrideFlow.Outcome.Applied;
                 // The host section keeps showing the real connection rather than dashes.
                 var host = await Task.Run(() => AdapterMatcher.Evaluate(_config.Current));
-                var result = new MatchResult(ManualRuleId, $"Manual ({sw.Shown})", sw.Id, sw.Name, [vm.Ref])
+                var result = new MatchResult(OverrideFlow.ManualRuleId, $"Manual ({sw.Shown})", sw.Id, sw.Name, [vm.Ref])
                 {
                     HostAdapterName        = host.HostAdapterName,
                     HostAdapterInterfaceId = host.HostAdapterInterfaceId,
@@ -480,6 +480,7 @@ public sealed class NetworkMonitor : IDisposable
                     : null;
                 if (bound) Schedule((int)OverrideFlow.SettleAfterBind.TotalMilliseconds + 500);
 
+                _ruleBeforeOverride = OverrideFlow.RuleBefore(_lastApplied?.RuleId, _ruleBeforeOverride);
                 _lastApplied = result;
                 Publish(result);
                 if (ok && moved) BeginAddressRenewal(vm, result);
@@ -626,6 +627,7 @@ public sealed class NetworkMonitor : IDisposable
     }
 
     private volatile OverrideHoldState? _hold;
+    private string? _ruleBeforeOverride;
     // Set by a network-affecting settings change: the next pass lets the rules decide.
     private volatile bool _endHoldRequested;
 
@@ -698,9 +700,6 @@ public sealed class NetworkMonitor : IDisposable
         if (_disposing) throw new OperationCanceledException("The network monitor is being disposed.");
     }
 
-    /// <summary>The rule ID a manual override publishes under: neither a rule nor the fallback.</summary>
-    private const string ManualRuleId = "manual";
-
     /// <summary>True when applying <paramref name="result"/> would bind its switch to an adapter this
     /// session has not confirmed it on — the same test <see cref="ApplyAsync"/> uses to skip a bind.</summary>
     private bool WouldRebind(MatchResult result)
@@ -727,11 +726,11 @@ public sealed class NetworkMonitor : IDisposable
         // Capture the previously-active rule before any state changes so autostart and
         // bridge-transition detection both see a consistent before/after snapshot.
         ThrowIfDisposing();
-        var previousRule = _lastApplied?.RuleId;
+        var previousRule = OverrideFlow.RuleBefore(_lastApplied?.RuleId, _ruleBeforeOverride);
 
         // The rule that has just become active, if any: its service and autostart settings act once, on
         // the change, never on a re-apply of the same rule. Found by ID — two rules may share a name.
-        var activeRule = result.RuleId != previousRule && !result.IsFallback
+        var activeRule = result.ActivatesRuleAfter(previousRule)
             ? _config.Current.Rules.FirstOrDefault(r => r.Id == result.RuleId)
             : null;
 
@@ -1025,9 +1024,7 @@ public sealed class NetworkMonitor : IDisposable
     {
         // previousRuleId == null means first evaluation at startup — never trigger on startup
         // even if the initial result is Fallback. Compared by rule ID: a rule NAMED "Fallback" is a rule.
-        bool bridgeJustLost     = previousRuleId != null
-                               && previousRuleId != MatchResult.FallbackRuleId
-                               && result.IsFallback;
+        bool bridgeJustLost     = result.LosesBridgeAfter(previousRuleId);
         bool bridgeJustRestored = previousRuleId == MatchResult.FallbackRuleId
                                && !result.IsFallback;
 

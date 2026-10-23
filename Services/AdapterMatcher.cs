@@ -109,6 +109,11 @@ public sealed record MatchResult(
         string.Equals(HostAdapterInterfaceId, next.HostAdapterInterfaceId, StringComparison.OrdinalIgnoreCase) &&
         TargetVms.Select(v => v.Id).SequenceEqual(next.TargetVms.Select(v => v.Id), StringComparer.OrdinalIgnoreCase);
 
+    public bool ActivatesRuleAfter(string? previousRuleId) => RuleId != previousRuleId && !IsFallback;
+
+    public bool LosesBridgeAfter(string? previousRuleId) =>
+        previousRuleId != null && previousRuleId != FallbackRuleId && IsFallback;
+
     /// <summary>
     /// THIS confirmed outcome with its DISPLAY-only fields re-read from <paramref name="next"/>, a freshly
     /// evaluated result — or <b>null</b> when <paramref name="next"/> is not the same outcome and this

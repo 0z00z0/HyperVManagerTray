@@ -31,4 +31,23 @@ public class OverrideFlowTests
         Assert.Equal(expected, outcome);
         Assert.Equal(expectedSteps, string.Join(",", steps));
     }
+
+    [Fact]
+    public void OverrideOntoTheFallbackSwitch_EndingOnTheFallback_ArmsNoBridgeLostAction()
+    {
+        var previous = OverrideFlow.RuleBefore(OverrideFlow.ManualRuleId, MatchResult.FallbackRuleId);
+        var fallback = new MatchResult(MatchResult.FallbackRuleId, "Fallback", "fallback-switch", "Default Switch", []);
+
+        Assert.False(fallback.LosesBridgeAfter(previous));
+    }
+
+    [Fact]
+    public void Override_EndingOnTheRuleItReplaced_RunsNoSecondAutostart()
+    {
+        const string home = "6f1c2b9e-0d4a-4e57-9a3b-2c8e1f7d5a10";
+        var previous = OverrideFlow.RuleBefore(OverrideFlow.ManualRuleId, home);
+        var result   = new MatchResult(home, "Home", "bridge-switch", "Bridge", []);
+
+        Assert.False(result.ActivatesRuleAfter(previous));
+    }
 }

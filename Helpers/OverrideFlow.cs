@@ -61,6 +61,12 @@ public static class OverrideFlow
         return await move().ConfigureAwait(true) ? Outcome.Applied : Outcome.MoveFailed;
     }
 
+    public const string ManualRuleId = "manual";
+
+    // An override is not a rule, so activation and the bridge transition compare against the rule before it.
+    public static string? RuleBefore(string? lastAppliedRuleId, string? ruleBeforeOverride) =>
+        lastAppliedRuleId == ManualRuleId ? ruleBeforeOverride : lastAppliedRuleId;
+
     /// <summary>How long a hold ignores network changes after its own bind, which drops and restores the
     /// host's connection and so fires the very events that would otherwise end it at once.</summary>
     public static readonly TimeSpan SettleAfterBind = TimeSpan.FromSeconds(60);
