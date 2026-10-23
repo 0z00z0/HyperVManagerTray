@@ -24,8 +24,9 @@ namespace HyperVManagerTray.Services;
 /// prompts: they answer "Install" unconditionally, so a flow carrying them would install whatever it
 /// found with neither the machine-free rule nor the question below.</para>
 ///
-/// <para>The one thing this app decides about a moment is <see cref="MayInstallNow"/>. The
-/// ten-minute rule beneath it belongs to the component and cannot be loosened from here.</para>
+/// <para>The one thing this app holds an install for is <see cref="BridgeLostHold"/>, on both paths.
+/// The ten-minute rule beneath the automatic one belongs to the component and cannot be loosened from
+/// here.</para>
 ///
 /// <para>A downloaded installer is checked twice before it runs — its SHA-256 against the hash the
 /// release publishes, then its Authenticode signature and signer against
@@ -39,7 +40,11 @@ internal sealed class AppUpdate : IDisposable
     private readonly UpdateFlow _flow;
     private readonly UpdateLog _log;
     private readonly Action _exitForInstaller;
-    private readonly Func<bool> _bridgeActionPending;
+    private readonly InstallHolds _holds = new();
+
+    /// <summary>The one hold: a pending bridge-lost action lives only in memory and a restart drops it.
+    /// Read after "because" and keyed in the log, so it carries no count or name.</summary>
+    internal const string BridgeLostHold = "a machine is waiting out its bridge-lost delay";
 
     // The policy exists only while the setting is on, and the setting can be switched at any moment
     // from the Settings window. Guarded because the switch arrives on whatever thread raised the
@@ -47,9 +52,8 @@ internal sealed class AppUpdate : IDisposable
     private readonly object _policyLock = new();
     private UnattendedUpdatePolicy? _policy;
 
-    // The release the policy was about to install when it last asked, so the shutdown callback can
-    // record what the update was for. Written only where the moment was accepted, which is the last
-    // point before the installer starts.
+    // The release whose installer the policy is starting, so the shutdown callback can record what the
+    // update was for. Written by LaunchNotingService, the last point before the installer starts.
     private string? _acceptedByPolicy;
 
     /// <param name="runningVersion">The build to compare GitHub's latest against. Stated by the
@@ -58,9 +62,9 @@ internal sealed class AppUpdate : IDisposable
     /// <param name="exitForInstaller">Queues the app's ordinary exit. Called once the installer has
     /// started, so the files it replaces are released.</param>
     /// <param name="bridgeActionPending">Whether a machine is waiting out its bridge-lost delay. Read
-    /// immediately before an unattended installer starts; see <see cref="MayInstallNow"/> for why that
-    /// is the one moment this app refuses. Called rather than captured, because the network monitor
-    /// does not exist yet when this is built.</param>
+    /// each time an install is about to be asked about or started; see <see cref="BridgeLostHold"/> for
+    /// why that is the one thing this app holds for. Called rather than captured, because the network
+    /// monitor does not exist yet when this is built.</param>
     public AppUpdate(Version runningVersion, ILogger logger, Action exitForInstaller,
                      Func<bool> bridgeActionPending)
     {
@@ -70,9 +74,10 @@ internal sealed class AppUpdate : IDisposable
         ArgumentNullException.ThrowIfNull(bridgeActionPending);
 
         var log = new UpdateLog(logger);
-        _log                 = log;
-        _exitForInstaller    = exitForInstaller;
-        _bridgeActionPending = bridgeActionPending;
+        _log              = log;
+        _exitForInstaller = exitForInstaller;
+        // Never disposed: it holds only while the function names a reason, for the life of the process.
+        _holds.Hold(() => bridgeActionPending() ? BridgeLostHold : null);
         _service = new UpdateService(AppUpdateOptions.For(runningVersion, log));
         _flow = new UpdateFlow(_service, _prompts, new UpdateFlowOptions
         {
@@ -92,6 +97,7 @@ internal sealed class AppUpdate : IDisposable
                 exitForInstaller();
             },
             OpenReleasePage = page => Shell.Open(page.AbsoluteUri),
+            Holds = _holds,
             Log = log,
         });
     }
@@ -143,50 +149,44 @@ internal sealed class AppUpdate : IDisposable
                 return;
             }
 
-            _policy = new UnattendedUpdatePolicy(_service, new UnattendedUpdateOptions
-            {
-                Enabled = true,
-                // The cadence, the retry tick and the initial delay are the component's defaults — a
-                // check a day, retried every ten minutes, starting 30 s after this. There is one
-                // setting here, so there is nothing for a second one to carry.
-                MayInstallNow = MayInstallNow,
-                Shutdown      = ShutdownForPolicyInstaller,
-                Log           = _log,
-            });
+            _policy = new UnattendedUpdatePolicy(
+                new LaunchNotingService(_service, release => _acceptedByPolicy = release.VersionText),
+                new UnattendedUpdateOptions
+                {
+                    Enabled = true,
+                    // The cadence, the retry tick and the initial delay are the component's defaults — a
+                    // check a day, retried every ten minutes, starting 30 s after this. There is one
+                    // setting here, so there is nothing for a second one to carry.
+                    Holds    = _holds,
+                    Shutdown = ShutdownForPolicyInstaller,
+                    Log      = _log,
+                });
             _policy.Start();
             _log.Info("Automatic update installing is on; a check runs daily and installs only while the machine is free.");
         }
     }
 
-    /// <summary>
-    /// Whether this moment suits an installer that is downloaded, verified and waiting. Asked by the
-    /// policy immediately before it starts one, and only about that moment: a refusal stops the attempt
-    /// and nothing else, and the next tick asks again.
-    /// </summary>
-    /// <remarks>
-    /// One thing is refused, and it is the one thing a restart genuinely loses. A bridge-lost action —
-    /// pausing, saving or shutting a machine down because its bridged network went away — is a timer in
-    /// the network monitor's memory, and the first evaluation after a start deliberately never arms one,
-    /// so an update landing during the delay drops that action altogether and nothing acts on the
-    /// machine until the bridge is restored and lost again.
-    ///
-    /// <para>Nothing else is refused, because nothing else is lost. A machine starting, stopping,
-    /// pausing or saving is Hyper-V's own job once it has been asked, and it finishes whether this
-    /// process lives or not. An interrupted service stop is re-armed by the first evaluation after the
-    /// restart, and an interrupted switch move or host vNIC repair is re-applied by it.</para>
-    ///
-    /// <para>The reason is the log's key, so it carries no delay, no machine name and no count: one
-    /// wording means one line for as long as the cause lasts.</para>
-    /// </remarks>
-    private InstallMoment MayInstallNow(ReleaseInfo release)
+    /// <summary>Notes the release being launched; the policy names it only after shutdown has run.</summary>
+    private sealed class LaunchNotingService(IUpdateService inner, Action<ReleaseInfo> launching) : IUpdateService
     {
-        ArgumentNullException.ThrowIfNull(release);
+        public Version RunningVersion => inner.RunningVersion;
 
-        if (_bridgeActionPending())
-            return InstallMoment.NotNow("a machine is waiting out its bridge-lost delay");
+        public Task<UpdateCheckResult> CheckAsync(CancellationToken cancellationToken = default) =>
+            inner.CheckAsync(cancellationToken);
 
-        _acceptedByPolicy = release.VersionText;
-        return InstallMoment.Now;
+        public Task<PreparedUpdate> PrepareAsync(ReleaseInfo release, IProgress<DownloadProgress>? progress = null,
+                                                 CancellationToken cancellationToken = default) =>
+            inner.PrepareAsync(release, progress, cancellationToken);
+
+        public LaunchResult Launch(PreparedUpdate update)
+        {
+            launching(update.Release);
+            return inner.Launch(update);
+        }
+
+        public int SweepStaleDownloads(TimeSpan olderThan) => inner.SweepStaleDownloads(olderThan);
+
+        public void Discard(PreparedUpdate update) => inner.Discard(update);
     }
 
     /// <summary>The policy's exit, once its installer is running. The handover is marked as the install

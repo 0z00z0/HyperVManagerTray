@@ -200,21 +200,16 @@ public sealed class MqttService : IDisposable
         PublishSetChanged = OnPanelPublishSetChanged,
         CommandLabel      = id => _publisher.Entities.NameOf(id),
 
-        // No consumer is named anywhere on this surface — see Services\MqttPanelStrings.cs, which takes
-        // the one module string that named one out.
-        PublishTitle       = "Publish to an MQTT broker",
         PublishDescription = "Announces this host's network state and its managed VMs to an MQTT broker, "
                            + "and accepts commands back on the same topics.",
-        PublishInfo        = "Nothing leaves this machine until a broker host is set and this is on. The "
-                           + "connection retries on its own and never holds the app up.",
-        PublishGroupsInfo  = "Each group is announced as a set. Switching one off leaves its entities in "
-                           + "the document, reading as unavailable, so nothing a receiver has already "
-                           + "registered is lost.",
-        DeviceIdConsequence = "Anything addressing this host's entities by their old ids stops working "
-                            + "until it is repointed.",
+        // The module's own text says switching off keeps the device; here it removes it (OnSettingsChanged).
+        PublishInfo        = "Takes effect at once, and nothing leaves this computer while it is off. Switching "
+                           + "it off while connected removes everything this application published from the "
+                           + "broker, and whatever reads it loses the names, entity IDs and areas chosen for "
+                           + "its entities.",
 
-        Strings = MqttPanelStrings.Instance,
-        Log     = _moduleLog,
+        OfferRemoval = true,
+        Log          = _moduleLog,
     };
 
     // ── App events → published state ────────────────────────────────────────────
@@ -347,30 +342,6 @@ public sealed class MqttService : IDisposable
     }
 
     // ── Withdrawal ──────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Takes the device off the broker and switches publishing off. What the Settings control runs, and
-    /// the one entry point that leaves nothing behind: the removal disables the connection but not the
-    /// setting, so an apply afterwards would announce the device it had just deleted.
-    /// </summary>
-    /// <remarks>Publishing is switched off only when the removal actually landed. Turning it off after a
-    /// removal that never started would leave the device standing on the broker with the one thing that
-    /// could still clear it switched off.</remarks>
-    public async Task<MqttWithdrawal.Outcome> WithdrawDeviceAsync()
-    {
-        MqttWithdrawal.Outcome outcome;
-
-        // Under the same gate as an apply, for the same reason — see ReconcileAsync. Released before the
-        // write below, whose own reconcile arrives on another thread and would otherwise wait behind it.
-        await _reconcile.WaitAsync().ConfigureAwait(false);
-        try { outcome = await RemoveDeviceAsync().ConfigureAwait(false); }
-        finally { _reconcile.Release(); }
-
-        if (outcome != MqttWithdrawal.Outcome.Removed) return outcome;
-
-        _store.Update(settings => settings.Enabled = false);
-        return outcome;
-    }
 
     /// <summary>
     /// The module's removal, classified. <see cref="MqttConnection.RemoveDeviceAsync"/> and not

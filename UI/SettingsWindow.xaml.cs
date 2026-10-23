@@ -1719,68 +1719,8 @@ internal sealed partial class SettingsWindow : Window
         // read-back itself, and Reload/Revert throw until it has run.
         _mqttSettings.Initialise(_mqtt.CreatePanelSetup());
 
-        panel.Children.Add(BuildMqttRemovalCard(_mqtt));
-
         _mqttSection = panel;
         return panel;
-    }
-
-    /// <summary>
-    /// The one MQTT control this window draws, in the ordinary card idiom below the hosted panel. The
-    /// shared panel switches publishing on and off, which stops the connection and leaves the retained
-    /// discovery document standing — so without this there is nothing in the app that can take the device
-    /// off the broker, and a stranded document needs an external MQTT client to clear.
-    ///
-    /// <para>App-side rather than a request to the shared panel because the wording is this app's: the
-    /// MQTT surface names no particular consumer (see <see cref="MqttPanelStrings"/>), and a removal
-    /// message is where a receiver's name would otherwise creep in.</para>
-    /// </summary>
-    private UIElement BuildMqttRemovalCard(MqttService mqtt)
-    {
-        var removeBtn = new Button { Content = "Remove the published device" };
-        removeBtn.Click += (_, _) => _ = RemovePublishedDeviceAsync(mqtt, removeBtn);
-
-        return SettingRow(
-            "Published device",
-            "Empties this host's discovery document, both availability topics and every published value "
-            + "and command topic, then switches publishing off so nothing re-announces it. Needs a live "
-            + "connection to the broker, and cannot be undone.",
-            removeBtn);
-    }
-
-    /// <summary>
-    /// Ask, remove, tell — the sequence is <see cref="MqttWithdrawal.RunAsync"/>'s, so its rules are
-    /// tested rather than trusted. The outcome is a modal rather than a balloon: it is the counterpart of
-    /// a blocking consent for a mutation that cannot be undone, which is the bounded exception in
-    /// docs\DISPLAY-VOCABULARY.md.
-    /// </summary>
-    private async Task RemovePublishedDeviceAsync(MqttService mqtt, Button removeBtn)
-    {
-        removeBtn.IsEnabled = false;
-        try
-        {
-            await MqttWithdrawal.RunAsync(
-                confirm:  prompt => NativeMethods.Confirm(prompt, AppInfo.Name),
-                withdraw: mqtt.WithdrawDeviceAsync,
-                report:   (message, isFailure) =>
-                {
-                    // Before the modal: a successful removal has just written Enabled off, and the panel's
-                    // toggle would otherwise still read on behind the message saying it is off.
-                    if (!_closed) _mqttSettings?.Reload();
-
-                    if (isFailure) NativeMethods.Warn(message, AppInfo.Name);
-                    else NativeMethods.Info(message, AppInfo.Name);
-                });
-        }
-        catch (Exception ex)
-        {
-            AppInfo.AppendCrashLogLine("SettingsWindow", $"RemovePublishedDevice: {ex}");
-            if (!_closed) NativeMethods.Warn($"Could not remove the published device:\n\n{ex.Message}", AppInfo.Name);
-        }
-        finally
-        {
-            if (!_closed) removeBtn.IsEnabled = true;
-        }
     }
 
     // ── Maintenance ────────────────────────────────────────────────────────────────

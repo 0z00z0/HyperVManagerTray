@@ -1043,7 +1043,7 @@ public sealed class NetworkMonitor : IDisposable
     /// Whether a bridge-lost action is armed for any machine — a pause, a save or a shutdown waiting
     /// out its delay because the bridged network went away.
     ///
-    /// <para>Read by the automatic update, which refuses to start an installer while one is armed. The
+    /// <para>Read by the update, which holds every install while one is armed. The
     /// timer is a <see cref="CancellationTokenSource"/> in memory and nothing about it survives a
     /// restart: <see cref="Dispose"/> cancels every pending one, and
     /// <see cref="HandleBridgeTransition"/> deliberately never arms one on the first evaluation after a

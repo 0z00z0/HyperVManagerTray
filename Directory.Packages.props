@@ -11,16 +11,16 @@
 
   <ItemGroup>
     <PackageVersion Include="H.NotifyIcon.WinUI" Version="2.4.1" />
-    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.13" />
     <!-- At or above 0z0-shared's pins. A direct reference BELOW a transitive one is NU1605, an
          error: the shared pins are a floor a consumer must meet, not one a lower local pin
          overrides. -->
     <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
     <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
-    <PackageVersion Include="NLog" Version="6.2.1" />
-    <PackageVersion Include="System.Drawing.Common" Version="10.0.12" />
-    <PackageVersion Include="System.Management" Version="10.0.12" />
-    <PackageVersion Include="System.ServiceProcess.ServiceController" Version="10.0.12" />
+    <PackageVersion Include="NLog" Version="6.2.2" />
+    <PackageVersion Include="System.Drawing.Common" Version="10.0.13" />
+    <PackageVersion Include="System.Management" Version="10.0.13" />
+    <PackageVersion Include="System.ServiceProcess.ServiceController" Version="10.0.13" />
     <PackageVersion Include="TaskScheduler" Version="2.12.2" />
   </ItemGroup>
 
@@ -36,19 +36,21 @@
     <!-- The bracket action button carries a symbol of its own and a column can set several of them to
          one width, and the About window holds its dismissal while another window of this application
          is on screen. Both brand assemblies release under the same number. 0.12.0 opens the About
-         window before the taskbar exists without ending the process. -->
-    <PackageVersion Include="ZeroZero.Brand.Core" Version="0.12.0" />
-    <PackageVersion Include="ZeroZero.Brand.WinUI" Version="0.12.0" />
-    <!-- SwitcherVisibility: hiding a window from Alt+Tab before the taskbar exists no longer throws. -->
-    <PackageVersion Include="ZeroZero.Controls.WinUI" Version="0.9.0" />
+         window before the taskbar exists without ending the process. 0.13.0 writes its own texts in
+         the UI culture, Norwegian bokmål built in. -->
+    <PackageVersion Include="ZeroZero.Brand.Core" Version="0.13.0" />
+    <PackageVersion Include="ZeroZero.Brand.WinUI" Version="0.13.0" />
+    <!-- SwitcherVisibility: hiding a window from Alt+Tab before the taskbar exists no longer throws.
+         0.11.0 writes its own texts in the UI culture, Norwegian bokmål built in. -->
+    <PackageVersion Include="ZeroZero.Controls.WinUI" Version="0.11.0" />
     <!-- 0.8.0 ends a process whose start failed instead of leaving it holding the lock. -->
     <PackageVersion Include="ZeroZero.Diagnostics" Version="0.8.0" />
-    <PackageVersion Include="ZeroZero.Lifecycle" Version="0.7.1" />
+    <PackageVersion Include="ZeroZero.Lifecycle" Version="0.7.2" />
     <!-- 0.8.0: the logon task's seven power settings, including no execution time limit, and a repair
          that notices a task pointing at an executable under an old install path. 0.8.1 adds a
          watchdog task that restarts an application the scheduler finds gone; it is additive and this
          application registers no such task, so the logon task behaves exactly as on 0.8.0. -->
-    <PackageVersion Include="ZeroZero.Startup" Version="0.8.2" />
+    <PackageVersion Include="ZeroZero.Startup" Version="0.8.3" />
     <!-- 0.7.2 closes the disposal race on the connection's reconcile gate and the discovery
          publisher's announcement gate: a settings change applied after teardown, or a reconnect
          still in flight at exit, could each end the process. Never go below it. 0.7.3 keeps an
@@ -73,16 +75,20 @@
          MqttEntitySet.Withheld; Resolve answers the same question, and only the test project
          called it.
          0.12.0 adds MqttEntity.Description, which Services\MqttEntityTable.cs sets on every entity;
-         it refuses a Description beside a json_attributes key in Extra, and this application sets none. -->
-    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.12.0" />
-    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.12.0" />
+         it refuses a Description beside a json_attributes key in Extra, and this application sets none.
+         0.14.0 is a breaking minor: the panel's texts are the module's own, from resource files with
+         Norwegian bokmål built in, and the panel offers removal of the published device, which
+         Services\MqttService.cs switches on. It brings MessageFormat, credited in Helpers\AppAbout.cs.
+         0.14.1 keeps a host text the module cannot format from ending the process. -->
+    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.14.1" />
+    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.14.1" />
     <!-- 0.11.0 waits for the taskbar and retries the icon for a host with its own TaskbarIcon. -->
-    <PackageVersion Include="ZeroZero.Tray.WinUI" Version="0.11.0" />
+    <PackageVersion Include="ZeroZero.Tray.WinUI" Version="0.11.1" />
     <!-- 0.9.0 adds TransientWindows, the count of this application's own short-lived windows.
          UI\DashboardWindow.xaml.cs asks it before dismissing itself on lost focus, so the dashboard
          stays put when the update window opens in front of it. 0.9.1 adds WindowFit, the arithmetic
          that fits a window into a work area; additive, and nothing here calls it yet. -->
-    <PackageVersion Include="ZeroZero.Win32" Version="0.9.1" />
+    <PackageVersion Include="ZeroZero.Win32" Version="0.9.2" />
     <!-- The three update assemblies release under one number and are raised together.
          0.8.0 reports a timeout, an unreachable host, a failure status and an unreadable release as
          four outcomes rather than two, which is the split every message about a failed check is
@@ -100,8 +106,8 @@
          when an installer may start with nobody asked. That decision is wired: UnattendedUpdatePolicy
          drives the check, the download and the launch behind the "Install updates automatically"
          setting, which is off unless switched on. The ten-minute machine-free rule belongs to the
-         component and cannot be loosened; this application only refuses a single moment, through
-         MayInstallNow. 0.12.1 adds a cadence that checks once and 0.12.2 reports every tick; neither
+         component and cannot be loosened; this application holds an install only while a machine
+         waits out its bridge-lost delay, through InstallHolds. 0.12.1 adds a cadence that checks once and 0.12.2 reports every tick; neither
          is set here, so the defaults apply — a check a day on a ten-minute retry tick. 0.12.3 carries
          no code change at all.
          0.13.0 adds a question before a download, a shared check object and a way to discard a
@@ -109,15 +115,18 @@
          defaults say. The one behaviour that does change without being asked for: while a release is
          held, the policy keeps checking on its cadence, and a strictly newer release takes the held
          one's place — a verified installer only once its replacement has verified too.
-         0.14.0 opens the update window before the taskbar exists without ending the process. -->
-    <PackageVersion Include="ZeroZero.Update" Version="0.14.0" />
-    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.14.0" />
-    <PackageVersion Include="ZeroZero.Update.WinUI" Version="0.14.0" />
+         0.14.0 opens the update window before the taskbar exists without ending the process.
+         0.16.0 is a breaking minor: one InstallHolds, asked on the automatic and the manual path
+         alike, replaces MayInstallNow. 0.17.0 is a breaking minor that makes UpdateMessages an
+         instance class; this application reads none of it. Texts follow the UI culture. -->
+    <PackageVersion Include="ZeroZero.Update" Version="0.17.0" />
+    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.17.0" />
+    <PackageVersion Include="ZeroZero.Update.WinUI" Version="0.17.0" />
   </ItemGroup>
 
   <!-- Test project only. -->
   <ItemGroup>
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.1" />
   </ItemGroup>

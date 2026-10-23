@@ -29,7 +29,6 @@ public class MqttServiceSourceTests
     }
 
     private static string ServiceSource()  => Source("Services", "MqttService.cs");
-    private static string SettingsSource() => Source("UI", "SettingsWindow.xaml.cs");
 
     /// <summary>One method's body, from its signature to the next member at class indent.</summary>
     private static string Body(string source, string signature)
@@ -107,18 +106,6 @@ public class MqttServiceSourceTests
     public void Withdrawal_DecidesTheTransitionThroughMqttWithdrawal()
     {
         Assert.Matches(new Regex(@"MqttWithdrawal\.OnDisable\s*\("), ServiceSource());
-    }
-
-    /// <summary>The Settings control asks before it removes. The confirmation, the wording and the report
-    /// are all <c>MqttWithdrawal</c>'s; a hand-rolled <c>Confirm</c> plus a direct call would satisfy the
-    /// compiler and lose every rule tested against them.</summary>
-    [Fact]
-    public void SettingsRoutesTheRemovalThroughMqttWithdrawal()
-    {
-        var src = SettingsSource();
-
-        Assert.Matches(new Regex(@"MqttWithdrawal\.RunAsync\s*\("), src);
-        Assert.Contains("WithdrawDeviceAsync", src);   // the flow is given the real removal
     }
 
     // ── Defect 2: the initial push ──────────────────────────────────────────────

@@ -52,6 +52,8 @@ internal sealed class TrayUpdatePrompts : IUpdatePrompts
     public async Task SayLaunchFailedAsync(PreparedUpdate update, LaunchResult result) =>
         await _window.SayLaunchFailedAsync(update, result);
 
+    public Task SayHeldAsync(ReleaseInfo release, string reason) => _window.SayHeldAsync(release, reason);
+
     public async Task SayCannotInstallAsync(PreparedUpdate update)
     {
         ArgumentNullException.ThrowIfNull(update);

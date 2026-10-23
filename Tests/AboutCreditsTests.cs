@@ -32,6 +32,12 @@ public class AboutCreditsTests
     /// </summary>
     private static readonly Dictionary<string, string> NotCredited = new();
 
+    /// <summary>Credited although no csproj reference names them, each with the reason.</summary>
+    private static readonly Dictionary<string, string> CreditedTransitively = new()
+    {
+        ["MessageFormat"] = "Arrives through ZeroZero.Mqtt; its MIT notice must ship with the module.",
+    };
+
     private static string RepoRoot([CallerFilePath] string thisFile = "") =>
         Path.GetDirectoryName(Path.GetDirectoryName(thisFile)!)!;
 
@@ -84,6 +90,7 @@ public class AboutCreditsTests
     {
         var referenced = PackageReferences();
         var stale      = CreditedNames()
+                         .Where(c => !CreditedTransitively.ContainsKey(c))
                          .Where(c => !referenced.Contains(c, StringComparer.OrdinalIgnoreCase))
                          .ToArray();
 

@@ -199,8 +199,8 @@ public partial class App : Application
                 System.Reflection.Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0),
                 _loggerFactory.CreateLogger<AppUpdate>(),
                 () => _ui.TryEnqueue(OnExit),
-                // Read at the moment an automatic installer is about to start, long after the monitor
-                // exists. Absent one, nothing is pending and nothing is refused.
+                // Read whenever an install is asked about, long after the monitor exists. Absent one,
+                // nothing is pending and nothing is held.
                 () => _monitor?.BridgeLostActionPending == true);
             // Directories a download left behind on an earlier run — an installer that never started,
             // a run that ended mid-download. Off the startup path; nothing waits on the count.
