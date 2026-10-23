@@ -539,6 +539,7 @@ public partial class App : Application
 
         // Explicit false: the default arms EcoQoS and IDLE_PRIORITY_CLASS across the whole process and
         // never undoes them, which starves the message pump — and so the tray — under host load.
+        LogStartupMilestone("tray start-up began (waiting for the taskbar)");
         var started = await TrayStartup.StartAsync(
             () => _trayIcon!.ForceCreate(enablesEfficiencyMode: false), RemoveTrayIcon);
         if (!started.IsCreated)
@@ -551,7 +552,8 @@ public partial class App : Application
         // Issue #54 milestone. ForceCreate() has returned, so Shell_NotifyIcon(NIM_ADD) was accepted —
         // "created", deliberately not "visible": when the shell paints it (or whether it folds it into
         // the overflow chevron) is not something this process is told.
-        LogStartupMilestone("tray icon created (shell accepted the add)");
+        LogStartupMilestone($"tray icon created (shell accepted the add; {started.Outcome}, {started.Attempts} attempts, "
+                          + $"{LatencyLog.FormatMs(started.Elapsed.TotalMilliseconds)} waiting for the taskbar and attempting)");
     }
 
     // ── Interactive-path instrumentation (issue #54) ────────────────────────────
