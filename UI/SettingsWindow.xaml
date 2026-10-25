@@ -57,7 +57,7 @@
             <NavigationViewItem Content="Adapters" Tag="Adapters">
                 <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/adapters.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
             </NavigationViewItem>
-            <NavigationViewItem Content="MQTT" Tag="Mqtt">
+            <NavigationViewItem Content="Remote control (MQTT)" Tag="Mqtt">
                 <NavigationViewItem.Icon><ImageIcon Source="ms-appx:///Assets/nav/mqtt.svg" Width="{StaticResource NavIconSize}" Height="{StaticResource NavIconSize}"/></NavigationViewItem.Icon>
             </NavigationViewItem>
             <NavigationViewItem Content="Maintenance" Tag="Maintenance">

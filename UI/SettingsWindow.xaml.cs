@@ -1702,12 +1702,12 @@ internal sealed partial class SettingsWindow : Window
             return cached;
         }
 
-        var panel = Section("MQTT");
+        var panel = Section("Remote control (MQTT)");
 
         if (_mqtt is null)
         {
             panel.Children.Add(Card(Description(
-                "The broker session did not start, so there is nothing to configure here. See mqtt.log "
+                "The connection to the remote control server did not start, so there is nothing to configure here. See mqtt.log "
                 + "under Maintenance for why.")));
             _mqttSection = panel;
             return panel;
@@ -1758,7 +1758,7 @@ internal sealed partial class SettingsWindow : Window
         AddLogItem("Switcher log", AppInfo.LogFile);
         AddLogItem("VM power log", AppInfo.VmPowerLog);
         AddLogItem("UI log", AppInfo.UiLog);
-        AddLogItem("MQTT log", AppInfo.MqttLog);
+        AddLogItem("Remote control log", AppInfo.MqttLog);
         logMenu.Items.Add(new MenuFlyoutSeparator());
         logMenu.Items.Add(new MenuFlyoutItem
         {
@@ -1821,7 +1821,7 @@ internal sealed partial class SettingsWindow : Window
 
         panel.Children.Add(SettingRow(
             "Config & logs",
-            "Open the raw config.json, open any of the app's log files (switcher, VM power, UI, MQTT) or the logs folder, "
+            "Open the raw config.json, open any of the app's log files (switcher, VM power, UI, remote control) or the logs folder, "
             + "or re-read config.json from disk after an out-of-band edit. A reload that can't parse the file says "
             + "so and changes nothing — the settings already loaded stay active.",
             buttons));

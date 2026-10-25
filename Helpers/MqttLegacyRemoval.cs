@@ -77,15 +77,15 @@ internal static class MqttLegacyRemoval
 
             // Warning, not Information: the broker stops publishing and nothing else says why.
             logger.LogWarning(
-                "The MQTT settings in {Path} were written by an earlier build and have been discarded. "
-                + "MQTT stays off until the broker, its credentials and the publishing options are "
+                "The remote control settings in {Path} were written by an earlier build and have been discarded. "
+                + "Remote control stays off until the server address, its credentials and the publishing options are "
                 + "entered again in Settings.", configPath);
             return MqttLegacyRemovalOutcome.Removed;
         }
         catch (Exception ex)
         {
             // Best-effort: the block is left as it was, and the next start tries again.
-            logger.LogError(ex, "Could not remove the earlier MQTT settings from {Path}", configPath);
+            logger.LogError(ex, "Could not remove the earlier remote control settings from {Path}", configPath);
             return MqttLegacyRemovalOutcome.Failed;
         }
     }

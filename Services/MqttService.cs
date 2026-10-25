@@ -309,7 +309,7 @@ public sealed class MqttService : IDisposable
             ReconcileMetrics();
         }
         // Nothing awaits this task, so an escaping throw would be unobserved.
-        catch (Exception ex) { _log.LogError(ex, "MQTT: reconciling the broker settings failed"); }
+        catch (Exception ex) { _log.LogError(ex, "MQTT: reconciling the server settings failed"); }
     }
 
     /// <summary>Only the metrics hold. The republish a group toggle needs is the publisher's own —
@@ -361,7 +361,7 @@ public sealed class MqttService : IDisposable
                 return MqttWithdrawal.Outcome.NoConnection;
             }
 
-            _log.LogInformation("MQTT: the published device was removed from the broker.");
+            _log.LogInformation("MQTT: the published device was removed from the server.");
             return MqttWithdrawal.Outcome.Removed;
         }
         catch (Exception ex)
