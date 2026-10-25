@@ -11,16 +11,16 @@
 
   <ItemGroup>
     <PackageVersion Include="H.NotifyIcon.WinUI" Version="2.4.1" />
-    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.14" />
     <!-- At or above 0z0-shared's pins. A direct reference BELOW a transitive one is NU1605, an
          error: the shared pins are a floor a consumer must meet, not one a lower local pin
          overrides. -->
     <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
     <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
     <PackageVersion Include="NLog" Version="6.2.2" />
-    <PackageVersion Include="System.Drawing.Common" Version="10.0.13" />
-    <PackageVersion Include="System.Management" Version="10.0.13" />
-    <PackageVersion Include="System.ServiceProcess.ServiceController" Version="10.0.13" />
+    <PackageVersion Include="System.Drawing.Common" Version="10.0.14" />
+    <PackageVersion Include="System.Management" Version="10.0.14" />
+    <PackageVersion Include="System.ServiceProcess.ServiceController" Version="10.0.14" />
     <PackageVersion Include="TaskScheduler" Version="2.12.2" />
   </ItemGroup>
 
@@ -79,9 +79,13 @@
          0.14.0 is a breaking minor: the panel's texts are the module's own, from resource files with
          Norwegian bokmål built in, and the panel offers removal of the published device, which
          Services\MqttService.cs switches on. It brings MessageFormat, credited in Helpers\AppAbout.cs.
-         0.14.1 keeps a host text the module cannot format from ending the process. -->
-    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.14.1" />
-    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.14.1" />
+         0.14.1 keeps a host text the module cannot format from ending the process.
+         0.14.2 and 0.14.4 change text values only: the panel and mqtt.log say server and remote
+         control where they said broker, and the master switch's default title reads "Remote control
+         (MQTT)". The panel texts this application writes in Services\MqttService.cs follow the same
+         words. -->
+    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.14.4" />
+    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.14.4" />
     <!-- 0.11.0 waits for the taskbar and retries the icon for a host with its own TaskbarIcon. -->
     <PackageVersion Include="ZeroZero.Tray.WinUI" Version="0.11.1" />
     <!-- 0.9.0 adds TransientWindows, the count of this application's own short-lived windows.

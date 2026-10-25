@@ -200,12 +200,12 @@ public sealed class MqttService : IDisposable
         PublishSetChanged = OnPanelPublishSetChanged,
         CommandLabel      = id => _publisher.Entities.NameOf(id),
 
-        PublishDescription = "Announces this host's network state and its managed VMs to an MQTT broker, "
-                           + "and accepts commands back on the same topics.",
+        PublishDescription = "Announces this host's network state and its managed VMs to a remote control "
+                           + "server, and accepts commands back on the same topics.",
         // The module's own text says switching off keeps the device; here it removes it (OnSettingsChanged).
         PublishInfo        = "Takes effect at once, and nothing leaves this computer while it is off. Switching "
                            + "it off while connected removes everything this application published from the "
-                           + "broker, and whatever reads it loses the names, entity IDs and areas chosen for "
+                           + "server, and whatever reads it loses the names, entity IDs and areas chosen for "
                            + "its entities.",
 
         OfferRemoval = true,
