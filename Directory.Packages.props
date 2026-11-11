@@ -11,16 +11,18 @@
 
   <ItemGroup>
     <PackageVersion Include="H.NotifyIcon.WinUI" Version="2.4.1" />
-    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="11.0.0" />
     <!-- At or above 0z0-shared's pins. A direct reference BELOW a transitive one is NU1605, an
          error: the shared pins are a floor a consumer must meet, not one a lower local pin
          overrides. -->
-    <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
-    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+    <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2957" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.6.5" />
     <PackageVersion Include="NLog" Version="6.2.2" />
-    <PackageVersion Include="System.Drawing.Common" Version="10.0.14" />
-    <PackageVersion Include="System.Management" Version="10.0.14" />
-    <PackageVersion Include="System.ServiceProcess.ServiceController" Version="10.0.14" />
+    <!-- Held on 10.x: the 11.0.0 package's net10.0 assets reference System.Collections.Immutable and
+         System.Reflection.Metadata 11.0.0.0, which the .NET 10 runtime does not carry (MSB3277). -->
+    <PackageVersion Include="System.Drawing.Common" Version="10.0.15" />
+    <PackageVersion Include="System.Management" Version="11.0.0" />
+    <PackageVersion Include="System.ServiceProcess.ServiceController" Version="11.0.0" />
     <PackageVersion Include="TaskScheduler" Version="2.12.2" />
   </ItemGroup>
 
@@ -130,7 +132,7 @@
 
   <!-- Test project only. -->
   <ItemGroup>
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.1" />
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.1" />
   </ItemGroup>

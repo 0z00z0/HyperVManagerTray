@@ -337,14 +337,14 @@ window shows both lists together.
 
 | Name | Version | Author / Publisher | Purpose | License |
 |---|---|---|---|---|
-| [Microsoft.WindowsAppSDK](https://www.nuget.org/packages/Microsoft.WindowsAppSDK) | 2.5.1 | Microsoft | WinUI 3 framework (windowing, XAML, Mica) | MS-EULA¹ |
-| [Microsoft.Windows.SDK.BuildTools](https://www.nuget.org/packages/Microsoft.Windows.SDK.BuildTools) | 10.0.28000.2705 | Microsoft | Windows SDK build tooling for the App SDK | MS-EULA¹ |
+| [Microsoft.WindowsAppSDK](https://www.nuget.org/packages/Microsoft.WindowsAppSDK) | 2.6.5 | Microsoft | WinUI 3 framework (windowing, XAML, Mica) | MS-EULA¹ |
+| [Microsoft.Windows.SDK.BuildTools](https://www.nuget.org/packages/Microsoft.Windows.SDK.BuildTools) | 10.0.28000.2957 | Microsoft | Windows SDK build tooling for the App SDK | MS-EULA¹ |
 | [H.NotifyIcon.WinUI](https://github.com/HavenDV/H.NotifyIcon) | 2.4.1 | HavenDV | System-tray icon + native context menu for WinUI 3 | MIT |
-| [System.Drawing.Common](https://www.nuget.org/packages/System.Drawing.Common) | 10.0.14 | Microsoft | Renders the tray `.ico` at runtime | MIT |
-| [Microsoft.Extensions.Logging](https://www.nuget.org/packages/Microsoft.Extensions.Logging) | 10.0.14 | Microsoft | Logging abstraction the whole app codes against; the sink behind it is NLog | MIT |
+| [System.Drawing.Common](https://www.nuget.org/packages/System.Drawing.Common) | 10.0.15 | Microsoft | Renders the tray `.ico` at runtime | MIT |
+| [Microsoft.Extensions.Logging](https://www.nuget.org/packages/Microsoft.Extensions.Logging) | 11.0.0 | Microsoft | Logging abstraction the whole app codes against; the sink behind it is NLog | MIT |
 | [NLog](https://nlog-project.org/) | 6.2.2 | Jarek Kowalski, Kim Christensen, Julian Verdurmen (NLog Project) | File sink behind the logging abstraction — writes `switcher.log` / `vm-power.log` / `ui.log` and rotates them at 2 MB (issue #55) | BSD-3-Clause² |
-| [System.Management](https://www.nuget.org/packages/System.Management) | 10.0.14 | Microsoft | WMI access (`root\virtualization\v2`) for VM status/power and switch binding — replaced the earlier PowerShell path | MIT |
-| [System.ServiceProcess.ServiceController](https://www.nuget.org/packages/System.ServiceProcess.ServiceController) | 10.0.14 | Microsoft | Reads, starts and stops the Hyper-V services through the Service Control Manager (issue #114) | MIT |
+| [System.Management](https://www.nuget.org/packages/System.Management) | 11.0.0 | Microsoft | WMI access (`root\virtualization\v2`) for VM status/power and switch binding — replaced the earlier PowerShell path | MIT |
+| [System.ServiceProcess.ServiceController](https://www.nuget.org/packages/System.ServiceProcess.ServiceController) | 11.0.0 | Microsoft | Reads, starts and stops the Hyper-V services through the Service Control Manager (issue #114) | MIT |
 | [TaskScheduler](https://github.com/dahall/taskscheduler) | 2.12.2 | David Hall | Typed Task Scheduler API under `ZeroZero.Startup`, which registers and repairs the logon task — `schtasks /Create` cannot set the power settings that decide whether the task starts the app | MIT |
 | [MessageFormat](https://github.com/jeffijoe/messageformat.net) | 8.0.0 | Jeff Hansen | Counted texts in the MQTT settings panel; arrives through `ZeroZero.Mqtt.WinUI` rather than a reference of its own | MIT³ |
 
@@ -371,7 +371,7 @@ additionally uses, at **test time only** (nothing ships in the app):
 |---|---|---|---|---|
 | [xunit](https://github.com/xunit/xunit) | 2.9.3 | .NET Foundation & contributors | Unit-test framework | Apache-2.0 |
 | [xunit.runner.visualstudio](https://github.com/xunit/visualstudio.xunit) | 4.0.1 | .NET Foundation & contributors | VSTest adapter so `dotnet test` discovers xUnit tests | Apache-2.0 |
-| [Microsoft.NET.Test.Sdk](https://github.com/microsoft/vstest) | 18.11.0 | Microsoft | .NET test host / VSTest platform | MIT |
+| [Microsoft.NET.Test.Sdk](https://github.com/microsoft/vstest) | 18.11.1 | Microsoft | .NET test host / VSTest platform | MIT |
 
 ## Shared components
 
