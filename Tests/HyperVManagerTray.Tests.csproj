@@ -32,6 +32,7 @@
     <Compile Include="..\Helpers\WmiVmMapper.cs"      Link="Linked\WmiVmMapper.cs" />
     <!-- Pure state→UI decisions for VM power controls (issue #30). Depends only on VmOperation. -->
     <Compile Include="..\Helpers\VmStateUi.cs"        Link="Linked\VmStateUi.cs" />
+    <Compile Include="..\Helpers\TrayProgress.cs"     Link="Linked\TrayProgress.cs" />
     <!-- Whether a power request needs issuing at all, given the machine's state. The guard that stops a
          repeated rule pass asking an already-starting machine to start again — and the only way to
          exercise it is here, since the states it turns on are otherwise reached by docking a laptop and

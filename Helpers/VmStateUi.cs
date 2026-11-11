@@ -105,4 +105,17 @@ public static class VmStateUi
     /// </summary>
     public static bool IsOverlayExpired(VmOpKind kind, VmOpPhase phase, TimeSpan age) =>
         kind == VmOpKind.Shutdown && phase == VmOpPhase.Running && age >= ShutdownDeadline;
+
+    /// <summary>The state a power action leaves the machine in; reaching it ends an operation that reports no outcome, such as a guest shutdown.</summary>
+    public static string? SettledState(VmOpKind kind) => kind switch
+    {
+        VmOpKind.Start or VmOpKind.Resume => "Running",
+        VmOpKind.Pause                     => "Paused",
+        VmOpKind.Save                      => "Saved",
+        VmOpKind.Shutdown                  => "Off",
+        _                                  => null,
+    };
+
+    public static bool ReachedTarget(VmOpKind kind, VmStatus? s) =>
+        SettledState(kind) is { } target && s?.State.Equals(target, StringComparison.OrdinalIgnoreCase) == true;
 }

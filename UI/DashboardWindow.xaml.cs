@@ -984,23 +984,9 @@ public sealed partial class DashboardWindow : Window
         || state.Equals("Saved", StringComparison.OrdinalIgnoreCase) ? AppColors.IndicatorOrangeBrush
       :                                                                 AppColors.IndicatorGreyBrush;
 
-    /// <summary>
-    /// The steady state a completed power action leaves the VM in — used both to clear an overlay once
-    /// the real status catches up (a stale "timed out" Failed, or Shutdown, which completes
-    /// asynchronously via the guest and only ever emits a "Shutting down…" Running phase, never
-    /// Succeeded), and to show the achieved state instantly on success while the WMI read lags.
-    /// </summary>
-    private static string? SettledState(VmOpKind kind) => kind switch
-    {
-        VmOpKind.Start or VmOpKind.Resume => "Running",
-        VmOpKind.Pause                     => "Paused",
-        VmOpKind.Save                      => "Saved",
-        VmOpKind.Shutdown                  => "Off",
-        _                                  => null,
-    };
+    private static string? SettledState(VmOpKind kind) => VmStateUi.SettledState(kind);
 
-    private static bool ReachedTarget(VmOpKind kind, VmStatus? s) =>
-        SettledState(kind) is { } target && s?.State.Equals(target, StringComparison.OrdinalIgnoreCase) == true;
+    private static bool ReachedTarget(VmOpKind kind, VmStatus? s) => VmStateUi.ReachedTarget(kind, s);
 
     private bool IsOpActive(string vmName) =>
         _op.TryGetValue(vmName, out var op) && op.Phase is VmOpPhase.Requested or VmOpPhase.Running;

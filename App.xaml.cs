@@ -49,6 +49,12 @@ public partial class App : Application
     // no boolean could express (issue #37).
     private TrayIconState? _iconState;
     private System.Drawing.Icon? _iconImage;
+    // The network state's glyph is kept apart from the ring, so a state change mid-operation keeps both.
+    private TrayIconState _glyphState;
+    private (TrayIconState, ProgressRing?)? _paintedIcon;
+    private readonly TrayProgress _progress = new();
+    private DispatcherQueueTimer? _ringTimer;
+    private int _ringFrame;
 
     // Latches the issue #54 startup milestone for the icon leaving grey, so it is logged once per process
     // and not on every later state change. UI-thread only (set inside OnSwitchApplied's TryEnqueue body).
@@ -313,6 +319,7 @@ public partial class App : Application
             // inline (issue #30, finding 2) — a tray-initiated Start/Shutdown/… that fails is otherwise
             // completely silent.
             _vm.OperationProgress += OnVmOperationFailed;
+            _vm.OperationProgress += OnVmOperationRing;
             _vm.SubscribeStateWatcher();
 
             // Publishing to a broker (issue #75). Inert until the config's mqtt section is enabled and
@@ -782,6 +789,13 @@ public partial class App : Application
     {
         PostTooltipFromCaches();
 
+        _ui.TryEnqueue(() =>
+        {
+            _progress.Settle(statuses);
+            try { RefreshTrayIcon(); }
+            catch (Exception ex) { LogCrash("Tray progress ring", ex); }
+        });
+
         // This read is where a changed uplink verdict arrives, and no apply pass need have run for it to
         // have changed: a dock unplugged under a switch the rules still agree on moves the host without
         // moving the rules. The icon and the balloon are therefore refreshed from the LAST applied
@@ -1215,11 +1229,57 @@ public partial class App : Application
     /// by <see cref="NetworkStatusUi.IconFor"/> from the apply OUTCOME — never inferred here.</summary>
     private void SetTrayIcon(TrayIconState state)
     {
+        _glyphState = state;
+        RefreshTrayIcon();
+    }
+
+    /// <summary>Paints the glyph for the network state, with the progress ring while an operation runs. UI thread.</summary>
+    private void RefreshTrayIcon()
+    {
+        if (_trayIcon is null) return;
+        _progress.Expire(DateTime.UtcNow);
+        ProgressRing? ring = !_progress.Active ? null
+            : _progress.Percent is { } percent ? new ProgressRing(percent)
+            : new ProgressRing(null, _ringFrame);
+
+        if (ring is null) _ringTimer?.Stop();
+        else if (_ringTimer is null || !_ringTimer.IsRunning) StartRingTimer();
+
+        // Repaints only when what is shown changes, not on every progress event.
+        if (_paintedIcon == (_glyphState, ring)) return;
+        _paintedIcon = (_glyphState, ring);
+
         var previous = _iconImage;
-        _iconImage = new System.Drawing.Icon(IconGenerator.GenerateAndSave(_exeDir, state));
-        _trayIcon!.Icon = _iconImage;
+        _iconImage = ring is { } r ? IconGenerator.CreateIcon(_glyphState, r)
+                                   : new System.Drawing.Icon(IconGenerator.GenerateAndSave(_exeDir, _glyphState));
+        _trayIcon.Icon = _iconImage;
         previous?.Dispose();
     }
+
+    private void StartRingTimer()
+    {
+        if (_ringTimer is null)
+        {
+            _ringTimer = _ui.CreateTimer();
+            _ringTimer.Interval = TimeSpan.FromMilliseconds(150);
+            _ringTimer.Tick += OnRingTick;
+        }
+        _ringTimer.Start();
+    }
+
+    private void OnRingTick(DispatcherQueueTimer sender, object args)
+    {
+        _ringFrame = (_ringFrame + 1) % IconGenerator.IndeterminateFrames;
+        try { RefreshTrayIcon(); }
+        catch (Exception ex) { LogCrash("Tray progress ring", ex); }
+    }
+
+    private void OnVmOperationRing(Models.VmOperationProgress p) => _ui.TryEnqueue(() =>
+    {
+        _progress.Update(p, DateTime.UtcNow);
+        try { RefreshTrayIcon(); }
+        catch (Exception ex) { LogCrash("Tray progress ring", ex); }
+    });
 
     // ── Dashboard ───────────────────────────────────────────────────────────────
 
@@ -1276,6 +1336,7 @@ public partial class App : Application
         // before the logger factory goes — it logs.
         var mqttTeardown = _mqtt?.BeginDisposeAsync();
 
+        _ringTimer?.Stop();
         _trayIcon?.Dispose();
         _iconImage?.Dispose();
         _monitor?.Dispose();

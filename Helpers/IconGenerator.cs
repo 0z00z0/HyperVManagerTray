@@ -40,6 +40,9 @@ public enum TrayIconState
     BridgeNoUplink,
 }
 
+/// <summary>The ring round the glyph while a machine operation runs: a percentage, or a turning arc at <paramref name="Frame"/> when there is none.</summary>
+internal readonly record struct ProgressRing(int? Percent, int Frame = 0);
+
 /// <summary>
 /// Generates the tray icon at runtime (no image assets): the "route fork" glyph — a virtual machine
 /// above a network line that forks to a square end (physical LAN) and a round end (NAT) — drawn in a
@@ -57,7 +60,9 @@ public enum TrayIconState
 /// rather than weakening that rule — see TrayIconState.
 ///
 /// Four multi-size .ico files are written next to the exe and swapped on state changes; writing
-/// to disk lets H.NotifyIcon reload them and avoids the GDI handle leak of Bitmap.GetHicon().
+/// to disk lets H.NotifyIcon reload them and avoids the GDI handle leak of Bitmap.GetHicon().  While a
+/// machine operation runs, <see cref="CreateIcon"/> builds the same multi-size icon in memory with a
+/// progress ring round a smaller glyph; the plain glyph returns from its file when the last one ends.
 ///
 /// Icon version: v6 — the route-fork glyph.  installer\RouteGlyph.ps1 draws the same 16-unit geometry,
 /// white on a blue plate, for AppIcon.ico, and flat blue for the Start-menu shortcut's TrayBlue.ico, so
@@ -138,7 +143,7 @@ internal static class IconGenerator
     // installer\RouteGlyph.ps1 draws the identical geometry for the application icon, the Start-menu
     // shortcut icon and the installer wizard images; keep the two in sync if either changes.
     /// <summary>Renders the tray glyph for <paramref name="state"/> at the given pixel size (transparent background).</summary>
-    internal static Bitmap RenderIcon(int size, TrayIconState state)
+    internal static Bitmap RenderIcon(int size, TrayIconState state, ProgressRing? ring = null)
     {
         var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
         using var g = Graphics.FromImage(bmp);
@@ -146,8 +151,71 @@ internal static class IconGenerator
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;   // pixel i spans [i, i+1], so integer edges are crisp
         g.Clear(Color.Transparent);   // transparent background — works on light & dark taskbars
 
-        DrawRouteGlyph(g, new Grid(0f, size / 16f, size / 2f), ColorFor(state), state);
+        if (ring is not { } r)
+        {
+            DrawRouteGlyph(g, new Grid(0f, size / 16f, size / 2f), ColorFor(state), state);
+            return bmp;
+        }
+
+        // The glyph shrinks inside the ring, a pixel clear of it, so neither covers the other.
+        var width = RingWidth(size);
+        var inset = width + MathF.Max(1f, MathF.Round(size / 16f));
+        DrawRouteGlyph(g, new Grid(inset, (size - 2 * inset) / 16f, size / 2f), ColorFor(state), state);
+        DrawRing(g, size, width, ColorFor(state), r);
         return bmp;
+    }
+
+    /// <summary>Positions of the turning arc shown while an operation reports no percentage.</summary>
+    internal const int IndeterminateFrames = 8;
+
+    private const float IndeterminateSweep = 90f;
+
+    /// <summary>The arc's sweep in degrees, clockwise from the top: 0 % is none, 100 % the full ring.</summary>
+    internal static float SweepFor(int percent) => Math.Clamp(percent, 0, 100) * 3.6f;
+
+    // Two pixels at 16 px is the thinnest stroke that still reads as a ring at 100 % scaling.
+    private static float RingWidth(int size) => MathF.Max(2f, MathF.Round(size / 8f, MidpointRounding.AwayFromZero));
+
+    private static void DrawRing(Graphics g, int size, float width, Color color, ProgressRing ring)
+    {
+        // A rounded square, since a circle would cut across the square and round ends in the corners.
+        var outer = new RectangleF(0f, 0f, size, size);
+        var inner = RectangleF.Inflate(outer, -width, -width);
+        var radius = size / 4f;
+        using var band = new GraphicsPath(FillMode.Alternate);
+        AddRoundedRect(band, outer, radius);
+        AddRoundedRect(band, inner, MathF.Max(0f, radius - width));
+
+        using (var track = new SolidBrush(Color.FromArgb(DimAlpha, color)))
+            g.FillPath(track, band);
+
+        float start = -90f, sweep;
+        if (ring.Percent is { } percent)
+            sweep = SweepFor(percent);
+        else
+        {
+            start += 360f / IndeterminateFrames * (ring.Frame % IndeterminateFrames);
+            sweep  = IndeterminateSweep;
+        }
+        if (sweep <= 0f) return;
+
+        // A pie cut from the centre puts 25, 50 and 75 % exactly on the middle of an edge.
+        using var pie = new GraphicsPath();
+        pie.AddPie(-size, -size, 3f * size, 3f * size, start, sweep);
+        var saved = g.Save();
+        g.SetClip(pie);
+        using (var lit = new SolidBrush(color))
+            g.FillPath(lit, band);
+        g.Restore(saved);
+    }
+
+    // In memory, since the ring changes every second or so; the icon owns its handle and Dispose frees it.
+    internal static Icon CreateIcon(TrayIconState state, ProgressRing ring)
+    {
+        using var ms = new MemoryStream();
+        WriteIco(ms, state, ring);
+        ms.Position = 0;
+        return new Icon(ms);
     }
 
     /// <summary>
@@ -266,16 +334,21 @@ internal static class IconGenerator
     /// <summary>Writes a valid ICO with one PNG-compressed frame per size (Vista+ PNG-in-ICO).</summary>
     private static void SaveAsIco(string filePath, TrayIconState state)
     {
+        using var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write);
+        WriteIco(fs, state, ring: null);
+    }
+
+    private static void WriteIco(Stream output, TrayIconState state, ProgressRing? ring)
+    {
         var frames = Array.ConvertAll(IconSizes, s =>
         {
-            using var bmp = RenderIcon(s, state);
+            using var bmp = RenderIcon(s, state, ring);
             using var ms  = new MemoryStream();
             bmp.Save(ms, ImageFormat.Png);
             return ms.ToArray();
         });
 
-        using var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write);
-        using var bw = new BinaryWriter(fs);
+        using var bw = new BinaryWriter(output, System.Text.Encoding.UTF8, leaveOpen: true);
 
         bw.Write((short)0);                // reserved
         bw.Write((short)1);                // type: icon
