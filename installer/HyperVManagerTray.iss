@@ -162,17 +162,17 @@ const
   TaskName       = '{#TaskName}';
   UpdateTaskName = '{#TaskName} AutoUpdate';
 
-// ── .NET 10 Desktop Runtime prerequisite check ─────────────────────────────
-// The app is published framework-dependent and requires .NET 10 Desktop Runtime
-// (Microsoft.WindowsDesktop.App 10.x).
+// ── .NET 11 Desktop Runtime prerequisite check ─────────────────────────────
+// The app is published framework-dependent and requires .NET 11 Desktop Runtime
+// (Microsoft.WindowsDesktop.App 11.x).
 //
 // DETECTION — three-level check, most reliable first.  The two registry/filesystem
 // checks are pure Win32 API calls (no subprocess, no PATH, no quoting pitfalls) and
 // are tried first; the dotnet CLI is only a last resort.
 //   Source: https://learn.microsoft.com/en-us/dotnet/core/install/how-to-detect-installed-versions
 
-// True if the given registry root has a sharedfx\Microsoft.WindowsDesktop.App\10.* subkey.
-function SharedfxHas10(RootKey: Integer; const SharedfxPath: string): Boolean;
+// True if the given registry root has a sharedfx\Microsoft.WindowsDesktop.App\11.* subkey.
+function SharedfxHas11(RootKey: Integer; const SharedfxPath: string): Boolean;
 var
   SubKeyNames: TArrayOfString;
   I: Integer;
@@ -180,14 +180,14 @@ begin
   Result := False;
   if RegGetSubkeyNames(RootKey, SharedfxPath, SubKeyNames) then
     for I := 0 to GetArrayLength(SubKeyNames) - 1 do
-      if Copy(SubKeyNames[I], 1, 3) = '10.' then
+      if Copy(SubKeyNames[I], 1, 3) = '11.' then
       begin
         Result := True;
         Exit;
       end;
 end;
 
-function IsDotNet10DesktopInstalled: Boolean;
+function IsDotNet11DesktopInstalled: Boolean;
 var
   TempFile, SharedfxPath, DotNetPath, DotNetExe: string;
   Lines: TArrayOfString;
@@ -197,7 +197,7 @@ var
 begin
   Result := False;
 
-  // Check 1 (filesystem): a version directory (10.x.y) under the runtime payload
+  // Check 1 (filesystem): a version directory (11.x.y) under the runtime payload
   // folder.  Always present when the Desktop Runtime is installed, independent of
   // any registry key or PATH.  Read the install root from the registry, falling back
   // to the default Program Files location.
@@ -207,7 +207,7 @@ begin
     DotNetPath := ExpandConstant('{pf64}\dotnet\');
   if (Length(DotNetPath) > 0) and (DotNetPath[Length(DotNetPath)] <> '\') then
     DotNetPath := DotNetPath + '\';
-  if FindFirst(DotNetPath + 'shared\Microsoft.WindowsDesktop.App\10.*', FindRec) then
+  if FindFirst(DotNetPath + 'shared\Microsoft.WindowsDesktop.App\11.*', FindRec) then
   begin
     FindClose(FindRec);
     // FindFirst matches both files and directories; runtime versions are directories.
@@ -223,7 +223,7 @@ begin
 
   // Check 2 (registry, 32-bit view): WOW6432Node — what HKLM gives a 32-bit process.
   // Check 3 (registry, 64-bit view): native hive via HKLM64.
-  if SharedfxHas10(HKLM, SharedfxPath) or SharedfxHas10(HKLM64, SharedfxPath) then
+  if SharedfxHas11(HKLM, SharedfxPath) or SharedfxHas11(HKLM64, SharedfxPath) then
   begin
     Result := True;
     Exit;
@@ -241,7 +241,7 @@ begin
         '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
       if LoadStringsFromFile(TempFile, Lines) then
         for I := 0 to GetArrayLength(Lines) - 1 do
-          if Pos('Microsoft.WindowsDesktop.App 10.', Lines[I]) > 0 then
+          if Pos('Microsoft.WindowsDesktop.App 11.', Lines[I]) > 0 then
           begin
             Result := True;
             Exit;
@@ -259,17 +259,17 @@ var
   TempExe: String;
 begin
   Result := True;
-  if IsDotNet10DesktopInstalled then Exit;
+  if IsDotNet11DesktopInstalled then Exit;
 
   // Detection may give a false negative on some machines.
   // OK  → install .NET automatically
   // Cancel → skip this step and continue (user says .NET is already present)
   if MsgBox(
-      '.NET 10 Desktop Runtime was not detected on this machine.'
+      '.NET 11 Desktop Runtime was not detected on this machine.'
       + #13#10#13#10
       + 'Click OK to install it automatically (requires internet access).'
       + #13#10
-      + 'Click Cancel to skip if .NET 10 is already installed.',
+      + 'Click Cancel to skip if .NET 11 is already installed.',
       mbInformation, MB_OKCANCEL) <> IDOK then
     Exit;  // Skip .NET install; continue with app installation
 
@@ -278,7 +278,7 @@ begin
   // step, no separate installer window.  Available on Windows 10 21H1+ / Windows 11.
   // Source: https://learn.microsoft.com/en-us/windows/package-manager/winget/
   if Exec('winget.exe',
-      'install --id Microsoft.DotNet.DesktopRuntime.10 --silent ' +
+      'install --id Microsoft.DotNet.DesktopRuntime.11 --silent ' +
       '--accept-package-agreements --accept-source-agreements',
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
@@ -293,7 +293,7 @@ begin
   TempExe := ExpandConstant('{tmp}\dotnet-windowsdesktop-runtime.exe');
 
   if URLDownloadToFileW(nil,
-      'https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-x64.exe',
+      'https://aka.ms/dotnet/11.0/windowsdesktop-runtime-win-x64.exe',
       TempExe, 0, nil) <> 0 then
   begin
     MsgBox('Download failed. Check your internet connection and try again.',
@@ -305,7 +305,7 @@ begin
   if not Exec(TempExe, '/install /passive /norestart', '',
               SW_SHOW, ewWaitUntilTerminated, ResultCode) then
   begin
-    MsgBox('Failed to launch the .NET installer. Please install .NET 10 Desktop Runtime manually.',
+    MsgBox('Failed to launch the .NET installer. Please install .NET 11 Desktop Runtime manually.',
            mbError, MB_OK);
     Result := False;
     Exit;
@@ -315,7 +315,7 @@ begin
   if (ResultCode <> 0) and (ResultCode <> 3010) then
   begin
     MsgBox('The .NET installer exited with code ' + IntToStr(ResultCode) + '.'
-           + #13#10 + 'Please install .NET 10 Desktop Runtime manually and try again.',
+           + #13#10 + 'Please install .NET 11 Desktop Runtime manually and try again.',
            mbError, MB_OK);
     Result := False;
   end;

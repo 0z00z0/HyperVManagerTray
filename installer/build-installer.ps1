@@ -86,7 +86,7 @@ if (-not (Test-Path $appIco)) {
 }
 
 # -- 2. Publish the app (framework-dependent, Windows App SDK bundled) --------
-# Uses an installed .NET 10 Desktop Runtime instead of bundling it, keeping the
+# Uses an installed .NET 11 Desktop Runtime instead of bundling it, keeping the
 # installer small. Windows App SDK is still self-contained (uncommon dependency).
 # H.NotifyIcon.WinUI and System.Drawing.Common ship as DLLs next to the exe.
 # WindowsAppSDKSelfContained is declared in HyperVManagerTray.csproj, never passed here: an MSBuild

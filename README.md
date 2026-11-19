@@ -27,8 +27,8 @@ It also includes a **WinUI 3 dashboard** (left-click the tray icon) that shows t
 - Windows 11 host with **Hyper-V** enabled
 - The user account must be a member of the **Hyper-V Administrators** group (or run as Administrator)
 - The virtual switches your rules and fallback name must exist in Hyper-V Virtual Switch Manager (a fresh install references only the built-in **Default Switch**)
-- To **run** the installed app: the **.NET 10 Desktop Runtime**. The app is published **framework-dependent** — the installer checks for the runtime and offers to install it if missing. The Windows App SDK is bundled, so no separate Windows App Runtime install is needed.
-- To **build** from source: the .NET 10 SDK, and a credential for the studio's GitHub Packages feed, which the shared ZeroZero components restore from and which authenticates every read. Register it once against the user-level NuGet configuration — `dotnet nuget add source https://nuget.pkg.github.com/0z00z0/index.json --name 0z00z0 --username <github-user> --password <token with read:packages> --store-password-in-clear-text` — and every restore on the machine picks it up. No token belongs in this repository. See [Shared components](#shared-components).
+- To **run** the installed app: the **.NET 11 Desktop Runtime**. The app is published **framework-dependent** — the installer checks for the runtime and offers to install it if missing. The Windows App SDK is bundled, so no separate Windows App Runtime install is needed.
+- To **build** from source: the .NET 11 SDK, and a credential for the studio's GitHub Packages feed, which the shared ZeroZero components restore from and which authenticates every read. Register it once against the user-level NuGet configuration — `dotnet nuget add source https://nuget.pkg.github.com/0z00z0/index.json --name 0z00z0 --username <github-user> --password <token with read:packages> --store-password-in-clear-text` — and every restore on the machine picks it up. No token belongs in this repository. See [Shared components](#shared-components).
 
 ---
 
@@ -93,7 +93,7 @@ winget install JRSoftware.InnoSetup
 
 This publishes the app **framework-dependent** (`--self-contained false`, with the Windows App SDK
 bundled) and compiles `installer\Output\HyperVManagerTray-Setup-<version>.exe`. Keeping the .NET
-runtime out of the payload keeps the installer small; the installer detects a missing **.NET 10
+runtime out of the payload keeps the installer small; the installer detects a missing **.NET 11
 Desktop Runtime** on the target and offers to install it (via winget, falling back to a direct
 download). See [`installer/README.md`](installer/README.md) for how the elevation is handled.
 
@@ -107,7 +107,7 @@ download). See [`installer/README.md`](installer/README.md) for how the elevatio
 dotnet publish -c Release -r win-x64 --self-contained false -p:WindowsAppSDKSelfContained=true
 ```
 
-Output folder: `bin\Release\net10.0-windows10.0.26100.0\win-x64\publish\` (run `HyperVManagerTray.exe` from there; the `.pri` next to it is required). This matches what the installer ships: framework-dependent, so the machine needs the .NET 10 Desktop Runtime. Passing `--self-contained true` instead also works if you want a folder that runs without any runtime install — the shipped builds don't do this.
+Output folder: `bin\Release\net11.0-windows10.0.26100.0\win-x64\publish\` (run `HyperVManagerTray.exe` from there; the `.pri` next to it is required). This matches what the installer ships: framework-dependent, so the machine needs the .NET 11 Desktop Runtime. Passing `--self-contained true` instead also works if you want a folder that runs without any runtime install — the shipped builds don't do this.
 
 ### Auto-start with Windows
 
@@ -326,7 +326,7 @@ the app talks to Hyper-V or the host network.
 
 ## Built with
 
-- **Language / UI:** C# on **.NET 10**, **WinUI 3 / Windows App SDK** (`net10.0-windows10.0.26100.0`, unpackaged, Mica backdrop)
+- **Language / UI:** C# on **.NET 11**, **WinUI 3 / Windows App SDK** (`net11.0-windows10.0.26100.0`, unpackaged, Mica backdrop)
 - **OS integration:** Win32 P/Invoke (`iphlpapi.dll` `GetBestInterface`, `user32.dll`/`Shcore.dll` for popup positioning + message boxes, SetupAPI for the adapter rename); all Hyper-V interaction — VM status/metrics/power/guest IPs, switch binding, host-vNIC repair — via native WMI (`root\virtualization\v2`, `System.Management`), event-driven and PowerShell-free (metrics poll only while the dashboard is open); `schtasks.exe` for the auto-start task
 
 ## External libraries
@@ -491,4 +491,4 @@ from a slow one by comparing two consecutive opens.
 | Tray icon turns red / a balloon reports a failure | A switch bind or VM reconnect failed — commonly the account lacks Hyper-V Administrator rights, or the named switch doesn't exist. Details in `switcher.log`. |
 | Host has no network but the VM does (after a dock cycle) | A duplicate host vNIC — **Settings → Maintenance → Repair host networking** |
 | Dashboard opens blank / `0xC000027B` at startup | The `.pri` resource index isn't next to the exe — re-run the installer or copy the whole publish folder |
-| App won't start after a manual (non-installer) copy | The .NET 10 Desktop Runtime is missing — the build is framework-dependent (the installer normally handles this) |
+| App won't start after a manual (non-installer) copy | The .NET 11 Desktop Runtime is missing — the build is framework-dependent (the installer normally handles this) |

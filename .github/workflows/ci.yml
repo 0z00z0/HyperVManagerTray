@@ -40,10 +40,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up .NET 10
+      - name: Set up .NET 11
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.x'
+          dotnet-version: '11.x'
 
       # The app targets win-x64 and does ReadyToRun on Release, which needs the
       # win-x64 runtime pack — so restore/build must specify the RID (NETSDK1112).

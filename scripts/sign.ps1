@@ -100,7 +100,7 @@ if ($Setup) {
 # This script lives in scripts\, so the project root is one level up.
 if (-not $Path) {
     $repoRoot = Split-Path $PSScriptRoot -Parent
-    $Path = Join-Path $repoRoot "bin\Release\net10.0-windows10.0.26100.0\win-x64\HyperVManagerTray.exe"
+    $Path = Join-Path $repoRoot "bin\Release\net11.0-windows10.0.26100.0\win-x64\HyperVManagerTray.exe"
 }
 
 if (-not (Test-Path $Path)) {
