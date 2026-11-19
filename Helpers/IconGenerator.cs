@@ -52,7 +52,7 @@ internal readonly record struct ProgressRing(int? Percent, int Frame = 0);
 /// cross in place of the fork = the apply failed.  The transparent background lets the same icon read
 /// on both light and dark taskbars.  Colours are intentionally medium-luminance, not vivid, so the
 /// glyph's edges stay crisp against either backdrop.  Amber with the square end lit but left open =
-/// on the bridge, and the bridge has no uplink.
+/// on the bridge, and the bridge has no uplink.  A running machine fills the frame in every state.
 ///
 /// One colour per state is a rule, not a coincidence: colour is the channel that reads at a glance, and
 /// two states sharing one would be told apart only by a few pixels at 16 px
@@ -98,7 +98,7 @@ internal static class IconGenerator
     /// <summary>
     /// Returns the path to the .ico for the given state, generating it on first call.
     /// </summary>
-    internal static string GenerateAndSave(string outputDirectory, TrayIconState state)
+    internal static string GenerateAndSave(string outputDirectory, TrayIconState state, bool running = false)
     {
         var file = state switch
         {
@@ -108,9 +108,10 @@ internal static class IconGenerator
             TrayIconState.BridgeNoUplink => NoUplinkFile,
             _                            => UnknownFile,
         };
+        if (running) file = file.Replace("-v6.ico", "-running-v6.ico");
         var icoPath = Path.Combine(outputDirectory, file);
         if (!File.Exists(icoPath))
-            SaveAsIco(icoPath, state);
+            SaveAsIco(icoPath, state, running);
         return icoPath;
     }
 
@@ -137,13 +138,13 @@ internal static class IconGenerator
     //
     // The lit branch and its solid end show the current route; the other branch and a hollow end are
     // drawn at 38 % opacity.  Unknown lights neither branch and hollows the screen; Failed replaces the
-    // fork with a cross.  Every edge is snapped to the pixel grid of the frame being drawn, so the
+    // fork with a cross.  A running machine fills the frame, slot and hollow screen alike.  Every edge is snapped to the pixel grid of the frame being drawn, so the
     // horizontal and vertical edges stay one colour at 16 px instead of smearing across two pixels.
     //
     // installer\RouteGlyph.ps1 draws the identical geometry for the application icon, the Start-menu
     // shortcut icon and the installer wizard images; keep the two in sync if either changes.
     /// <summary>Renders the tray glyph for <paramref name="state"/> at the given pixel size (transparent background).</summary>
-    internal static Bitmap RenderIcon(int size, TrayIconState state, ProgressRing? ring = null)
+    internal static Bitmap RenderIcon(int size, TrayIconState state, ProgressRing? ring = null, bool running = false)
     {
         var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
         using var g = Graphics.FromImage(bmp);
@@ -153,14 +154,14 @@ internal static class IconGenerator
 
         if (ring is not { } r)
         {
-            DrawRouteGlyph(g, new Grid(0f, size / 16f, size / 2f), ColorFor(state), state);
+            DrawRouteGlyph(g, new Grid(0f, size / 16f, size / 2f), ColorFor(state), state, running);
             return bmp;
         }
 
         // The glyph shrinks inside the ring, a pixel clear of it, so neither covers the other.
         var width = RingWidth(size);
         var inset = width + MathF.Max(1f, MathF.Round(size / 16f));
-        DrawRouteGlyph(g, new Grid(inset, (size - 2 * inset) / 16f, size / 2f), ColorFor(state), state);
+        DrawRouteGlyph(g, new Grid(inset, (size - 2 * inset) / 16f, size / 2f), ColorFor(state), state, running);
         DrawRing(g, size, width, ColorFor(state), r);
         return bmp;
     }
@@ -210,10 +211,10 @@ internal static class IconGenerator
     }
 
     // In memory, since the ring changes every second or so; the icon owns its handle and Dispose frees it.
-    internal static Icon CreateIcon(TrayIconState state, ProgressRing ring)
+    internal static Icon CreateIcon(TrayIconState state, ProgressRing ring, bool running = false)
     {
         using var ms = new MemoryStream();
-        WriteIco(ms, state, ring);
+        WriteIco(ms, state, ring, running);
         ms.Position = 0;
         return new Icon(ms);
     }
@@ -234,20 +235,24 @@ internal static class IconGenerator
         public float W(float units) => MathF.Max(1f, MathF.Round(units * Scale, MidpointRounding.ToEven));
     }
 
-    private static void DrawRouteGlyph(Graphics g, Grid u, Color color, TrayIconState state)
+    private static void DrawRouteGlyph(Graphics g, Grid u, Color color, TrayIconState state, bool running)
     {
         var dim = Color.FromArgb(DimAlpha, color);
         using var solid = new SolidBrush(color);
         using var faint = new SolidBrush(dim);
 
-        // ── Virtual machine: frame with a slot, or a hollow screen while nothing is known ──
+        // ── Virtual machine: frame with a slot, or a hollow screen while nothing is known; solid while one runs ──
         using (var vm = new GraphicsPath(FillMode.Alternate))
         {
             AddRoundedRect(vm, Edges(u.P(3.4f), u.P(0.5f), u.P(12.6f), u.P(6.9f)), 1.5f * u.Scale);
-            if (state == TrayIconState.Unknown)
+            if (!running && state == TrayIconState.Unknown)
                 AddRoundedRect(vm, Edges(u.P(4.8f), u.P(1.9f), u.P(11.2f), u.P(5.5f)), 0.5f * u.Scale);
-            else
-                AddRoundedRect(vm, Edges(u.P(5.0f), u.P(2.5f), u.P(11.0f), u.P(3.9f)), 0.7f * u.Scale);
+            else if (!running)
+            {
+                // At least a pixel tall, or the shrunken glyph inside the ring loses its slot and reads as running.
+                var top = u.P(2.5f);
+                AddRoundedRect(vm, Edges(u.P(5.0f), top, u.P(11.0f), MathF.Max(u.P(3.9f), top + 1f)), 0.7f * u.Scale);
+            }
             g.FillPath(solid, vm);
         }
 
@@ -332,17 +337,17 @@ internal static class IconGenerator
     }
 
     /// <summary>Writes a valid ICO with one PNG-compressed frame per size (Vista+ PNG-in-ICO).</summary>
-    private static void SaveAsIco(string filePath, TrayIconState state)
+    private static void SaveAsIco(string filePath, TrayIconState state, bool running)
     {
         using var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write);
-        WriteIco(fs, state, ring: null);
+        WriteIco(fs, state, ring: null, running);
     }
 
-    private static void WriteIco(Stream output, TrayIconState state, ProgressRing? ring)
+    private static void WriteIco(Stream output, TrayIconState state, ProgressRing? ring, bool running)
     {
         var frames = Array.ConvertAll(IconSizes, s =>
         {
-            using var bmp = RenderIcon(s, state, ring);
+            using var bmp = RenderIcon(s, state, ring, running);
             using var ms  = new MemoryStream();
             bmp.Save(ms, ImageFormat.Png);
             return ms.ToArray();

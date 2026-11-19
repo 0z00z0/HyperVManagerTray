@@ -51,7 +51,7 @@ public partial class App : Application
     private System.Drawing.Icon? _iconImage;
     // The network state's glyph is kept apart from the ring, so a state change mid-operation keeps both.
     private TrayIconState _glyphState;
-    private (TrayIconState, ProgressRing?)? _paintedIcon;
+    private (TrayIconState, ProgressRing?, bool Running)? _paintedIcon;
     private readonly TrayProgress _progress = new();
     private DispatcherQueueTimer? _ringTimer;
     private int _ringFrame;
@@ -301,6 +301,13 @@ public partial class App : Application
                 // Switching automatic installing takes effect at once rather than at the next start. The
                 // call is idempotent, so the unrelated reloads that also land here change nothing.
                 _update?.SetAutomaticInstalling(e.Config.InstallUpdatesAutomatically);
+                // The running indication counts managed machines only, so the managed set changes it.
+                PostTooltipFromCaches();
+                _ui.TryEnqueue(() =>
+                {
+                    try { RefreshTrayIcon(); }
+                    catch (Exception ex) { LogCrash("Tray icon refresh", ex); }
+                });
             };
 
             // The stored state, applied now that the config exists. Off is the state an absent setting
@@ -1090,6 +1097,10 @@ public partial class App : Application
                     $"⏸ {Models.HyperVServiceNames.DisplayName(kind)}: {Models.HyperVServiceNames.StateText(serviceState)}", 63));
             }
 
+        var running = RunningMachineNames();
+        if (running.Count > 0 && RunningLine(running, 127 - string.Join("\n", lines).Length - 1) is { } runningLine)
+            lines.Add(runningLine);
+
         int vmsWithIp = 0;
         foreach (var vm in vms)
         {
@@ -1110,6 +1121,25 @@ public partial class App : Application
                 vmsWithIp, vms.Count, switchName);
 
         return ClampTooltip(string.Join("\n", lines));
+    }
+
+    /// <summary>Managed machines that are running or paused, by their current names. None before the first
+    /// read and while the management service is down, so the icon never stays filled on a stale list.</summary>
+    private List<string> RunningMachineNames()
+    {
+        if (_vm is not { ServiceAvailable: true } || _vm.GetCachedStatuses() is not { } statuses || _config is null) return [];
+        var managed = _config.Current.IdentifiedVms;
+        return [.. statuses.Where(s => (s.IsRunning || s.IsPaused) && managed.Any(v => HostIdentity.Same(v.Id, s.Id)))
+                           .Select(s => string.IsNullOrWhiteSpace(s.Name) ? s.Id : s.Name)];
+    }
+
+    // Whole names or a count, never a cut name, which could read as a different machine.
+    private static string? RunningLine(IReadOnlyList<string> names, int budget)
+    {
+        var line = $"▶ Running: {string.Join(", ", names)}";
+        if (line.Length <= budget) return line;
+        line = $"▶ Running: {names.Count} {(names.Count == 1 ? "machine" : "machines")}";
+        return line.Length <= budget ? line : null;
     }
 
     /// <summary>
@@ -1233,7 +1263,8 @@ public partial class App : Application
         RefreshTrayIcon();
     }
 
-    /// <summary>Paints the glyph for the network state, with the progress ring while an operation runs. UI thread.</summary>
+    /// <summary>Paints the glyph for the network state, filled while a machine runs, with the progress ring
+    /// while an operation runs. UI thread.</summary>
     private void RefreshTrayIcon()
     {
         if (_trayIcon is null) return;
@@ -1241,17 +1272,18 @@ public partial class App : Application
         ProgressRing? ring = !_progress.Active ? null
             : _progress.Percent is { } percent ? new ProgressRing(percent)
             : new ProgressRing(null, _ringFrame);
+        bool running = RunningMachineNames().Count > 0;
 
         if (ring is null) _ringTimer?.Stop();
         else if (_ringTimer is null || !_ringTimer.IsRunning) StartRingTimer();
 
         // Repaints only when what is shown changes, not on every progress event.
-        if (_paintedIcon == (_glyphState, ring)) return;
-        _paintedIcon = (_glyphState, ring);
+        if (_paintedIcon == (_glyphState, ring, running)) return;
+        _paintedIcon = (_glyphState, ring, running);
 
         var previous = _iconImage;
-        _iconImage = ring is { } r ? IconGenerator.CreateIcon(_glyphState, r)
-                                   : new System.Drawing.Icon(IconGenerator.GenerateAndSave(_exeDir, _glyphState));
+        _iconImage = ring is { } r ? IconGenerator.CreateIcon(_glyphState, r, running)
+                                   : new System.Drawing.Icon(IconGenerator.GenerateAndSave(_exeDir, _glyphState, running));
         _trayIcon.Icon = _iconImage;
         previous?.Dispose();
     }
