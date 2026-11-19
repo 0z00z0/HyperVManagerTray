@@ -52,7 +52,7 @@ internal readonly record struct ProgressRing(int? Percent, int Frame = 0);
 /// cross in place of the fork = the apply failed.  The transparent background lets the same icon read
 /// on both light and dark taskbars.  Colours are intentionally medium-luminance, not vivid, so the
 /// glyph's edges stay crisp against either backdrop.  Amber with the square end lit but left open =
-/// on the bridge, and the bridge has no uplink.  A running machine fills the frame in every state.
+/// on the bridge, and the bridge has no uplink.  A running machine lights the screen in every state.
 ///
 /// One colour per state is a rule, not a coincidence: colour is the channel that reads at a glance, and
 /// two states sharing one would be told apart only by a few pixels at 16 px
@@ -94,6 +94,8 @@ internal static class IconGenerator
     // Muted amber: red-dominant like Failed but with far more green, so the two are told apart by hue
     // and not only by the glyph. Same medium luminance as its siblings for the same reason.
     private static readonly Color GlyphNoUplink = Color.FromArgb(255, 0xC9, 0x8A, 0x22);
+    // Magenta: a hue no state uses, and far enough from both taskbars that a lit screen never reads as the hole.
+    private static readonly Color ScreenRunning = Color.FromArgb(255, 0xFF, 0x66, 0xFF);
 
     /// <summary>
     /// Returns the path to the .ico for the given state, generating it on first call.
@@ -138,7 +140,8 @@ internal static class IconGenerator
     //
     // The lit branch and its solid end show the current route; the other branch and a hollow end are
     // drawn at 38 % opacity.  Unknown lights neither branch and hollows the screen; Failed replaces the
-    // fork with a cross.  A running machine fills the frame, slot and hollow screen alike.  Every edge is snapped to the pixel grid of the frame being drawn, so the
+    // fork with a cross.  A running machine lights the screen magenta.  Every edge is snapped to the
+    // pixel grid of the frame being drawn, so the
     // horizontal and vertical edges stay one colour at 16 px instead of smearing across two pixels.
     //
     // installer\RouteGlyph.ps1 draws the identical geometry for the application icon, the Start-menu
@@ -241,19 +244,29 @@ internal static class IconGenerator
         using var solid = new SolidBrush(color);
         using var faint = new SolidBrush(dim);
 
-        // ── Virtual machine: frame with a slot, or a hollow screen while nothing is known; solid while one runs ──
+        // ── Virtual machine: frame with a slot, or a hollow screen while nothing is known; the screen lit while one runs ──
+        bool unknown = state == TrayIconState.Unknown;
+        var screen = unknown ? Edges(u.P(4.8f), u.P(1.9f), u.P(11.2f), u.P(5.5f))
+                             : Edges(u.P(5.0f), u.P(2.5f), u.P(11.0f), u.P(3.9f));
+        var screenRadius = (unknown ? 0.5f : 0.7f) * u.Scale;
+        if (running && screen.Height < 2f)
+        {
+            // Two pixels at least, or the colour is lost inside the ring at 16 px.
+            var mid = MathF.Round(screen.Top + screen.Height / 2f);
+            screen = Edges(screen.Left, mid - 1f, screen.Right, mid + 1f);
+        }
         using (var vm = new GraphicsPath(FillMode.Alternate))
         {
             AddRoundedRect(vm, Edges(u.P(3.4f), u.P(0.5f), u.P(12.6f), u.P(6.9f)), 1.5f * u.Scale);
-            if (!running && state == TrayIconState.Unknown)
-                AddRoundedRect(vm, Edges(u.P(4.8f), u.P(1.9f), u.P(11.2f), u.P(5.5f)), 0.5f * u.Scale);
-            else if (!running)
-            {
-                // At least a pixel tall, or the shrunken glyph inside the ring loses its slot and reads as running.
-                var top = u.P(2.5f);
-                AddRoundedRect(vm, Edges(u.P(5.0f), top, u.P(11.0f), MathF.Max(u.P(3.9f), top + 1f)), 0.7f * u.Scale);
-            }
+            if (!running) AddRoundedRect(vm, screen, screenRadius);
             g.FillPath(solid, vm);
+        }
+        if (running)
+        {
+            using var lit = new SolidBrush(ScreenRunning);
+            using var path = new GraphicsPath();
+            AddRoundedRect(path, screen, screenRadius);
+            g.FillPath(lit, path);
         }
 
         if (state == TrayIconState.Failed)

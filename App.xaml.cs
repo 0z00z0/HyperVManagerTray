@@ -1124,7 +1124,7 @@ public partial class App : Application
     }
 
     /// <summary>Managed machines that are running or paused, by their current names. None before the first
-    /// read and while the management service is down, so the icon never stays filled on a stale list.</summary>
+    /// read and while the management service is down, so the screen never stays lit on a stale list.</summary>
     private List<string> RunningMachineNames()
     {
         if (_vm is not { ServiceAvailable: true } || _vm.GetCachedStatuses() is not { } statuses || _config is null) return [];
@@ -1263,7 +1263,7 @@ public partial class App : Application
         RefreshTrayIcon();
     }
 
-    /// <summary>Paints the glyph for the network state, filled while a machine runs, with the progress ring
+    /// <summary>Paints the glyph for the network state, its screen lit while a machine runs, with the progress ring
     /// while an operation runs. UI thread.</summary>
     private void RefreshTrayIcon()
     {
