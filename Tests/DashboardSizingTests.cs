@@ -20,7 +20,7 @@ public class DashboardSizingTests
     [Fact]
     public void MonoAdvance_matches_the_shipped_face()
     {
-        // Read from CascadiaMono.ttf itself: hmtx holds one non-zero advance (1200) against a 2048
+        // Read from CascadiaCode.ttf itself: hmtx holds one non-zero advance (1200) against a 2048
         // unitsPerEm head. If the brand face is ever replaced with one that is not fixed-pitch — or
         // fixed at a different advance — every width below is wrong and this is where it surfaces.
         Assert.Equal(1200.0 / 2048.0, DashboardSizing.MonoAdvanceEm, 6);
@@ -158,13 +158,16 @@ public class DashboardSizingTests
     [Fact]
     public void The_widest_row_sets_the_width()
     {
+        // Wider than the content floor, so the row and not the floor sets the width.
+        var widest = new SplitRow("Bridged · Petterhaugen [dockbenk] · Office", 10, "192.168.1.50", 12, 8);
+        Assert.True(DashboardSizing.RequiredContentWidth(widest) > DashboardSizing.MinContentWidth);
         var rows = new[]
         {
             new SplitRow("short", 10, "10.0.0.1", 12, 8),
-            ReportedRow(),
+            widest,
             new SplitRow("mid", 10, "10.0.0.2", 12, 8),
         };
-        Assert.Equal(DashboardSizing.RequiredContentWidth(ReportedRow()), DashboardSizing.RequiredContentWidth(rows), 6);
+        Assert.Equal(DashboardSizing.RequiredContentWidth(widest), DashboardSizing.RequiredContentWidth(rows), 6);
     }
 
     // ── Part 1: staying on screen (both DPIs) ───────────────────────────────────
