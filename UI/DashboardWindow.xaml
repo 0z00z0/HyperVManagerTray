@@ -15,7 +15,7 @@
         <Grid.Resources>
             <!-- Each keyed style repeats the BrandFont setter (issue #44): a keyed style opts out of
                  App.xaml's implicit TextBlock style, so without this the styled rows below would stay
-                 in the default sans while the unstyled ones switched to Cascadia Mono. -->
+                 in the default sans while the unstyled ones switched to Cascadia Code. -->
             <Style x:Key="SectionLabelStyle" TargetType="TextBlock">
                 <Setter Property="FontFamily"       Value="{StaticResource BrandFont}"/>
                 <Setter Property="FontSize"         Value="10"/>

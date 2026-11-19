@@ -28,7 +28,7 @@
             </ResourceDictionary.ThemeDictionaries>
 
             <!-- ─────────────────────────────────────────────────────────────────────────────
-                 Brand typeface: Cascadia Mono (issue #44), matching the sibling app's treatment.
+                 Brand typeface: Cascadia Code (issue #44), matching the sibling app's treatment.
 
                  The .ttf is NOT bundled here: it ships inside the ZeroZero.Brand.WinUI package and
                  lands under that assembly's own folder, ZeroZero.Brand.WinUI\Assets\Fonts\, which is
@@ -36,26 +36,26 @@
                  produces. The output root holds no Assets\Fonts\ at all, so a URI naming that path
                  resolves to nothing — and a font URI that resolves to nothing raises nothing: XAML
                  falls back to whatever face the machine happens to have installed, so the window looks
-                 right where Cascadia Mono is installed and wrong where it is not.
+                 right where Cascadia Code is installed and wrong where it is not.
                  BrandFontPathTests holds these three URIs to the path the package carries.
 
-                 Per 0z0-design/design-language.md: Cascadia Mono is the studio's UI/body/heading
+                 Per 0z0-design/design-language.md: Cascadia Code is the studio's UI/body/heading
                  face — monospace throughout, not just for code, and a deliberate brand choice.
 
                  The family name after '#' is the in-file family, not a system lookup, so a machine
-                 without Cascadia Mono installed still gets the brand face. -->
-            <FontFamily x:Key="BrandFont">ms-appx:///ZeroZero.Brand.WinUI/Assets/Fonts/CascadiaMono.ttf#Cascadia Mono</FontFamily>
+                 without Cascadia Code installed still gets the brand face. -->
+            <FontFamily x:Key="BrandFont">ms-appx:///ZeroZero.Brand.WinUI/Assets/Fonts/CascadiaCode.ttf#Cascadia Code</FontFamily>
 
             <!-- Templated-control content resolves these two theme resources rather than the implicit
                  TextBlock style below, so without them ComboBox items, Button captions, ToggleSwitch
                  On/Off, NumberBox and TextBox text would all stay in the default sans while bare
                  TextBlocks switched — the split the sibling app hit. A FontFamily resource cannot take
                  another resource as its value, hence the repeated literal URI. -->
-            <FontFamily x:Key="ContentControlThemeFontFamily">ms-appx:///ZeroZero.Brand.WinUI/Assets/Fonts/CascadiaMono.ttf#Cascadia Mono</FontFamily>
-            <FontFamily x:Key="ControlContentThemeFontFamily">ms-appx:///ZeroZero.Brand.WinUI/Assets/Fonts/CascadiaMono.ttf#Cascadia Mono</FontFamily>
+            <FontFamily x:Key="ContentControlThemeFontFamily">ms-appx:///ZeroZero.Brand.WinUI/Assets/Fonts/CascadiaCode.ttf#Cascadia Code</FontFamily>
+            <FontFamily x:Key="ControlContentThemeFontFamily">ms-appx:///ZeroZero.Brand.WinUI/Assets/Fonts/CascadiaCode.ttf#Cascadia Code</FontFamily>
 
             <!-- Density trim (the sibling app's v1.5.2 lesson, applied up-front rather than as a
-                 follow-up). Cascadia Mono is a fixed-advance face at ~0.586 em/char — measurably wider
+                 follow-up). Cascadia Code is a fixed-advance face at ~0.586 em/char — measurably wider
                  than the default sans for the same string — so 14 px control content read oversized
                  next to the Settings rows' explicit 13 px headers and 11 px descriptions.
 

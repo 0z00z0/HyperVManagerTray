@@ -32,14 +32,14 @@ public readonly record struct SplitRow(
 /// wrong here — the IP belongs beside the subtitle, not under it. Hence a width band, not a stack.</para>
 ///
 /// <para><b>Why character arithmetic is exact rather than an estimate.</b> The brand face (issue #44)
-/// is Cascadia Mono, and the shipped <c>CascadiaMono.ttf</c> was inspected directly: its <c>hmtx</c>
+/// is Cascadia Code, and the shipped <c>CascadiaCode.ttf</c> was inspected directly: its <c>hmtx</c>
 /// table contains exactly two distinct advances — 0 and 1200 — against a 2048 unitsPerEm head, i.e.
 /// every rendering glyph is <see cref="MonoAdvanceEm"/> = 0.5859 em wide. Text width is therefore
 /// literally <c>length × fontSize × 0.5859</c>, not an approximation of one. (The same 0.586 figure
 /// <see cref="WindowPlacement.SettingRowTextMinWidth"/> already documents.)</para>
 ///
 /// <para><b>Why there is no "narrower font" lever here</b> (issue #57 asked for one). The same
-/// inspection settles it: <c>CascadiaMono.ttf</c> IS a variable font — it carries <c>fvar</c>,
+/// inspection settles it: <c>CascadiaCode.ttf</c> IS a variable font — it carries <c>fvar</c>,
 /// <c>gvar</c>, <c>avar</c>, <c>HVAR</c> and <c>STAT</c> — but it exposes exactly ONE axis,
 /// <c>wght</c> (200–700, default 400). There is no <c>wdth</c> axis, and there could not usefully be
 /// one: the face is fixed-pitch, so every glyph shares the 1200-unit advance and a lighter weight
@@ -49,7 +49,7 @@ public readonly record struct SplitRow(
 /// tighter separator, a wider band) and nowhere else.</para>
 ///
 /// <para><b>Where that exactness stops</b> — and why the tooltip, not the arithmetic, is the
-/// guarantee. It holds for the repertoire Cascadia Mono actually covers (Latin, punctuation, box
+/// guarantee. It holds for the repertoire Cascadia Code actually covers (Latin, punctuation, box
 /// drawing). A VM named in a script the face lacks (CJK, say) falls back to another font whose glyphs
 /// are wider, and this would under-measure it. That is a real limit, so the row is ALSO given
 /// <c>TextTrimming.CharacterEllipsis</c>: an under-measured value shows an ellipsis rather than a
@@ -60,7 +60,7 @@ public readonly record struct SplitRow(
 public static class DashboardSizing
 {
     /// <summary>
-    /// Advance width of every Cascadia Mono glyph, in ems (1200/2048, read from the shipped .ttf's
+    /// Advance width of every Cascadia Code glyph, in ems (1200/2048, read from the shipped .ttf's
     /// <c>hmtx</c>/<c>head</c>). The face is fixed-pitch — <c>post.isFixedPitch</c> is 1 and <c>hmtx</c>
     /// holds a single non-zero advance — so this one number describes every character.
     /// </summary>

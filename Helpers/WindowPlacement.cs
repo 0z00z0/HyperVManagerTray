@@ -52,7 +52,7 @@ public static class WindowPlacement
     ///
     /// <para>Re-checked when the brand mono face landed (issue #44) — this is the ONE constant here
     /// whose justification is a font metric rather than a declared width, so a wider face could in
-    /// principle have invalidated it. Cascadia Mono is fixed-advance at 0.586 em/char (measured from
+    /// principle have invalidated it. Cascadia Code is fixed-advance at 0.586 em/char (measured from
     /// the shipped .ttf), i.e. 6.45 DIP at 11 px, so 180 DIP still carries ~28 characters per line —
     /// comfortably above the ~25 this floor was set for. The number therefore stands unchanged; it is
     /// the reasoning behind it, not the value, that the font touched.</para>

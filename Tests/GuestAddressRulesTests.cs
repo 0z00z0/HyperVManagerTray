@@ -147,7 +147,7 @@ public class GuestAddressRulesTests
         Assert.Equal("…", GuestAddressUi.AddressText(null, GuestAddressFit.Unknown, renewing: true));
 
     /// <summary>The two marks must be distinguishable at a glance, and both are characters the brand mono
-    /// face covers — checked against the shipped CascadiaMono.ttf, which lacks the obvious alternatives
+    /// face covers — checked against the shipped CascadiaCode.ttf, which lacks the obvious alternatives
     /// (a warning triangle, a circular-arrow refresh) and would silently fall back to a wider face,
     /// under-measuring the row.</summary>
     [Fact]

@@ -16,11 +16,9 @@
          error: the shared pins are a floor a consumer must meet, not one a lower local pin
          overrides. -->
     <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2957" />
-    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.6.5" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.7.0" />
     <PackageVersion Include="NLog" Version="6.2.2" />
-    <!-- Held on 10.x: the 11.0.0 package's net10.0 assets reference System.Collections.Immutable and
-         System.Reflection.Metadata 11.0.0.0, which the .NET 10 runtime does not carry (MSB3277). -->
-    <PackageVersion Include="System.Drawing.Common" Version="10.0.15" />
+    <PackageVersion Include="System.Drawing.Common" Version="11.0.0" />
     <PackageVersion Include="System.Management" Version="11.0.0" />
     <PackageVersion Include="System.ServiceProcess.ServiceController" Version="11.0.0" />
     <PackageVersion Include="TaskScheduler" Version="2.12.2" />
@@ -33,26 +31,31 @@
 
        Every component is pre-1.0, where a minor bump may break the API and a patch never does.
        Raising one of these numbers is a deliberate step: read that component's release notes under
-       docs/release-notes/<key>/ in the 0z0-shared repository first. -->
+       docs/release-notes/<key>/ in the 0z0-shared repository first.
+
+       Brand 0.14.0, Controls 0.12.0, Diagnostics 0.9.0, Lifecycle 0.8.0, Startup 0.9.0, Mqtt 0.15.0,
+       Tray 0.12.0, Win32 0.10.0 and Update 0.18.0 target .NET 11 and Windows App SDK 2.7.0, and are
+       taken together. Brand 0.14.0 ships the typeface as CascadiaCode.ttf, family Cascadia Code, which
+       App.xaml names. -->
   <ItemGroup>
     <!-- The bracket action button carries a symbol of its own and a column can set several of them to
          one width, and the About window holds its dismissal while another window of this application
          is on screen. Both brand assemblies release under the same number. 0.12.0 opens the About
          window before the taskbar exists without ending the process. 0.13.0 writes its own texts in
          the UI culture, Norwegian bokmål built in. -->
-    <PackageVersion Include="ZeroZero.Brand.Core" Version="0.13.0" />
-    <PackageVersion Include="ZeroZero.Brand.WinUI" Version="0.13.0" />
+    <PackageVersion Include="ZeroZero.Brand.Core" Version="0.14.0" />
+    <PackageVersion Include="ZeroZero.Brand.WinUI" Version="0.14.0" />
     <!-- SwitcherVisibility: hiding a window from Alt+Tab before the taskbar exists no longer throws.
          0.11.0 writes its own texts in the UI culture, Norwegian bokmål built in. -->
-    <PackageVersion Include="ZeroZero.Controls.WinUI" Version="0.11.0" />
+    <PackageVersion Include="ZeroZero.Controls.WinUI" Version="0.12.0" />
     <!-- 0.8.0 ends a process whose start failed instead of leaving it holding the lock. -->
-    <PackageVersion Include="ZeroZero.Diagnostics" Version="0.8.0" />
-    <PackageVersion Include="ZeroZero.Lifecycle" Version="0.7.2" />
+    <PackageVersion Include="ZeroZero.Diagnostics" Version="0.9.0" />
+    <PackageVersion Include="ZeroZero.Lifecycle" Version="0.8.0" />
     <!-- 0.8.0: the logon task's seven power settings, including no execution time limit, and a repair
          that notices a task pointing at an executable under an old install path. 0.8.1 adds a
          watchdog task that restarts an application the scheduler finds gone; it is additive and this
          application registers no such task, so the logon task behaves exactly as on 0.8.0. -->
-    <PackageVersion Include="ZeroZero.Startup" Version="0.8.3" />
+    <PackageVersion Include="ZeroZero.Startup" Version="0.9.0" />
     <!-- 0.7.2 closes the disposal race on the connection's reconcile gate and the discovery
          publisher's announcement gate: a settings change applied after teardown, or a reconnect
          still in flight at exit, could each end the process. Never go below it. 0.7.3 keeps an
@@ -86,15 +89,15 @@
          control where they said broker, and the master switch's default title reads "Remote control
          (MQTT)". The panel texts this application writes in Services\MqttService.cs follow the same
          words. -->
-    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.14.4" />
-    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.14.4" />
+    <PackageVersion Include="ZeroZero.Mqtt.Discovery" Version="0.15.0" />
+    <PackageVersion Include="ZeroZero.Mqtt.WinUI" Version="0.15.0" />
     <!-- 0.11.0 waits for the taskbar and retries the icon for a host with its own TaskbarIcon. -->
-    <PackageVersion Include="ZeroZero.Tray.WinUI" Version="0.11.1" />
+    <PackageVersion Include="ZeroZero.Tray.WinUI" Version="0.12.0" />
     <!-- 0.9.0 adds TransientWindows, the count of this application's own short-lived windows.
          UI\DashboardWindow.xaml.cs asks it before dismissing itself on lost focus, so the dashboard
          stays put when the update window opens in front of it. 0.9.1 adds WindowFit, the arithmetic
          that fits a window into a work area; additive, and nothing here calls it yet. -->
-    <PackageVersion Include="ZeroZero.Win32" Version="0.9.2" />
+    <PackageVersion Include="ZeroZero.Win32" Version="0.10.0" />
     <!-- The three update assemblies release under one number and are raised together.
          0.8.0 reports a timeout, an unreachable host, a failure status and an unreadable release as
          four outcomes rather than two, which is the split every message about a failed check is
@@ -125,14 +128,14 @@
          0.16.0 is a breaking minor: one InstallHolds, asked on the automatic and the manual path
          alike, replaces MayInstallNow. 0.17.0 is a breaking minor that makes UpdateMessages an
          instance class; this application reads none of it. Texts follow the UI culture. -->
-    <PackageVersion Include="ZeroZero.Update" Version="0.17.0" />
-    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.17.0" />
-    <PackageVersion Include="ZeroZero.Update.WinUI" Version="0.17.0" />
+    <PackageVersion Include="ZeroZero.Update" Version="0.18.0" />
+    <PackageVersion Include="ZeroZero.Update.Win32" Version="0.18.0" />
+    <PackageVersion Include="ZeroZero.Update.WinUI" Version="0.18.0" />
   </ItemGroup>
 
   <!-- Test project only. -->
   <ItemGroup>
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.1" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.12.0" />
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.1" />
   </ItemGroup>

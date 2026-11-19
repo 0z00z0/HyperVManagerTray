@@ -101,7 +101,7 @@ public static class GuestAddressRules
 /// <para><b>Why these two characters.</b> The card is set in the brand mono face, whose fixed advance
 /// is what makes <see cref="DashboardSizing"/>'s width arithmetic exact rather than an estimate — a
 /// character the face lacks falls back to a wider one and under-measures the row. Both marks below
-/// were checked against the shipped <c>CascadiaMono.ttf</c> and are covered by it; the obvious
+/// were checked against the shipped <c>CascadiaCode.ttf</c> and are covered by it; the obvious
 /// alternatives (a warning triangle, a circular-arrow refresh) are not, which is why they are not
 /// used here.</para>
 /// </summary>

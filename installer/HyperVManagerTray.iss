@@ -115,6 +115,8 @@ Type: files; Name: "{app}\Microsoft.Win32.*.dll"
 Type: files; Name: "{app}\Microsoft.DiaSymReader.Native.amd64.dll"
 Type: files; Name: "{app}\System.*.dll"
 Type: files; Name: "{app}\workloads*.json"
+; The brand typeface ships as CascadiaCode.ttf; [Files] never removes the older file name.
+Type: files; Name: "{app}\ZeroZero.Brand.WinUI\Assets\Fonts\CascadiaMono.ttf"
 ; Superseded runtime-generated tray icons from older builds (the current glyph is v6, route fork).
 Type: files; Name: "{app}\icon-unknown-v5.ico"
 Type: files; Name: "{app}\icon-bridged-v5.ico"

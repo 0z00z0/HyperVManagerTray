@@ -18,7 +18,7 @@
         the SAME geometry the app draws for its tray/app icon (Helpers\IconGenerator.cs, drawn here
         by installer\RouteGlyph.ps1), FLAT in the app's own muted product blue — the product
         identity, reconciled with the studio chrome around it,
-      • the "Hyper-V Manager" product wordmark in Cascadia Mono.
+      • the "Hyper-V Manager" product wordmark in Cascadia Code.
 
     Small header image: clears to WHITE (not studio dark) so it blends into the light inner wizard
     pages; the muted-blue glyph reads fine on white.
@@ -67,10 +67,10 @@ $cAmber   = C 0xd8 0xa6 0x57
 # studio chrome (dark bg, bracket accent bars, [Ø] mark) around it. NOT the studio gradients.
 $cVmBlue  = C 0x3b 0x7e 0xc4   # muted product blue — the route-fork glyph
 
-# ── Brand typeface: Cascadia Mono, loaded privately from the sibling design/shared repo ──
+# ── Brand typeface: Cascadia Code, loaded privately from the sibling design/shared repo ──
 $fontPaths = @(
-    (Join-Path $root "..\0z0-shared\src\ZeroZero.Brand.WinUI\Assets\Fonts\CascadiaMono.ttf"),
-    (Join-Path $root "..\0z0-design\fonts\CascadiaMono.ttf")
+    (Join-Path $root "..\0z0-shared\src\ZeroZero.Brand.WinUI\Assets\Fonts\CascadiaCode.ttf"),
+    (Join-Path $root "..\0z0-design\fonts\CascadiaCode.ttf")
 )
 $pfc = New-Object System.Drawing.Text.PrivateFontCollection
 $brandFamily = $null
@@ -78,7 +78,7 @@ foreach ($fp in $fontPaths) {
     if (Test-Path $fp) { $pfc.AddFontFile((Resolve-Path $fp).Path); $brandFamily = $pfc.Families[0]; break }
 }
 if (-not $brandFamily) {
-    Write-Warning "CascadiaMono.ttf not found beside the repo; falling back to Consolas."
+    Write-Warning "CascadiaCode.ttf not found beside the repo; falling back to Consolas."
     $brandFamily = New-Object System.Drawing.FontFamily("Consolas")
 }
 

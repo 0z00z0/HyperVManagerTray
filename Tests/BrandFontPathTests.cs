@@ -9,7 +9,7 @@ namespace HyperVManagerTray.Tests;
 ///
 /// <para><b>Why this is worth a test.</b> A font URI that resolves to nothing raises nothing at all:
 /// XAML falls back to whatever face the machine has installed, so the window looks correct on a machine
-/// with Cascadia Mono and wrong on one without — a defect that no build, no other test and no glance at
+/// with Cascadia Code and wrong on one without — a defect that no build, no other test and no glance at
 /// a developer machine reports. On a package reference the face lands under the brand assembly's own
 /// folder, and the output root holds no <c>Assets\Fonts\</c> at all.</para>
 /// </summary>
@@ -17,7 +17,7 @@ public class BrandFontPathTests
 {
     /// <summary>The path the brand package's own markup addresses the bundled face by.</summary>
     private const string BrandFontUri =
-        "ms-appx:///ZeroZero.Brand.WinUI/Assets/Fonts/CascadiaMono.ttf#Cascadia Mono";
+        "ms-appx:///ZeroZero.Brand.WinUI/Assets/Fonts/CascadiaCode.ttf#Cascadia Code";
 
     private static string RepoRoot([CallerFilePath] string thisFile = "") =>
         Path.GetDirectoryName(Path.GetDirectoryName(thisFile)!)!;

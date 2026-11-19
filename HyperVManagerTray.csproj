@@ -173,6 +173,9 @@
   <PropertyGroup>
     <PublishReadyToRun Condition="'$(Configuration)' != 'Debug'">true</PublishReadyToRun>
     <PublishTrimmed>false</PublishTrimmed>
+    <!-- CsWinRT1032 flags collection expressions typed as read-only interfaces as unsafe under
+         trimming and AOT. Neither applies to this build, so the warning carries nothing here. -->
+    <NoWarn>$(NoWarn);CsWinRT1032</NoWarn>
     <!-- Bundle the Windows App SDK with the app so no machine-wide runtime install is needed. It
          belongs here rather than on a publish command line: a command-line property is global and
          MSBuild carries it into every referenced project, where a class library errors on it. -->
