@@ -51,11 +51,17 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <TextBlock x:Name="TitleText"
-                           Grid.Column="0"
-                           FontSize="13" FontWeight="SemiBold"
+                <!-- The tray's own status icon, painted from the same state (SetStatusIcon). -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                    <Image x:Name="StatusIcon"
+                           Width="16" Height="16"
                            VerticalAlignment="Center"
-                           Foreground="{ThemeResource TextFillColorPrimaryBrush}"/>
+                           AutomationProperties.AccessibilityView="Raw"/>
+                    <TextBlock x:Name="TitleText"
+                               FontSize="13" FontWeight="SemiBold"
+                               VerticalAlignment="Center"
+                               Foreground="{ThemeResource TextFillColorPrimaryBrush}"/>
+                </StackPanel>
 
                 <!-- Segoe Fluent Icons' system Settings glyph, same as ChargeKeeper's cog — no SVG
                      asset needed, and the existing Assets/nav/*.svg icons are two-tone and coloured

@@ -1300,6 +1300,7 @@ public partial class App : Application
         _iconImage   = next;
         _paintedIcon = shown;
         previous?.Dispose();
+        _dashboard?.SetStatusIcon(_glyphState, ring, running);
     }
 
     // A percentage ring needs no animation, so its slow tick only drives Expire.
@@ -1353,6 +1354,7 @@ public partial class App : Application
                                              ShowBalloon(title, message, isError, suppressWhenDashboardVisible: false),
                                          _menu!.ShowSettings);   // issue #79 — same singleton the tray menu opens
         _dashboard.Closed += (_, _) => _dashboard = null;
+        if (_paintedIcon is { } painted) _dashboard.SetStatusIcon(painted.Item1, painted.Item2, painted.Running);
         if (prime) _dashboard.Prime();
     }
 

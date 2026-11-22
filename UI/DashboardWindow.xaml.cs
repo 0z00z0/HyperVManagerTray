@@ -4,11 +4,14 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
+using System.Runtime.InteropServices.WindowsRuntime;
 using Windows.Foundation;
 using HyperVManagerTray.Helpers;
 using HyperVManagerTray.Models;
 using HyperVManagerTray.Services;
 using ZeroZero.Win32;
+using TrayRing = HyperVManagerTray.Helpers.ProgressRing;
 
 namespace HyperVManagerTray.UI;
 
@@ -141,6 +144,8 @@ public sealed partial class DashboardWindow : Window
         _vm.AddressRenewalChanged += OnAddressRenewalChanged;
         _services.StateChanged += OnServiceStateChanged;
 
+        // A move to a monitor with another scale needs the icon at that monitor's pixel size.
+        Root.Loaded += (_, _) => Root.XamlRoot.Changed += (_, _) => PaintStatusIcon();
         Activated       += OnActivated;
         AppWindow.Closing += OnAppWindowClosing;
         Closed    += (_, _) =>
@@ -170,7 +175,42 @@ public sealed partial class DashboardWindow : Window
         Refresh();
         ResizeAndPlace();
         AppWindow.Show();
+        PaintStatusIcon();
         Activate();
+    }
+
+    // What the tray shows, and what this header last painted at which pixel size, so a ring tick
+    // that changes nothing, or arrives while the window is hidden, renders nothing.
+    private (TrayIconState State, TrayRing? Ring, bool Running)? _statusIcon;
+    private ((TrayIconState, TrayRing?, bool) Shown, int Size)? _statusPainted;
+
+    /// <summary>Called by App (UI thread) with what the tray icon shows, whenever that changes.</summary>
+    internal void SetStatusIcon(TrayIconState state, TrayRing? ring, bool running)
+    {
+        _statusIcon = (state, ring, running);
+        PaintStatusIcon();
+    }
+
+    private void PaintStatusIcon()
+    {
+        if (_statusIcon is not { } shown || _priming || !AppWindow.IsVisible) return;
+        // Device pixels, so the glyph's pixel snapping survives display scaling.
+        int size = (int)Math.Round(StatusIcon.Width * (Root.XamlRoot?.RasterizationScale ?? 1.0));
+        if (_statusPainted == (shown, size)) return;
+
+        using var bmp = IconGenerator.RenderIcon(size, shown.State, shown.Ring, shown.Running);
+        var pixels = new byte[size * size * 4];
+        // WriteableBitmap takes premultiplied BGRA, which is PArgb's memory layout.
+        var data = bmp.LockBits(new System.Drawing.Rectangle(0, 0, size, size),
+            System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        try { System.Runtime.InteropServices.Marshal.Copy(data.Scan0, pixels, 0, pixels.Length); }
+        finally { bmp.UnlockBits(data); }
+
+        var target = StatusIcon.Source is WriteableBitmap wb && wb.PixelWidth == size ? wb : new WriteableBitmap(size, size);
+        using (var stream = target.PixelBuffer.AsStream()) stream.Write(pixels);
+        target.Invalidate();
+        StatusIcon.Source = target;
+        _statusPainted = (shown, size);
     }
 
     public void HideWindow()
