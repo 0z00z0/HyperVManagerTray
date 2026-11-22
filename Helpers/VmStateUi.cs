@@ -83,19 +83,12 @@ public static class VmStateUi
 
     // ── Overlay-expiry deadlines (findings 1 & 7) ────────────────────────────────
 
-    /// <summary>A graceful Shutdown emits only a "Running" phase and is normally cleared when the VM
-    /// reaches Off; if the guest cancels/hangs the shutdown it never reaches Off, so after this long the
-    /// overlay is retired so the card's buttons aren't disabled forever (finding 1). Deliberately long:
-    /// a guest doing install-on-shutdown legitimately stays Running for many minutes, and clearing the
-    /// overlay early would re-enable Save/Pause and invite interrupting that update. This only needs to
-    /// eventually recover a TRULY stuck op, so it is generous — a real shutdown clears the moment the VM
-    /// reaches Off, well before this fires.</summary>
-    public static readonly TimeSpan ShutdownDeadline = TimeSpan.FromMinutes(30);
+    /// <summary>Age at which a Running-phase overlay retires; long because install-on-shutdown can take many minutes.</summary>
+    public static readonly TimeSpan RunningDeadline = TimeSpan.FromMinutes(30);
 
     /// <summary>
-    /// Whether an in-flight power-op overlay should be retired based on its age. Only one overlay ages
-    /// out: a hung or cancelled graceful Shutdown that stays in the Running phase (finding 1). Every
-    /// other operation clears when the machine reaches the state it was after.
+    /// Whether an in-flight power-op overlay should be retired based on its age: any operation still in
+    /// the Running phase after <see cref="RunningDeadline"/> (finding 1).
     ///
     /// <para><b>A failure never ages out.</b> A start is accepted as a job and can fail more than a
     /// minute later, by which time an age-based overlay would already have retired the progress it
@@ -104,7 +97,7 @@ public static class VmStateUi
     /// reaches the state that makes it irrelevant.</para>
     /// </summary>
     public static bool IsOverlayExpired(VmOpKind kind, VmOpPhase phase, TimeSpan age) =>
-        kind == VmOpKind.Shutdown && phase == VmOpPhase.Running && age >= ShutdownDeadline;
+        phase == VmOpPhase.Running && age >= RunningDeadline;
 
     /// <summary>The state a power action leaves the machine in; reaching it ends an operation that reports no outcome, such as a guest shutdown.</summary>
     public static string? SettledState(VmOpKind kind) => kind switch

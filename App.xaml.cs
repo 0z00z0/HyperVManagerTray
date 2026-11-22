@@ -1019,12 +1019,12 @@ public partial class App : Application
                 if (tooltip == _lastTooltip) return;   // unchanged — skip the redundant UI post
                 _lastTooltip = tooltip;
             }
-            _ui.TryEnqueue(() => _trayIcon.ToolTipText = tooltip);
+            _ui.TryEnqueue(() => { if (_trayIcon is { } icon) icon.ToolTipText = tooltip; });
         }
         catch (Exception ex)
         {
             // Best-effort — never let a tooltip failure surface to the user.
-            try { _ui.TryEnqueue(() => _trayIcon.ToolTipText = AppInfo.Name); } catch { }
+            try { _ui.TryEnqueue(() => { if (_trayIcon is { } icon) icon.ToolTipText = AppInfo.Name; }); } catch { }
             _ = ex; // suppress unused-variable warning
         }
     }
@@ -1097,19 +1097,28 @@ public partial class App : Application
                     $"⏸ {Models.HyperVServiceNames.DisplayName(kind)}: {Models.HyperVServiceNames.StateText(serviceState)}", 63));
             }
 
-        var running = RunningMachineNames();
-        if (running.Count > 0 && RunningLine(running, 127 - string.Join("\n", lines).Length - 1) is { } runningLine)
-            lines.Add(runningLine);
-
+        // IP rows are budgeted before the running line and only whole rows are kept: a cut address is a wrong one.
+        int used = string.Join("\n", lines).Length;
+        var ipRows = new System.Collections.Generic.List<string>();
         int vmsWithIp = 0;
         foreach (var vm in vms)
         {
             if (_vm!.GetCachedVmIp(vm.Id) is { } ip)
             {
-                lines.Add(TruncateLine($"\U0001F4E6 {vm.Shown}: {ip}", 63));   // 📦 box (VM) — distinct from the 🖥 app row; one row per VM with a known IP
+                var row = TruncateLine($"\U0001F4E6 {vm.Shown}: {ip}", 63);   // 📦 box (VM) — distinct from the 🖥 app row; one row per VM with a known IP
+                if (ipRows.Count == vmsWithIp && used + 1 + row.Length <= 127)
+                {
+                    ipRows.Add(row);
+                    used += 1 + row.Length;
+                }
                 vmsWithIp++;
             }
         }
+
+        var running = RunningMachineNames();
+        if (running.Count > 0 && RunningLine(running, 127 - used - 1) is { } runningLine)
+            lines.Add(runningLine);
+        lines.AddRange(ipRows);
         // Diagnostic breadcrumb: a configured VM with no cached IP is silently omitted from the
         // tooltip above (by design — there's no "IP unknown" placeholder), which makes a report
         // like "the VM is running but its IP never shows" otherwise unfalsifiable from the log
@@ -1275,28 +1284,39 @@ public partial class App : Application
         bool running = RunningMachineNames().Count > 0;
 
         if (ring is null) _ringTimer?.Stop();
-        else if (_ringTimer is null || !_ringTimer.IsRunning) StartRingTimer();
+        else StartRingTimer(animating: ring.Value.Percent is null);
 
         // Repaints only when what is shown changes, not on every progress event.
-        if (_paintedIcon == (_glyphState, ring, running)) return;
-        _paintedIcon = (_glyphState, ring, running);
+        var shown = (_glyphState, ring, running);
+        if (_paintedIcon == shown) return;
 
+        var next = ring is { } r ? IconGenerator.CreateIcon(_glyphState, r, running)
+                                 : new System.Drawing.Icon(IconGenerator.GenerateAndSave(_exeDir, _glyphState, running));
+        try { _trayIcon.Icon = next; }
+        catch { next.Dispose(); throw; }
+
+        // Recorded only once shown, so a failed paint is retried on the next refresh.
         var previous = _iconImage;
-        _iconImage = ring is { } r ? IconGenerator.CreateIcon(_glyphState, r, running)
-                                   : new System.Drawing.Icon(IconGenerator.GenerateAndSave(_exeDir, _glyphState, running));
-        _trayIcon.Icon = _iconImage;
+        _iconImage   = next;
+        _paintedIcon = shown;
         previous?.Dispose();
     }
 
-    private void StartRingTimer()
+    // A percentage ring needs no animation, so its slow tick only drives Expire.
+    private void StartRingTimer(bool animating)
     {
+        var interval = animating ? TimeSpan.FromMilliseconds(400) : TimeSpan.FromSeconds(5);
         if (_ringTimer is null)
         {
             _ringTimer = _ui.CreateTimer();
-            _ringTimer.Interval = TimeSpan.FromMilliseconds(150);
             _ringTimer.Tick += OnRingTick;
         }
-        _ringTimer.Start();
+        if (_ringTimer.Interval != interval)
+        {
+            _ringTimer.Stop();
+            _ringTimer.Interval = interval;
+        }
+        if (!_ringTimer.IsRunning) _ringTimer.Start();
     }
 
     private void OnRingTick(DispatcherQueueTimer sender, object args)
@@ -1370,7 +1390,9 @@ public partial class App : Application
 
         _ringTimer?.Stop();
         _trayIcon?.Dispose();
+        _trayIcon = null;   // stops refreshes still queued on the UI thread
         _iconImage?.Dispose();
+        _iconImage = null;
         _monitor?.Dispose();
         _services?.Dispose();
         _vm?.Dispose();

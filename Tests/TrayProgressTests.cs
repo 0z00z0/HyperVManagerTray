@@ -48,11 +48,11 @@ public class TrayProgressTests
     {
         var p = new TrayProgress();
         p.Update(Op("a", VmOpKind.Save, VmOpPhase.Running, 30), Now);
-        p.Update(Op("b", VmOpKind.Start, VmOpPhase.Running, 10), Now);
+        p.Update(Op("b", VmOpKind.Start, VmOpPhase.Running, 58), Now);
         p.Update(Op("c", VmOpKind.Shutdown, VmOpPhase.Running), Now);
 
         p.Update(Op("a", VmOpKind.Save, VmOpPhase.Failed), Now);
-        Assert.Equal(10, p.Percent);
+        Assert.Equal(55, p.Percent);   // 58 shown as the step below
         p.Update(Op("B", VmOpKind.Start, VmOpPhase.Succeeded), Now);   // identifiers compare without case
         Assert.True(p.Active);
 
@@ -69,9 +69,9 @@ public class TrayProgressTests
         var p = new TrayProgress();
         p.Update(Op("c", VmOpKind.Shutdown, VmOpPhase.Running), Now);
 
-        p.Expire(Now + VmStateUi.ShutdownDeadline - TimeSpan.FromSeconds(1));
+        p.Expire(Now + VmStateUi.RunningDeadline - TimeSpan.FromSeconds(1));
         Assert.True(p.Active);
-        p.Expire(Now + VmStateUi.ShutdownDeadline);
+        p.Expire(Now + VmStateUi.RunningDeadline);
         Assert.False(p.Active);
     }
 }

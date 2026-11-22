@@ -101,18 +101,19 @@ public class VmStateUiTests
         // Just under the deadline → still active; at/after → expired (finding 1: stuck Shutdown). The
         // deadline is deliberately long (a guest can legitimately stay Running for many minutes during
         // an install-on-shutdown), so a value minutes in still must NOT expire.
-        Assert.False(VmStateUi.IsOverlayExpired(VmOpKind.Shutdown, VmOpPhase.Running, VmStateUi.ShutdownDeadline - TimeSpan.FromSeconds(1)));
+        Assert.False(VmStateUi.IsOverlayExpired(VmOpKind.Shutdown, VmOpPhase.Running, VmStateUi.RunningDeadline - TimeSpan.FromSeconds(1)));
         Assert.False(VmStateUi.IsOverlayExpired(VmOpKind.Shutdown, VmOpPhase.Running, TimeSpan.FromMinutes(5)));
-        Assert.True(VmStateUi.IsOverlayExpired(VmOpKind.Shutdown, VmOpPhase.Running, VmStateUi.ShutdownDeadline));
-        Assert.True(VmStateUi.IsOverlayExpired(VmOpKind.Shutdown, VmOpPhase.Running, VmStateUi.ShutdownDeadline + TimeSpan.FromMinutes(5)));
+        Assert.True(VmStateUi.IsOverlayExpired(VmOpKind.Shutdown, VmOpPhase.Running, VmStateUi.RunningDeadline));
+        Assert.True(VmStateUi.IsOverlayExpired(VmOpKind.Shutdown, VmOpPhase.Running, VmStateUi.RunningDeadline + TimeSpan.FromMinutes(5)));
     }
 
     [Fact]
-    public void IsOverlayExpired_NonShutdownRunning_NeverExpiresByAge()
+    public void IsOverlayExpired_NonShutdownRunning_ExpiresAfterTheSameDeadline()
     {
-        // Start/Save/etc. reach their target state and are cleared that way — never aged out as Running.
+        // An operation whose outcome never arrives must not disable the card forever, whatever its kind.
         Assert.False(VmStateUi.IsOverlayExpired(VmOpKind.Start, VmOpPhase.Running, TimeSpan.FromMinutes(10)));
-        Assert.False(VmStateUi.IsOverlayExpired(VmOpKind.Save,  VmOpPhase.Running, TimeSpan.FromMinutes(10)));
+        Assert.True(VmStateUi.IsOverlayExpired(VmOpKind.Start, VmOpPhase.Running, VmStateUi.RunningDeadline));
+        Assert.True(VmStateUi.IsOverlayExpired(VmOpKind.Save,  VmOpPhase.Running, VmStateUi.RunningDeadline));
     }
 
     /// <summary>A start is accepted as a job and can fail more than a minute later, so an age-based

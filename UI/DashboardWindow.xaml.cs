@@ -63,8 +63,8 @@ public sealed partial class DashboardWindow : Window
     // "Requesting start…", live "Saving (47%)…", or a sticky "Failed: not enough memory").
     private readonly Dictionary<string, VmOperationProgress> _op = new(StringComparer.OrdinalIgnoreCase);
     // When each VM's current _op entry was last (re)set, so an overlay that never clears on its own can
-    // be aged out: a hung/cancelled graceful Shutdown stuck in the Running phase (issue #30, finding 1),
-    // and a sticky "Failed: …" overlay (finding 7). See VmStateUi.IsOverlayExpired.
+    // be aged out: any operation stuck in the Running phase, such as a hung or cancelled graceful
+    // Shutdown (issue #30, finding 1). See VmStateUi.IsOverlayExpired.
     private readonly Dictionary<string, DateTime> _opSince = new(StringComparer.OrdinalIgnoreCase);
     // Per-VM display state that bridges the gaps in the live WMI read. Each entry is (Name, HoldUntil):
     //   • HoldUntil in the FUTURE → an op just succeeded and we HOLD Name (its achieved state) until the
@@ -889,9 +889,9 @@ public sealed partial class DashboardWindow : Window
         if (_op.TryGetValue(card.VmId, out var staleOp) && ReachedTarget(staleOp.Kind, s))
             RemoveOp(card.VmId);
 
-        // Age-out overlays that never clear on their own: a hung/cancelled graceful Shutdown that stays
-        // in the Running phase (finding 1), and a sticky "Failed: …" overlay (finding 7). Runs on every
-        // ~2.5 s metrics tick while the dashboard is open, so a stuck card re-enables itself.
+        // Age-out overlays that never clear on their own: any operation stuck in the Running phase, such
+        // as a hung or cancelled graceful Shutdown (finding 1). Runs on every ~2.5 s metrics tick while
+        // the dashboard is open, so a stuck card re-enables itself.
         if (_op.TryGetValue(card.VmId, out var timedOp) &&
             _opSince.TryGetValue(card.VmId, out var since) &&
             VmStateUi.IsOverlayExpired(timedOp.Kind, timedOp.Phase, DateTime.UtcNow - since))

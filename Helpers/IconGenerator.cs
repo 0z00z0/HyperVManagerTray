@@ -213,7 +213,7 @@ internal static class IconGenerator
         g.Restore(saved);
     }
 
-    // In memory, since the ring changes every second or so; the icon owns its handle and Dispose frees it.
+    // In memory, since the ring repaints on every animation frame or percentage step; the icon owns its handle and Dispose frees it.
     internal static Icon CreateIcon(TrayIconState state, ProgressRing ring, bool running = false)
     {
         using var ms = new MemoryStream();
@@ -352,8 +352,11 @@ internal static class IconGenerator
     /// <summary>Writes a valid ICO with one PNG-compressed frame per size (Vista+ PNG-in-ICO).</summary>
     private static void SaveAsIco(string filePath, TrayIconState state, bool running)
     {
-        using var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write);
-        WriteIco(fs, state, ring: null, running);
+        // Via a temporary file, so an interrupted write never leaves a truncated icon that File.Exists accepts.
+        var temp = filePath + ".tmp";
+        using (var fs = new FileStream(temp, FileMode.Create, FileAccess.Write))
+            WriteIco(fs, state, ring: null, running);
+        File.Move(temp, filePath, overwrite: true);
     }
 
     private static void WriteIco(Stream output, TrayIconState state, ProgressRing? ring, bool running)

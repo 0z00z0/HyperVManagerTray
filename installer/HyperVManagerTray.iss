@@ -131,25 +131,11 @@ Type: files; Name: "{app}\icon-fallback-v3.ico"
 
 ; Generated at runtime by the app — remove on uninstall so the folder can be cleaned up.
 [UninstallDelete]
-Type: files;      Name: "{app}\icon-unknown-v6.ico"
-Type: files;      Name: "{app}\icon-bridged-v6.ico"
-Type: files;      Name: "{app}\icon-fallback-v6.ico"
-Type: files;      Name: "{app}\icon-failed-v6.ico"
+; Every tray icon the app paints, current and older glyph versions alike.
+Type: files;      Name: "{app}\icon-*.ico"
 Type: files;      Name: "{app}\AppIcon.ico"
 Type: files;      Name: "{app}\app.ico"
 ; Legacy names — clean up if upgrading from an older install
-Type: files;      Name: "{app}\icon-unknown-v5.ico"
-Type: files;      Name: "{app}\icon-bridged-v5.ico"
-Type: files;      Name: "{app}\icon-fallback-v5.ico"
-Type: files;      Name: "{app}\icon-failed-v5.ico"
-Type: files;      Name: "{app}\icon-unknown-v4.ico"
-Type: files;      Name: "{app}\icon-bridged-v4.ico"
-Type: files;      Name: "{app}\icon-fallback-v4.ico"
-Type: files;      Name: "{app}\icon-unknown-v3.ico"
-Type: files;      Name: "{app}\icon-bridged-v3.ico"
-Type: files;      Name: "{app}\icon-fallback-v3.ico"
-Type: files;      Name: "{app}\icon-bridged-v2.ico"
-Type: files;      Name: "{app}\icon-fallback-v2.ico"
 Type: files;      Name: "{app}\switch-blue.ico"
 Type: files;      Name: "{app}\switch-grey.ico"
 Type: dirifempty; Name: "{app}"
@@ -168,30 +154,14 @@ const
 // The app is published framework-dependent and requires .NET 11 Desktop Runtime
 // (Microsoft.WindowsDesktop.App 11.x).
 //
-// DETECTION — three-level check, most reliable first.  The two registry/filesystem
-// checks are pure Win32 API calls (no subprocess, no PATH, no quoting pitfalls) and
-// are tried first; the dotnet CLI is only a last resort.
+// DETECTION — two checks, most reliable first.  The filesystem check is a pure Win32
+// API call (no subprocess, no PATH, no quoting pitfalls) and is tried first; the
+// dotnet CLI is only a last resort.
 //   Source: https://learn.microsoft.com/en-us/dotnet/core/install/how-to-detect-installed-versions
-
-// True if the given registry root has a sharedfx\Microsoft.WindowsDesktop.App\11.* subkey.
-function SharedfxHas11(RootKey: Integer; const SharedfxPath: string): Boolean;
-var
-  SubKeyNames: TArrayOfString;
-  I: Integer;
-begin
-  Result := False;
-  if RegGetSubkeyNames(RootKey, SharedfxPath, SubKeyNames) then
-    for I := 0 to GetArrayLength(SubKeyNames) - 1 do
-      if Copy(SubKeyNames[I], 1, 3) = '11.' then
-      begin
-        Result := True;
-        Exit;
-      end;
-end;
 
 function IsDotNet11DesktopInstalled: Boolean;
 var
-  TempFile, SharedfxPath, DotNetPath, DotNetExe: string;
+  TempFile, DotNetPath, DotNetExe: string;
   Lines: TArrayOfString;
   I: Integer;
   ResultCode: Integer;
@@ -221,17 +191,7 @@ begin
     end;
   end;
 
-  SharedfxPath := 'SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App';
-
-  // Check 2 (registry, 32-bit view): WOW6432Node — what HKLM gives a 32-bit process.
-  // Check 3 (registry, 64-bit view): native hive via HKLM64.
-  if SharedfxHas11(HKLM, SharedfxPath) or SharedfxHas11(HKLM64, SharedfxPath) then
-  begin
-    Result := True;
-    Exit;
-  end;
-
-  // Check 4 (CLI, last resort): `dotnet --list-runtimes` by absolute path.
+  // Check 2 (CLI, last resort): `dotnet --list-runtimes` by absolute path.
   // The whole command is wrapped in an extra pair of quotes: cmd.exe strips the
   // outermost quote pair from a /C argument, so without the doubled quotes the space
   // in "C:\Program Files" would break the dotnet.exe path and the check silently fail.
@@ -266,14 +226,16 @@ begin
   // Detection may give a false negative on some machines.
   // OK  → install .NET automatically
   // Cancel → skip this step and continue (user says .NET is already present)
-  if MsgBox(
-      '.NET 11 Desktop Runtime was not detected on this machine.'
-      + #13#10#13#10
-      + 'Click OK to install it automatically (requires internet access).'
-      + #13#10
-      + 'Click Cancel to skip if .NET 11 is already installed.',
-      mbInformation, MB_OKCANCEL) <> IDOK then
-    Exit;  // Skip .NET install; continue with app installation
+  // A silent run has nobody to answer (MsgBox ignores /SUPPRESSMSGBOXES), so it installs directly.
+  if not WizardSilent() then
+    if MsgBox(
+        '.NET 11 Desktop Runtime was not detected on this machine.'
+        + #13#10#13#10
+        + 'Click OK to install it automatically (requires internet access).'
+        + #13#10
+        + 'Click Cancel to skip if .NET 11 is already installed.',
+        mbInformation, MB_OKCANCEL) <> IDOK then
+      Exit;  // Skip .NET install; continue with app installation
 
   // Preferred path: Windows Package Manager (winget).
   // winget handles the download and installation silently — no explicit download
@@ -298,8 +260,9 @@ begin
       'https://aka.ms/dotnet/11.0/windowsdesktop-runtime-win-x64.exe',
       TempExe, 0, nil) <> 0 then
   begin
-    MsgBox('Download failed. Check your internet connection and try again.',
-           mbError, MB_OK);
+    // Suppressible so a silent run aborts instead of waiting on a box nobody sees.
+    SuppressibleMsgBox('Download failed. Check your internet connection and try again.',
+                       mbError, MB_OK, IDOK);
     Result := False;
     Exit;
   end;
@@ -307,8 +270,8 @@ begin
   if not Exec(TempExe, '/install /passive /norestart', '',
               SW_SHOW, ewWaitUntilTerminated, ResultCode) then
   begin
-    MsgBox('Failed to launch the .NET installer. Please install .NET 11 Desktop Runtime manually.',
-           mbError, MB_OK);
+    SuppressibleMsgBox('Failed to launch the .NET installer. Please install .NET 11 Desktop Runtime manually.',
+                       mbError, MB_OK, IDOK);
     Result := False;
     Exit;
   end;
@@ -316,9 +279,9 @@ begin
   // Trust the bootstrapper's exit code (0 = success, 3010 = success + reboot pending).
   if (ResultCode <> 0) and (ResultCode <> 3010) then
   begin
-    MsgBox('The .NET installer exited with code ' + IntToStr(ResultCode) + '.'
-           + #13#10 + 'Please install .NET 11 Desktop Runtime manually and try again.',
-           mbError, MB_OK);
+    SuppressibleMsgBox('The .NET installer exited with code ' + IntToStr(ResultCode) + '.'
+                       + #13#10 + 'Please install .NET 11 Desktop Runtime manually and try again.',
+                       mbError, MB_OK, IDOK);
     Result := False;
   end;
 end;

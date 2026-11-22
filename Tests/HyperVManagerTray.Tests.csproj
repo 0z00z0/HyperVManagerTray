@@ -30,7 +30,7 @@
          latency — assertable here rather than trusted. -->
     <Compile Include="..\Helpers\LatencyLog.cs"       Link="Linked\LatencyLog.cs" />
     <Compile Include="..\Helpers\WmiVmMapper.cs"      Link="Linked\WmiVmMapper.cs" />
-    <!-- Pure state→UI decisions for VM power controls (issue #30). Depends only on VmOperation. -->
+    <!-- Pure state→UI decisions for VM power controls (issue #30). Depends on VmOperation and VmStatus. -->
     <Compile Include="..\Helpers\VmStateUi.cs"        Link="Linked\VmStateUi.cs" />
     <Compile Include="..\Helpers\TrayProgress.cs"     Link="Linked\TrayProgress.cs" />
     <!-- Whether a power request needs issuing at all, given the machine's state. The guard that stops a
