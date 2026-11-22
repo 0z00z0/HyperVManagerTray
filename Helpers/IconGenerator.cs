@@ -47,7 +47,7 @@ internal readonly record struct ProgressRing(int? Percent, int Frame = 0);
 /// Generates the tray icon at runtime (no image assets): the "route fork" glyph — a virtual machine
 /// above a network line that forks to a square end (physical LAN) and a round end (NAT) — drawn in a
 /// single muted colour on a fully transparent background.  State is carried twice, by colour and by
-/// shape: grey with a hollow screen and no lit branch = no claim about the network, green with the
+/// shape: grey with no lit branch = no claim about the network, green with the
 /// square end lit = bridged to the physical LAN, blue with the round end lit = NAT/fallback, red with a
 /// cross in place of the fork = the apply failed.  The transparent background lets the same icon read
 /// on both light and dark taskbars.  Colours are intentionally medium-luminance, not vivid, so the
@@ -95,7 +95,7 @@ internal static class IconGenerator
     // and not only by the glyph. Same medium luminance as its siblings for the same reason.
     private static readonly Color GlyphNoUplink = Color.FromArgb(255, 0xC9, 0x8A, 0x22);
     // Yellow: contrast 2.3 to 3.9 against all five frame colours and 12.9 against a dark taskbar, but only 1.14
-    // against a light one, so the lit screen's separation from the hollow Unknown screen rests on the frame.
+    // against a light one, so the lit screen's separation from the hollow screen rests on the frame.
     private static readonly Color ScreenRunning = Color.FromArgb(255, 0xFF, 0xE6, 0x00);
 
     /// <summary>
@@ -134,14 +134,14 @@ internal static class IconGenerator
 
     // "Route fork" glyph, designed in a 16-unit logical space with a half-unit margin on every side:
     //
-    //        ┌─────────┐        ← virtual machine: rounded frame with a slot (a hollow screen while Unknown)
+    //        ┌─────────┐        ← virtual machine: rounded frame with a hollow screen
     //        └────┬────┘
     //            ╱ ╲            ← the network line forks
     //         ■       ●         ← square end = physical LAN (Bridged), round end = NAT (Fallback)
     //
     // The lit branch and its solid end show the current route; the other branch and a hollow end are
-    // drawn at 38 % opacity.  Unknown lights neither branch and hollows the screen; Failed replaces the
-    // fork with a cross.  A running machine lights the screen yellow.  Every edge is snapped to the
+    // drawn at 38 % opacity.  Unknown lights neither branch; Failed replaces the
+    // fork with a cross.  A running machine fills the screen yellow, in every state.  Every edge is snapped to the
     // pixel grid of the frame being drawn, so the
     // horizontal and vertical edges stay one colour at 16 px instead of smearing across two pixels.
     //
@@ -245,11 +245,9 @@ internal static class IconGenerator
         using var solid = new SolidBrush(color);
         using var faint = new SolidBrush(dim);
 
-        // ── Virtual machine: frame with a slot, or a hollow screen while nothing is known; the screen lit while one runs ──
-        bool unknown = state == TrayIconState.Unknown;
-        var screen = unknown ? Edges(u.P(4.8f), u.P(1.9f), u.P(11.2f), u.P(5.5f))
-                             : Edges(u.P(5.0f), u.P(2.5f), u.P(11.0f), u.P(3.9f));
-        var screenRadius = (unknown ? 0.5f : 0.7f) * u.Scale;
+        // ── Virtual machine: frame with a hollow screen of one shape in every state; the screen lit while one runs ──
+        var screen = Edges(u.P(4.8f), u.P(1.9f), u.P(11.2f), u.P(5.5f));
+        var screenRadius = 0.5f * u.Scale;
         if (running && screen.Height < 2f)
         {
             // Two pixels at least, or the colour is lost inside the ring at 16 px.
