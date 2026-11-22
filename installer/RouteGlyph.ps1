@@ -8,7 +8,8 @@
     The same 16-unit geometry Helpers\IconGenerator.cs paints for the live tray icon: a virtual
     machine above a network line that forks to a square end (physical LAN) and a round end (NAT).
     The lit branch and its solid end show the route; the other branch and a hollow end are drawn at
-    38 % opacity. Unknown lights neither branch and hollows the screen; Failed replaces the fork with
+    38 % opacity. The screen is one hollow rounded rectangle in every state (the tray lights it while
+    a machine runs; the icons never do). Unknown lights neither branch; Failed replaces the fork with
     a cross. Keep this file and IconGenerator.cs in sync if either changes.
 
     With -Snap, every edge is rounded to a whole pixel (halves away from the glyph centre) and every
@@ -65,15 +66,11 @@ function Draw-RouteGlyph($g, $u, [System.Drawing.Color]$color, [string]$State) {
     $solid = New-Object System.Drawing.SolidBrush($color)
     $faint = New-Object System.Drawing.SolidBrush($dim)
     try {
-        # Virtual machine: frame with a slot, or a hollow screen while nothing is known.
+        # Virtual machine: frame with a hollow screen of one shape in every state.
         $vm = New-Object System.Drawing.Drawing2D.GraphicsPath([System.Drawing.Drawing2D.FillMode]::Alternate)
         try {
             Add-RouteRoundedRect $vm (Get-RouteEdges (Get-RouteX $u 3.4) (Get-RouteY $u 0.5) (Get-RouteX $u 12.6) (Get-RouteY $u 6.9)) (1.5 * $u.K)
-            if ($State -eq 'Unknown') {
-                Add-RouteRoundedRect $vm (Get-RouteEdges (Get-RouteX $u 4.8) (Get-RouteY $u 1.9) (Get-RouteX $u 11.2) (Get-RouteY $u 5.5)) (0.5 * $u.K)
-            } else {
-                Add-RouteRoundedRect $vm (Get-RouteEdges (Get-RouteX $u 5.0) (Get-RouteY $u 2.5) (Get-RouteX $u 11.0) (Get-RouteY $u 3.9)) (0.7 * $u.K)
-            }
+            Add-RouteRoundedRect $vm (Get-RouteEdges (Get-RouteX $u 4.8) (Get-RouteY $u 1.9) (Get-RouteX $u 11.2) (Get-RouteY $u 5.5)) (0.5 * $u.K)
             $g.FillPath($solid, $vm)
         } finally { $vm.Dispose() }
 
