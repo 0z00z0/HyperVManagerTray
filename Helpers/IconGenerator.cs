@@ -94,8 +94,9 @@ internal static class IconGenerator
     // Muted amber: red-dominant like Failed but with far more green, so the two are told apart by hue
     // and not only by the glyph. Same medium luminance as its siblings for the same reason.
     private static readonly Color GlyphNoUplink = Color.FromArgb(255, 0xC9, 0x8A, 0x22);
-    // Magenta: a hue no state uses, and far enough from both taskbars that a lit screen never reads as the hole.
-    private static readonly Color ScreenRunning = Color.FromArgb(255, 0xFF, 0x66, 0xFF);
+    // Yellow: contrast 2.3 to 3.9 against all five frame colours and 12.9 against a dark taskbar, but only 1.14
+    // against a light one, so the lit screen's separation from the hollow Unknown screen rests on the frame.
+    private static readonly Color ScreenRunning = Color.FromArgb(255, 0xFF, 0xE6, 0x00);
 
     /// <summary>
     /// Returns the path to the .ico for the given state, generating it on first call.
@@ -140,7 +141,7 @@ internal static class IconGenerator
     //
     // The lit branch and its solid end show the current route; the other branch and a hollow end are
     // drawn at 38 % opacity.  Unknown lights neither branch and hollows the screen; Failed replaces the
-    // fork with a cross.  A running machine lights the screen magenta.  Every edge is snapped to the
+    // fork with a cross.  A running machine lights the screen yellow.  Every edge is snapped to the
     // pixel grid of the frame being drawn, so the
     // horizontal and vertical edges stay one colour at 16 px instead of smearing across two pixels.
     //
