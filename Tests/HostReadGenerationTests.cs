@@ -65,8 +65,8 @@ public class HostReadGenerationTests
 
     /// <summary>
     /// The device-restart case (finding 3): the flow invalidates immediately before disabling the device
-    /// and starts NO read of its own, precisely because every enumeration filters on
-    /// <c>OperationalStatus == Up</c> and would miss the adapter mid-cycle. So a read in flight across the
+    /// and starts NO read of its own, precisely because every enumeration keeps only adapters that
+    /// count as up and would miss the adapter mid-cycle. So a read in flight across the
     /// restart must answer "not current", and only the read taken AFTER the cycle may be trusted.
     /// </summary>
     [Fact]

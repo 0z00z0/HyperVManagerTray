@@ -23,6 +23,11 @@ public sealed class NetworkMonitor : IDisposable
     // alongside the begin+outcome lines VmService writes for the action itself.
     private readonly ILogger _powerLog;
     private readonly System.Threading.Timer _debounceTimer;
+    // Re-runs a pass that found the card list unavailable; every later pass disarms or re-arms it.
+    private readonly System.Threading.Timer _cardRetryTimer;
+    private int _cardRetries;
+    private const int CardRetryLimit = 3;
+    private static readonly TimeSpan CardRetryDelay = TimeSpan.FromSeconds(10);
     // Single-flight guard: only one evaluate/apply runs at a time.  '_evaluatePending'
     // coalesces changes that arrive while one is running into exactly one follow-up pass.
     private readonly SemaphoreSlim _evalLock = new(1, 1);
@@ -81,6 +86,11 @@ public sealed class NetworkMonitor : IDisposable
         _logger   = logger;
         _powerLog = powerLog;
         _debounceTimer = new System.Threading.Timer(OnDebounceElapsed, null, Timeout.Infinite, Timeout.Infinite);
+        _cardRetryTimer = new System.Threading.Timer(_ =>
+        {
+            try { Schedule(0); }
+            catch (ObjectDisposedException) { }
+        }, null, Timeout.Infinite, Timeout.Infinite);
 
         NetworkChange.NetworkAddressChanged += OnNetworkChanged;
         NetworkChange.NetworkAvailabilityChanged += OnNetworkChanged;
@@ -122,8 +132,30 @@ public sealed class NetworkMonitor : IDisposable
         Schedule(250);
     }
 
-    private void OnNetworkChanged(object? sender, EventArgs e) =>
+    private void OnNetworkChanged(object? sender, EventArgs e)
+    {
+        _cardRetries = 0;   // a new change earns its own re-checks
         _debounceTimer.Change(1500, Timeout.Infinite);
+    }
+
+    /// <summary>False without the card list (a switch-attached card may be missing): the previous decision
+    /// stands and a re-check is armed, at most <see cref="CardRetryLimit"/> times.</summary>
+    private bool CardStateUsable(MatchResult result)
+    {
+        bool retry = false;
+        if (result.CardStateUnavailable)
+        {
+            retry = _cardRetries < CardRetryLimit;
+            if (retry) _cardRetries++;
+            _logger.LogInformation("Card state unavailable: switch left as it is; re-check {Count} of {Limit}{Note}",
+                _cardRetries, CardRetryLimit, retry ? "" : " used, waiting for the next network change");
+        }
+        else _cardRetries = 0;
+
+        try { _cardRetryTimer.Change(retry ? CardRetryDelay : Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan); }
+        catch (ObjectDisposedException) { }
+        return !result.CardStateUnavailable;
+    }
 
     private void Schedule(int dueMs) =>
         _debounceTimer.Change(dueMs, Timeout.Infinite);
@@ -163,6 +195,7 @@ public sealed class NetworkMonitor : IDisposable
                 _logger.LogInformation("Network change — re-evaluating adapters...");
 
                 var result = AdapterMatcher.Evaluate(_config.Current);
+                if (!CardStateUsable(result)) continue;
                 _logger.LogInformation("Evaluated: rule='{Rule}' ({RuleId}) switch='{Switch}' ({SwitchId})",
                     result.RuleName, result.RuleId, result.SwitchName, result.SwitchId);
 
@@ -262,6 +295,7 @@ public sealed class NetworkMonitor : IDisposable
             // the UI responsive (issue #29, finding 3). The debounce path already runs on a timer thread.
             var result = await Task.Run(() => AdapterMatcher.Evaluate(_config.Current));
             ThrowIfDisposing();
+            if (!CardStateUsable(result)) return null;   // no answer: the tray reports the re-check as failed
 
             // A rebind drops the host's network, so a person asking for this pass is asked first. The
             // prediction is the apply pass's own skip-cache test; declining leaves everything as it was.
@@ -1150,6 +1184,7 @@ public sealed class NetworkMonitor : IDisposable
         // arming a disposed timer when a config write lands during shutdown.
         _config.ConfigReloaded -= OnConfigReloaded;
         _debounceTimer.Dispose();
+        _cardRetryTimer.Dispose();
 
         // Take the lock the pass in flight holds, so it has finished or stopped before anything it uses goes.
         bool drained;

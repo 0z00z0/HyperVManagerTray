@@ -76,8 +76,8 @@ internal sealed class AdapterRenameFlow
     /// any host read in flight is now worthless — <b>without</b> asking for a new one, which is the whole
     /// point.
     ///
-    /// <para>A restart takes the adapter down and back up, and every enumeration in this app filters on
-    /// <c>OperationalStatus == Up</c>, so a read that samples the host mid-cycle simply does not see the
+    /// <para>A restart takes the adapter down and back up, and every enumeration in this app keeps only
+    /// adapters that count as up, so a read that samples the host mid-cycle simply does not see the
     /// adapter — and a caller that trusted it would rebuild its list WITHOUT the adapter it just renamed,
     /// then feed that list to the next rename's uniqueness check. Re-reading here would race the very
     /// disable that makes reading wrong; the caller is told to distrust, and <paramref name="onRenamed"/>
@@ -342,8 +342,8 @@ internal sealed class AdapterRenameFlow
             return;
         }
 
-        // The adapter is about to go DOWN and back up, and every enumeration in this app filters on
-        // OperationalStatus == Up — so for the duration of the cycle the host truthfully reports that this
+        // The adapter is about to go DOWN and back up, and every enumeration in this app keeps only
+        // adapters that count as up — so for the duration of the cycle the host truthfully reports that this
         // adapter does not exist. Tell the caller to distrust reads NOW, before the disable, so a read
         // already in flight cannot land as a fresh-looking snapshot with this adapter missing from it and
         // leave the rows (and the next rename's uniqueness check) short an adapter until Settings is

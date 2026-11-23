@@ -70,6 +70,9 @@ public sealed record MatchResult(
     /// </summary>
     public bool UserInitiated { get; init; }
 
+    /// <summary>True when the connected-card list could not be read, so a switch-attached card may be missing. Never acted on.</summary>
+    public bool CardStateUnavailable { get; init; }
+
     /// <summary>
     /// True when THIS result — an outcome the app already applied and confirmed — is still the true
     /// outcome for <paramref name="next"/>, a freshly evaluated result. When it holds,
@@ -189,12 +192,19 @@ public sealed record PhysicalAdapterInfo(
     string Mac,              // colon-separated, or "—"
     string DisplayName);     // FriendlyName when present, else Description — DISPLAY ONLY (issue #32)
 
+/// <summary>The interface GUIDs Windows lists as connected hardware cards, and whether that list could be read.</summary>
+internal sealed record CardState(bool Available, IReadOnlySet<Guid> Connected)
+{
+    public static readonly CardState None        = new(true,  new HashSet<Guid>());
+    public static readonly CardState Unavailable = new(false, new HashSet<Guid>());
+}
+
 /// <summary>
 /// Core rule-evaluation logic: inspects the host's live network adapters and decides which
 /// virtual switch the VMs should use.  Handles the Hyper-V bridging quirk where an external
 /// switch with AllowManagementOS=true moves the physical NIC's IP onto a virtual NIC, and
 /// filters out WFP/NDIS filter-layer adapters that share a MAC/IP with the real NIC.
-/// All members are pure/stateless.
+/// Stateless apart from <see cref="ConnectedCards"/>, the card-list reader set at startup.
 /// </summary>
 public static class AdapterMatcher
 {
@@ -254,19 +264,27 @@ public static class AdapterMatcher
     /// Evaluates the config rules (in priority order) against the current host network and
     /// returns the matching rule's switch/VMs, or the fallback if nothing matched.
     /// </summary>
-    public static MatchResult Evaluate(AppConfig config)
-    {
-        var (physical, virtual_) = SplitAdapters();
+    public static MatchResult Evaluate(AppConfig config) =>
+        Evaluate(config, NetworkInterface.GetAllNetworkInterfaces(), ConnectedCards());
 
+    internal static MatchResult Evaluate(AppConfig config, IEnumerable<NetworkInterface> interfaces, CardState cards)
+    {
+        var (physical, virtual_) = SplitAdapters(interfaces, cards.Connected);
+
+        MatchResult? result = null;
         foreach (var rule in config.Rules)
         {
             var matched = MatchingNic(rule, physical, virtual_);
             if (matched is not null)
-                return BuildResult(rule.Id, rule.Name, rule, config, matched, virtual_);
+            {
+                result = BuildResult(rule.Id, rule.Name, rule, config, matched, virtual_);
+                break;
+            }
         }
 
-        return BuildResult(MatchResult.FallbackRuleId, "Fallback", config.Fallback, config,
-                           PrimaryAdapter(physical, virtual_), virtual_);
+        result ??= BuildResult(MatchResult.FallbackRuleId, "Fallback", config.Fallback, config,
+                               PrimaryAdapter(physical, virtual_), virtual_);
+        return result with { CardStateUnavailable = !cards.Available };
     }
 
     /// <summary>
@@ -446,8 +464,14 @@ public static class AdapterMatcher
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
+    /// <summary>Connected hardware cards, read once per enumeration. Set at startup; unset, only Up counts.</summary>
+    internal static Func<CardState> ConnectedCards { get; set; } = static () => CardState.None;
+
+    private static (List<NetworkInterface> Physical, List<NetworkInterface> Virtual) SplitAdapters() =>
+        SplitAdapters(NetworkInterface.GetAllNetworkInterfaces(), ConnectedCards().Connected);
+
     /// <summary>
-    /// Splits all Up, non-loopback adapters into physical (non-Hyper-V-virtual) and
+    /// Splits all non-loopback adapters that count as up (<see cref="IsUp"/>) into physical (non-Hyper-V-virtual) and
     /// virtual (Hyper-V management NICs created by AllowManagementOS=true).
     ///
     /// WFP/NDIS filter-layer adapters are excluded from both lists: Windows creates them
@@ -455,11 +479,11 @@ public static class AdapterMatcher
     /// but they are NOT valid targets for Set-VMSwitch -NetAdapterName and should not
     /// participate in rule matching or primary-adapter detection.
     /// </summary>
-    private static (List<NetworkInterface> Physical, List<NetworkInterface> Virtual) SplitAdapters()
+    internal static (List<NetworkInterface> Physical, List<NetworkInterface> Virtual) SplitAdapters(
+        IEnumerable<NetworkInterface> interfaces, IReadOnlySet<Guid>? connectedCards)
     {
-        var all = NetworkInterface
-            .GetAllNetworkInterfaces()
-            .Where(n => n.OperationalStatus == OperationalStatus.Up
+        var all = interfaces
+            .Where(n => IsUp(n, connectedCards)
                         && n.NetworkInterfaceType != NetworkInterfaceType.Loopback
                         && !IsFilterLayerAdapter(n))
             .ToList();
@@ -467,6 +491,17 @@ public static class AdapterMatcher
         return (all.Where(n => !IsHyperVVirtual(n)).ToList(),
                 all.Where(n =>  IsHyperVVirtual(n)).ToList());
     }
+
+    /// <summary>One "up" test for rule matching, the rename picker and Fallback. On .NET 11 a switch-attached
+    /// card reports Unknown; it counts when its GUID (never MAC: filter/QoS copies share it) is a connected card.</summary>
+    internal static bool IsUp(NetworkInterface nic, IReadOnlySet<Guid>? connectedCards) =>
+        nic.OperationalStatus switch
+        {
+            OperationalStatus.Up      => true,
+            OperationalStatus.Unknown => connectedCards is not null
+                                         && Guid.TryParse(nic.Id, out var id) && connectedCards.Contains(id),
+            _                         => false,
+        };
 
     private static MatchResult BuildResult(
         string ruleId, string ruleName, ISwitchTarget target, AppConfig config,

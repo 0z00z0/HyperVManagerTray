@@ -84,6 +84,23 @@ public class NetworkMonitorSourceTests
           + "acquire and this release.");
     }
 
+    /// <summary>Without the card list a docked card is invisible and the result is Fallback; acting on it
+    /// moves the switch and the machines off the dock.</summary>
+    [Theory]
+    [InlineData("private async void OnDebounceElapsed", "public async Task<MatchResult?> ForceEvaluateAsync", "if (!CardStateUsable(result)) continue;")]
+    [InlineData("public async Task<MatchResult?> ForceEvaluateAsync", "public async Task RefreshDisplayAsync", "if (!CardStateUsable(result)) return null;")]
+    public void UnavailableCardState_StopsThePassBeforeAnythingIsApplied(string start, string end, string guard)
+    {
+        var body = Body(start, end);
+        int evaluated = body.IndexOf("AdapterMatcher.Evaluate(", StringComparison.Ordinal);
+        int stop      = body.IndexOf(guard, StringComparison.Ordinal);
+        int firstAct  = new[] { "HoldAbsorbs(", "Publish(", "ApplyAsync(" }
+            .Select(a => body.IndexOf(a, StringComparison.Ordinal)).Where(i => i >= 0).Min();
+
+        Assert.True(evaluated >= 0 && stop > evaluated && stop < firstAct,
+            $"In {start}, an evaluation without the card list can reach the apply pass and move the switch to Fallback.");
+    }
+
     /// <summary>Invoked fire-and-forget by the adapter rename, so an escaping throw here is unobserved —
     /// and the rename is exactly the operation in flight when the observed crash happened.</summary>
     [Fact]

@@ -260,6 +260,9 @@ public partial class App : Application
             _services.Start();
             _serviceControl = new HyperVServiceControl(_vm, _services, powerLog);
 
+            AdapterMatcher.ConnectedCards =
+                new NetAdapterState(_loggerFactory.CreateLogger<NetAdapterState>()).ReadConnectedCards;
+
             _monitor = new NetworkMonitor(_config, _hyperV, _vm, _serviceControl,
                                           _loggerFactory.CreateLogger<NetworkMonitor>(), powerLog);
 

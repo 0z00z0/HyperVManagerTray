@@ -1,4 +1,6 @@
 using System.Net;
+using System.Net.NetworkInformation;
+using HyperVManagerTray.Models;
 using HyperVManagerTray.Services;
 using Xunit;
 
@@ -6,9 +8,7 @@ namespace HyperVManagerTray.Tests;
 
 /// <summary>
 /// Tests for AdapterMatcher rule-evaluation helpers.
-/// The high-level Evaluate() method reads live NetworkInterface objects and cannot be
-/// exercised here without a real host adapter; these tests verify the pure building-block
-/// helpers that underpin every rule condition check.
+/// The pure building-block helpers behind every rule condition check, and Evaluate() over fake adapters.
 /// </summary>
 public class AdapterMatcherRuleTests
 {
@@ -115,5 +115,121 @@ public class AdapterMatcherRuleTests
         // the actual (permissive) behaviour rather than throwing.
         var result = AdapterMatcher.CalculateCidrFromBytes(Ip("10.20.30.40"), Ip("255.0.255.0"));
         Assert.Equal("10.0.30.0/16", result);
+    }
+
+    // ── A switch-attached card reporting Unknown (.NET 11) ────────────────────
+
+    private const string DockMac = "02:11:22:33:44:55";
+    private static readonly Guid DockId = Guid.Parse("0a000000-0000-4000-8000-000000000001");
+
+    // Docked host after the bind: the card has no address, the vNIC clones its MAC and carries the address.
+    private static FakeNic[] DockedHost() =>
+    [
+        new("{0A000000-0000-4000-8000-000000000001}", "Ethernet", "Realtek USB GbE Family Controller", OperationalStatus.Unknown, DockMac),
+        new("{0A000000-0000-4000-8000-000000000002}", "Ethernet-QoS Packet Scheduler-0000",
+            "Realtek USB GbE Family Controller-QoS Packet Scheduler-0000", OperationalStatus.Unknown, DockMac),
+        new("{0A000000-0000-4000-8000-000000000003}", "vEthernet (Bridged)", "Hyper-V Virtual Ethernet Adapter #2",
+            OperationalStatus.Up, DockMac, "10.0.1.17", "255.255.254.0", "10.0.0.1"),
+        new("{0A000000-0000-4000-8000-000000000004}", "Mobile", "5G modem", OperationalStatus.Up, "02:AA:BB:CC:DD:EE",
+            "100.64.0.2", "255.255.255.0", "100.64.0.1"),
+    ];
+
+    private static string[] PhysicalNames(IReadOnlySet<Guid>? cards) =>
+        [.. AdapterMatcher.SplitAdapters(DockedHost(), cards).Physical.Select(n => n.Name)];
+
+    [Fact]
+    public void UnknownCardListedAsConnected_IsKept_AndDockRuleMatches()
+    {
+        var rule = new NetworkRule
+        {
+            Id = "rule-dock", Name = "Dock", SwitchId = "switch-bridged",
+            Conditions = new RuleConditions { AdapterMac = DockMac, IpCidr = "10.0.0.0/23" },
+        };
+        var config = new AppConfig { Rules = [rule] };
+
+        var result = AdapterMatcher.Evaluate(config, DockedHost(), new CardState(true, new HashSet<Guid> { DockId }));
+
+        Assert.Equal("rule-dock", result.RuleId);
+        Assert.Equal("{0A000000-0000-4000-8000-000000000001}", result.HostAdapterInterfaceId);
+    }
+
+    [Fact]
+    public void UnknownCopyAbsentFromConnectedCards_IsNotAdmitted()
+        => Assert.Equal(["Ethernet", "Mobile"], PhysicalNames(new HashSet<Guid> { DockId }));
+
+    [Fact]
+    public void ConnectedCardsUnavailable_KeepsOnlyUp_AndFlagsTheResult()
+    {
+        Assert.Equal(["Mobile"], PhysicalNames(null));
+        Assert.True(AdapterMatcher.Evaluate(new AppConfig(), DockedHost(), CardState.Unavailable).CardStateUnavailable);
+    }
+
+    private sealed class FakeNic(
+        string id, string name, string description, OperationalStatus status, string mac,
+        string? ip = null, string? mask = null, string? gateway = null) : NetworkInterface
+    {
+        public override string Id => id;
+        public override string Name => name;
+        public override string Description => description;
+        public override OperationalStatus OperationalStatus => status;
+        public override NetworkInterfaceType NetworkInterfaceType => NetworkInterfaceType.Ethernet;
+        public override long Speed => 1_000_000_000;
+        public override PhysicalAddress GetPhysicalAddress() => PhysicalAddress.Parse(mac.Replace(':', '-'));
+        public override IPInterfaceProperties GetIPProperties() => new FakeProps(ip, mask, gateway);
+    }
+
+    private sealed class FakeProps(string? ip, string? mask, string? gateway) : IPInterfaceProperties
+    {
+        public override UnicastIPAddressInformationCollection UnicastAddresses =>
+            new UnicastCollection(ip is null ? [] : [new FakeUnicast(ip, mask!)]);
+        public override GatewayIPAddressInformationCollection GatewayAddresses =>
+            new GatewayCollection(gateway is null ? [] : [new FakeGateway(gateway)]);
+        public override IPAddressCollection DnsAddresses => new AddressCollection();
+        public override IPv4InterfaceProperties GetIPv4Properties() => throw new NotSupportedException();
+        public override IPv6InterfaceProperties GetIPv6Properties() => throw new NotSupportedException();
+        public override IPAddressInformationCollection AnycastAddresses => throw new NotSupportedException();
+        public override IPAddressCollection DhcpServerAddresses => throw new NotSupportedException();
+        public override string DnsSuffix => "";
+        public override bool IsDnsEnabled => false;
+        public override bool IsDynamicDnsEnabled => false;
+        public override MulticastIPAddressInformationCollection MulticastAddresses => throw new NotSupportedException();
+        public override IPAddressCollection WinsServersAddresses => throw new NotSupportedException();
+    }
+
+    private sealed class UnicastCollection(List<UnicastIPAddressInformation> items) : UnicastIPAddressInformationCollection
+    {
+        public override int Count => items.Count;
+        public override IEnumerator<UnicastIPAddressInformation> GetEnumerator() => items.GetEnumerator();
+    }
+
+    private sealed class GatewayCollection(List<GatewayIPAddressInformation> items) : GatewayIPAddressInformationCollection
+    {
+        public override int Count => items.Count;
+        public override IEnumerator<GatewayIPAddressInformation> GetEnumerator() => items.GetEnumerator();
+    }
+
+    private sealed class AddressCollection : IPAddressCollection
+    {
+        public override int Count => 0;
+        public override IEnumerator<IPAddress> GetEnumerator() => Enumerable.Empty<IPAddress>().GetEnumerator();
+    }
+
+    private sealed class FakeGateway(string address) : GatewayIPAddressInformation
+    {
+        public override IPAddress Address => IPAddress.Parse(address);
+    }
+
+    private sealed class FakeUnicast(string address, string mask) : UnicastIPAddressInformation
+    {
+        public override IPAddress Address => IPAddress.Parse(address);
+        public override IPAddress IPv4Mask => IPAddress.Parse(mask);
+        public override bool IsDnsEligible => true;
+        public override bool IsTransient => false;
+        public override long AddressPreferredLifetime => 0;
+        public override long AddressValidLifetime => 0;
+        public override long DhcpLeaseLifetime => 0;
+        public override DuplicateAddressDetectionState DuplicateAddressDetectionState => DuplicateAddressDetectionState.Preferred;
+        public override PrefixOrigin PrefixOrigin => PrefixOrigin.Dhcp;
+        public override SuffixOrigin SuffixOrigin => SuffixOrigin.OriginDhcp;
     }
 }
